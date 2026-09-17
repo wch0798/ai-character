@@ -664,10 +664,27 @@ async function startLive2D() {
     menu.appendChild(
       makeMenuButton("채팅 열기", () => {
         chatPanel?.classList.add("open");
+        void getCurrentWindow()
+          .setIgnoreCursorEvents(false)
+          .catch(() => undefined);
         closeContextMenu();
         window.setTimeout(() => {
           chatInput?.focus();
         }, 50);
+      })
+    );
+    menu.appendChild(
+      makeMenuButton("설정", () => {
+        chatPanel?.classList.add("open");
+        void getCurrentWindow()
+          .setIgnoreCursorEvents(false)
+          .catch(() => undefined);
+        closeContextMenu();
+        window.setTimeout(() => {
+          document
+            .querySelector<HTMLButtonElement>("#ai-settings-button")
+            ?.click();
+        }, 80);
       })
     );
 
@@ -2061,6 +2078,38 @@ async function startLive2D() {
     x: number,
     y: number
   ): boolean => {
+    const settingsPanel =
+      document.querySelector<HTMLElement>(
+        "#ai-settings-panel"
+      );
+    if (settingsPanel && !settingsPanel.hidden) {
+      const rect = settingsPanel.getBoundingClientRect();
+      if (
+        pointInRect(x, y, {
+          x: rect.left,
+          y: rect.top,
+          width: rect.width,
+          height: rect.height,
+        })
+      ) {
+        return true;
+      }
+    }
+
+    if (isChatOpen() && chatPanel) {
+      const rect = chatPanel.getBoundingClientRect();
+      if (
+        pointInRect(x, y, {
+          x: rect.left,
+          y: rect.top,
+          width: rect.width,
+          height: rect.height,
+        })
+      ) {
+        return true;
+      }
+    }
+
     const target =
       document.elementFromPoint(
         x,
@@ -2075,6 +2124,7 @@ async function startLive2D() {
       target.closest(
         [
           "#chat-panel",
+          "#ai-settings-panel",
           "#rightclick-test-menu",
           "button",
           "input",
@@ -2195,11 +2245,35 @@ async function startLive2D() {
           ) /
           clickThroughScaleFactor;
 
+        const isWindowsHost =
+          navigator.userAgent.includes("Windows") ||
+          (
+            navigator as Navigator & {
+              userAgentData?: { platform?: string };
+            }
+          ).userAgentData?.platform === "Windows";
+
+        const settingsOpen = (() => {
+          const panel =
+            document.querySelector<HTMLElement>(
+              "#ai-settings-panel"
+            );
+          return Boolean(panel && !panel.hidden);
+        })();
+
+        /*
+         * Windows WebView2에서는 click-through + 투명 창 조합이
+         * 설정/채팅 클릭을 자주 삼킨다. Windows에서는 끄고,
+         * macOS는 기존처럼 캐릭터/오버레이 hit만 통과시킨다.
+         */
         const interactive =
+          isWindowsHost ||
           holdCursorEvents ||
           contextMenuOpen ||
           menuCursorLock ||
           characterDragActive ||
+          isChatOpen() ||
+          settingsOpen ||
           isCharacterInteractive(
             localX,
             localY
@@ -2244,6 +2318,17 @@ async function startLive2D() {
     },
     60
   );
+
+  window.addEventListener("ai-character:settings-opened", () => {
+    cursorEventsIgnored = false;
+    void getCurrentWindow()
+      .setIgnoreCursorEvents(false)
+      .catch(() => undefined);
+  });
+
+  window.addEventListener("ai-character:settings-closed", () => {
+    void updateClickThrough();
+  });
 
   void updateClickThrough();
 

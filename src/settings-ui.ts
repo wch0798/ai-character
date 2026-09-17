@@ -1,3 +1,4 @@
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getAutomaticProviderStatuses } from "./automatic-provider";
 import {
   chooseAgentExecutable,
@@ -588,9 +589,30 @@ export function initializeSettingsUi(): void {
   toolbar.append(launcher);
   chatPanel.append(overlay);
 
+  // 채팅이 닫혀 있어도 설정에 들어갈 수 있게 항상 보이는 버튼
+  const floatingLauncher = makeButton("⚙", "ai-settings-fab");
+  floatingLauncher.id = "ai-settings-fab";
+  floatingLauncher.title = "설정";
+  floatingLauncher.setAttribute("aria-label", "AI-Character 설정 열기");
+  document.body.append(floatingLauncher);
+
   const positionSettingsPanel = (): void => {
     const top = toolbar.offsetTop + toolbar.offsetHeight + 4;
     overlay.style.top = `${top}px`;
+  };
+
+  const openSettings = (): void => {
+    chatPanel.classList.add("open");
+    positionSettingsPanel();
+    overlay.hidden = false;
+    void getCurrentWindow()
+      .setIgnoreCursorEvents(false)
+      .catch(() => undefined);
+    window.dispatchEvent(
+      new CustomEvent("ai-character:settings-opened")
+    );
+    void refreshAll();
+    void renderUserModels();
   };
 
   const pathNodes = new Map<AgentKind, HTMLElement>();
@@ -1620,14 +1642,17 @@ export function initializeSettingsUi(): void {
   });
 
   launcher.addEventListener("click", () => {
-    positionSettingsPanel();
-    overlay.hidden = false;
-    void refreshAll();
-    void renderUserModels();
+    openSettings();
+  });
+  floatingLauncher.addEventListener("click", () => {
+    openSettings();
   });
 
   closeButton.addEventListener("click", () => {
     overlay.hidden = true;
+    window.dispatchEvent(
+      new CustomEvent("ai-character:settings-closed")
+    );
   });
 
   window.addEventListener("resize", () => {

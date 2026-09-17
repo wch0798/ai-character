@@ -24,18 +24,20 @@ function decodeLive2DPath(path: string): string {
 }
 
 function dirname(path: string): string {
-  const idx = path.lastIndexOf("/");
-  return idx <= 0 ? "" : path.slice(0, idx);
+  const normalized = path.replace(/\\/g, "/");
+  const idx = normalized.lastIndexOf("/");
+  return idx <= 0 ? "" : normalized.slice(0, idx);
 }
 
 function joinFs(baseDir: string, relative: string): string {
   if (!relative || relative.includes("://") || relative.startsWith("data:")) {
     return relative;
   }
-  if (relative.startsWith("/")) {
-    return relative;
+  if (relative.startsWith("/") || /^[A-Za-z]:[\\/]/.test(relative)) {
+    return relative.replace(/\\/g, "/");
   }
-  return `${baseDir.replace(/\/$/, "")}/${relative.replace(/^\.\//, "")}`;
+  const base = baseDir.replace(/\\/g, "/").replace(/\/$/, "");
+  return `${base}/${relative.replace(/^\.\//, "")}`;
 }
 
 function joinRelative(baseDir: string, relative: string): string {
@@ -125,7 +127,8 @@ async function readBytesForLive2D(webPath: string, relative: string): Promise<Ui
 }
 
 function toAssetUrl(absFilePath: string): string {
-  return convertFileSrc(absFilePath);
+  // WebView2/convertFileSrc는 슬래시 정규화가 더 안정적
+  return convertFileSrc(absFilePath.replace(/\\/g, "/"));
 }
 
 async function assetFileToObjectUrl(absPath: string, mime: string): Promise<string> {
