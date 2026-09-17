@@ -517,8 +517,11 @@ body {
   top: 0;
   left: 0;
 
-  transform:
-    translateX(-50%);
+  /* translateX(-50%) 제거: Windows에서 RAM 쪽이 잘리는 원인 */
+  transform: none;
+
+  max-width: calc(100% - 16px);
+  box-sizing: border-box;
 
   padding:
     5px 8px;
@@ -526,16 +529,14 @@ body {
   border-radius: 9px;
 
   background:
-    rgba(15, 17, 22, 0.72);
+    rgba(15, 17, 22, 0.88);
 
-  backdrop-filter:
-    blur(8px);
-
-  -webkit-backdrop-filter:
-    blur(8px);
+  /* Windows WebView2에서 backdrop-filter가 글자를 가리는 경우 있음 */
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
 
   color:
-    rgba(255, 255, 255, 0.88);
+    rgba(255, 255, 255, 0.92);
 
   font-size: 10px;
   line-height: 1.2;
@@ -544,8 +545,10 @@ body {
     tabular-nums;
 
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 
-  z-index: 40;
+  z-index: 50;
 
   pointer-events: none;
 }

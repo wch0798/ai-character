@@ -214,9 +214,9 @@ async fn get_process_stats() -> Result<Vec<f64>, String> {
 
         #[cfg(windows)]
         {
-            // PowerShell을 띄우면 CMD가 계속 깜빡이므로 Windows에서는 성능 HUD 수치를 생략합니다.
             let _ = pid;
-            return Ok(vec![0.0, 0.0]);
+            let (cpu, memory_mb) = crate::windows_process::read_process_stats()?;
+            return Ok(vec![cpu, memory_mb]);
         }
 
         #[cfg(all(unix, not(target_os = "macos")))]

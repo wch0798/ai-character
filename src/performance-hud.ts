@@ -18,6 +18,10 @@ export function readPerformanceHudVisible(
   return storedValue !== "false";
 }
 
+/**
+ * HUD의 **왼쪽 위** 좌표를 반환한다.
+ * (CSS transform 중앙정렬을 쓰지 않아 Windows DPI/좁은 창에서 RAM이 잘리지 않게 함)
+ */
 export function getPerformanceHudPosition(
   modelBounds: BoundsLike,
   canvasRect: DomRectLike,
@@ -36,8 +40,8 @@ export function getPerformanceHudPosition(
     screenHeight <= 0
   ) {
     return {
-      left: canvasRect.left,
-      top: canvasRect.top,
+      left: canvasRect.left + 4,
+      top: canvasRect.top + 4,
     };
   }
 
@@ -47,12 +51,14 @@ export function getPerformanceHudPosition(
   const scaleY =
     canvasRect.height / screenHeight;
 
-  let left =
+  const centerX =
     canvasRect.left +
     (
       modelBounds.x +
       modelBounds.width / 2
     ) * scaleX;
+
+  let left = centerX - hudWidth / 2;
 
   let top =
     canvasRect.top +
@@ -62,60 +68,41 @@ export function getPerformanceHudPosition(
     ) * scaleY +
     gap;
 
-  const halfHud =
-    hudWidth / 2;
+  const minLeft = canvasRect.left + 4;
+  const maxLeft =
+    canvasRect.left +
+    canvasRect.width -
+    hudWidth -
+    4;
 
-  left =
-    Math.max(
-      halfHud + 4,
-      Math.min(
-        left,
-        canvasRect.left +
-          canvasRect.width -
-          halfHud -
-          4
-      )
+  if (maxLeft < minLeft) {
+    left = minLeft;
+  } else {
+    left = Math.max(
+      minLeft,
+      Math.min(left, maxLeft)
     );
-
-  /*
-   * 창이 HUD보다 좁으면 가운데 두고,
-   * 왼쪽부터 보이게 해서 RAM이 잘리지 않게 한다.
-   */
-  if (hudWidth >= canvasRect.width - 8) {
-    left = canvasRect.left + Math.min(halfHud, canvasRect.width - 4);
   }
 
   if (chatTop !== null) {
-    top =
-      Math.min(
-        top,
-        chatTop -
-          hudHeight -
-          4
-      );
+    top = Math.min(
+      top,
+      chatTop - hudHeight - 4
+    );
   }
 
-  /*
-   * 채팅창이 닫혀 있어도
-   * HUD가 창 아래로 잘리지 않도록 제한
-   */
   const canvasBottom =
-    canvasRect.top +
-    canvasRect.height;
+    canvasRect.top + canvasRect.height;
 
-  top =
-    Math.min(
-      top,
-      canvasBottom -
-        hudHeight -
-        4
-    );
+  top = Math.min(
+    top,
+    canvasBottom - hudHeight - 4
+  );
 
-  top =
-    Math.max(
-      canvasRect.top + 4,
-      top
-    );
+  top = Math.max(
+    canvasRect.top + 4,
+    top
+  );
 
   return {
     left,
