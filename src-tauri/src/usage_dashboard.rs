@@ -91,7 +91,9 @@ fn clear_port(port: u16) {
     }
     #[cfg(windows)]
     {
-        let _ = Command::new("powershell")
+        let mut command = Command::new("powershell");
+        crate::windows_process::hide_console(&mut command);
+        let _ = command
             .args([
                 "-NoProfile",
                 "-Command",

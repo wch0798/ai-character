@@ -34,6 +34,7 @@ use agent_commands::{get_app_preferences, get_sensitive_files, set_app_preferenc
 mod agent_core;
 mod agent_install;
 mod settings;
+mod windows_process;
 mod workspace;
 mod live2d_resources;
 mod live2d_user;
@@ -211,33 +212,9 @@ async fn get_process_stats() -> Result<Vec<f64>, String> {
 
         #[cfg(windows)]
         {
-            // 성능 HUD용 근사치 — WorkingSet(KB)만 조회
-            let output = Command::new("powershell")
-                .args([
-                    "-NoProfile",
-                    "-Command",
-                    &format!(
-                        "(Get-Process -Id {pid}).CPU; (Get-Process -Id {pid}).WorkingSet64"
-                    ),
-                ])
-                .output()
-                .map_err(|error| format!("성능 조회 실패: {error}"))?;
-            if !output.status.success() {
-                return Ok(vec![0.0, 0.0]);
-            }
-            let text = String::from_utf8_lossy(&output.stdout);
-            let mut lines = text.lines().filter_map(|line| {
-                let trimmed = line.trim();
-                if trimmed.is_empty() {
-                    None
-                } else {
-                    trimmed.parse::<f64>().ok()
-                }
-            });
-            let cpu = lines.next().unwrap_or(0.0);
-            let working_set = lines.next().unwrap_or(0.0);
-            let memory_mb = working_set / (1024.0 * 1024.0);
-            return Ok(vec![cpu, memory_mb]);
+            // PowerShell을 띄우면 CMD가 계속 깜빡이므로 Windows에서는 성능 HUD 수치를 생략합니다.
+            let _ = pid;
+            return Ok(vec![0.0, 0.0]);
         }
 
         #[cfg(all(unix, not(target_os = "macos")))]

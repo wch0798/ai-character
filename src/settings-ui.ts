@@ -1350,7 +1350,7 @@ export function initializeSettingsUi(): void {
     }
   });
 
-  // 첫 실행: 빠진 필수 프로그램이 있으면 안내
+  // 첫 실행: 빠진 필수 프로그램이 있으면 안내만 (자동 설치는 사용자가 버튼을 누를 때)
   void getRuntimeSetupStatus()
     .then((status) => {
       if (status.allReady || status.platform !== "windows") {
@@ -1365,13 +1365,7 @@ export function initializeSettingsUi(): void {
         .filter((item) => !item.ready)
         .map((item) => item.label)
         .join(", ");
-      if (
-        window.confirm(
-          `Windows에서 아직 없는 프로그램이 있습니다.\n(${missing})\n\n지금 자동 설치할까요?\n(로그인만은 각 Agent 앱에서 직접 해야 합니다)`
-        )
-      ) {
-        installRuntimesButton.click();
-      }
+      message.textContent = `아직 없는 프로그램: ${missing}. 설정 → ‘필수 프로그램 설치’로 설치하세요.`;
     })
     .catch(() => {
       // ignore

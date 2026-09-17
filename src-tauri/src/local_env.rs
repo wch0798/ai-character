@@ -228,7 +228,9 @@ fn open_path(path: &Path) -> Result<(), String> {
     }
     #[cfg(windows)]
     {
-        Command::new("cmd")
+        let mut command = Command::new("cmd");
+        crate::windows_process::hide_console(&mut command);
+        command
             .args(["/C", "start", "", &path.to_string_lossy()])
             .status()
             .map_err(|error| format!("키 파일 열기 실패: {error}"))?;

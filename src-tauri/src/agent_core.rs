@@ -421,7 +421,9 @@ where
         ));
     }
 
-    let mut child = Command::new(&request.binary_path)
+    let mut child_cmd = Command::new(&request.binary_path);
+    crate::windows_process::hide_console(&mut child_cmd);
+    let mut child = child_cmd
         .args(args_for_with_options(
             request.agent,
             prompt,

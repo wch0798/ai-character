@@ -219,7 +219,9 @@ pub fn launch_git_installer() -> Result<(), String> {
             candidate.is_file().then_some(candidate)
         });
         if let Some(winget) = winget {
-            let status = Command::new(winget)
+            let mut command = Command::new(winget);
+            crate::windows_process::hide_console(&mut command);
+            let status = command
                 .args([
                     "install",
                     "--id",
@@ -234,7 +236,9 @@ pub fn launch_git_installer() -> Result<(), String> {
                 return Ok(());
             }
         }
-        Command::new("cmd")
+        let mut command = Command::new("cmd");
+        crate::windows_process::hide_console(&mut command);
+        command
             .args(["/C", "start", "", "https://git-scm.com/download/win"])
             .spawn()
             .map_err(|error| format!("Git 다운로드 페이지 열기 실패: {error}"))?;

@@ -228,7 +228,9 @@ fn run_winget(package_id: &str) -> Result<String, String> {
     let winget = winget_binary().ok_or_else(|| {
         "winget이 없습니다. Microsoft Store에서 '앱 설치 관리자'를 설치하세요.".to_string()
     })?;
-    let output = Command::new(winget)
+    let mut command = Command::new(winget);
+    crate::windows_process::hide_console(&mut command);
+    let output = command
         .args([
             "install",
             "--id",
@@ -265,7 +267,9 @@ fn run_npm_global(package: &str) -> Result<String, String> {
     let npm = npm_binary().ok_or_else(|| {
         "npm이 없습니다. Node.js를 먼저 설치하세요.".to_string()
     })?;
-    let output = Command::new(npm)
+    let mut command = Command::new(npm);
+    crate::windows_process::hide_console(&mut command);
+    let output = command
         .args(["install", "-g", package])
         .output()
         .map_err(|error| format!("npm 실행 실패: {error}"))?;
@@ -286,7 +290,9 @@ fn run_npm_global(package: &str) -> Result<String, String> {
 
 #[cfg(windows)]
 fn open_url(url: &str) -> Result<(), String> {
-    Command::new("cmd")
+    let mut command = Command::new("cmd");
+    crate::windows_process::hide_console(&mut command);
+    command
         .args(["/C", "start", "", url])
         .spawn()
         .map_err(|error| format!("브라우저 열기 실패: {error}"))?;
