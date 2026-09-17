@@ -32,6 +32,7 @@ use agent_commands::{
 mod agent_commands;
 use agent_commands::{get_app_preferences, get_sensitive_files, set_app_preferences};
 mod agent_core;
+mod agent_install;
 mod settings;
 mod workspace;
 mod live2d_resources;
@@ -415,6 +416,10 @@ pub fn run() {
             get_cradle_environment_status,
             prepare_cradle_environment,
             launch_git_installer,
+            agent_install::get_runtime_setup_status,
+            agent_install::install_windows_runtimes,
+            agent_install::install_agent_cli,
+            agent_install::install_all_required_runtimes,
             live2d_resources::read_live2d_bytes,
             live2d_resources::read_live2d_text,
             live2d_user::resolve_live2d_abs_path,

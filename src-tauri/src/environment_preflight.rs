@@ -210,6 +210,30 @@ pub fn launch_git_installer() -> Result<(), String> {
 
     #[cfg(windows)]
     {
+        // winget이 있으면 조용히 설치, 없으면 다운로드 페이지
+        let winget = env::var_os("LOCALAPPDATA").and_then(|local| {
+            let candidate = PathBuf::from(local)
+                .join("Microsoft")
+                .join("WindowsApps")
+                .join("winget.exe");
+            candidate.is_file().then_some(candidate)
+        });
+        if let Some(winget) = winget {
+            let status = Command::new(winget)
+                .args([
+                    "install",
+                    "--id",
+                    "Git.Git",
+                    "-e",
+                    "--accept-package-agreements",
+                    "--accept-source-agreements",
+                    "--disable-interactivity",
+                ])
+                .status();
+            if status.map(|s| s.success()).unwrap_or(false) {
+                return Ok(());
+            }
+        }
         Command::new("cmd")
             .args(["/C", "start", "", "https://git-scm.com/download/win"])
             .spawn()

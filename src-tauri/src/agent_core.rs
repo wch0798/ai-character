@@ -240,10 +240,31 @@ fn common_directories() -> Vec<PathBuf> {
     #[cfg(windows)]
     {
         if let Some(appdata) = env::var_os("APPDATA") {
-            dirs.push(PathBuf::from(appdata).join("npm"));
+            dirs.push(PathBuf::from(&appdata).join("npm"));
         }
         if let Some(local) = env::var_os("LOCALAPPDATA") {
-            dirs.push(PathBuf::from(local).join("Programs"));
+            let local = PathBuf::from(local);
+            dirs.push(local.join("Programs"));
+            dirs.push(local.join("Programs").join("cursor"));
+            dirs.push(local.join("Programs").join("Cursor"));
+            dirs.push(
+                local
+                    .join("Programs")
+                    .join("cursor")
+                    .join("resources")
+                    .join("app")
+                    .join("bin"),
+            );
+        }
+        if let Some(userprofile) = env::var_os("USERPROFILE") {
+            let home = PathBuf::from(userprofile);
+            dirs.push(home.join(".cursor").join("bin"));
+            dirs.push(home.join(".antigravity").join("bin"));
+            dirs.push(home.join(".local").join("bin"));
+            dirs.push(home.join("AppData").join("Roaming").join("npm"));
+        }
+        if let Some(program_files) = env::var_os("ProgramFiles") {
+            dirs.push(PathBuf::from(program_files).join("nodejs"));
         }
     }
 

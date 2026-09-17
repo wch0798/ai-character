@@ -10,6 +10,8 @@ import {
   openKeysEnvFile,
   getProjectCheckpoints,
   getProjectDirectory,
+  getRuntimeSetupStatus,
+  installAllRequiredRuntimes,
   launchGitInstaller,
   prepareCradleEnvironment,
   restoreProjectCheckpoint,
@@ -156,9 +158,18 @@ export function initializeSettingsUi(): void {
   const easyActions = document.createElement("div");
   easyActions.className = "ai-settings-easy-actions";
   const enableFreeAutoButton = makeButton("무료 자동 모드 켜기", "ai-settings-action");
+  const installRuntimesButton = makeButton(
+    "필수 프로그램 설치",
+    "ai-settings-action"
+  );
   const openKeysButton = makeButton("키 파일 열기", "ai-settings-action");
   const refreshReadyButton = makeButton("상태 다시 확인", "ai-settings-action");
-  easyActions.append(enableFreeAutoButton, openKeysButton, refreshReadyButton);
+  easyActions.append(
+    enableFreeAutoButton,
+    installRuntimesButton,
+    openKeysButton,
+    refreshReadyButton
+  );
   easySection.append(easyTitle, easyLead, easyStatus, easyPath, easyChecklist, easyNext, easyActions);
 
   const accountsSection = document.createElement("section");
@@ -1315,6 +1326,56 @@ export function initializeSettingsUi(): void {
       enableFreeAutoButton.disabled = false;
     }
   });
+
+  installRuntimesButton.addEventListener("click", async () => {
+    installRuntimesButton.disabled = true;
+    message.textContent =
+      "Git / Node / Claude / Cursor / Codex 설치를 진행합니다… (관리자 권한·시간이 필요할 수 있습니다)";
+    try {
+      const steps = await installAllRequiredRuntimes();
+      const failed = steps.filter((step) => !step.ok);
+      const okCount = steps.filter((step) => step.ok).length;
+      message.textContent =
+        failed.length === 0
+          ? `설치 완료 (${okCount}개). Agent는 각 앱에서 한 번 로그인하세요.`
+          : `일부 완료 (${okCount}/${steps.length}). ${failed
+              .map((step) => step.message)
+              .join(" / ")}`;
+      await refreshFreeAutoReadiness();
+      await refreshAgents();
+    } catch (error) {
+      message.textContent = errorText(error);
+    } finally {
+      installRuntimesButton.disabled = false;
+    }
+  });
+
+  // 첫 실행: 빠진 필수 프로그램이 있으면 안내
+  void getRuntimeSetupStatus()
+    .then((status) => {
+      if (status.allReady || status.platform !== "windows") {
+        return;
+      }
+      const key = "ai-character-runtime-setup-prompted";
+      if (localStorage.getItem(key) === "1") {
+        return;
+      }
+      localStorage.setItem(key, "1");
+      const missing = status.components
+        .filter((item) => !item.ready)
+        .map((item) => item.label)
+        .join(", ");
+      if (
+        window.confirm(
+          `Windows에서 아직 없는 프로그램이 있습니다.\n(${missing})\n\n지금 자동 설치할까요?\n(로그인만은 각 Agent 앱에서 직접 해야 합니다)`
+        )
+      ) {
+        installRuntimesButton.click();
+      }
+    })
+    .catch(() => {
+      // ignore
+    });
 
   prepareEnvironmentButton.addEventListener("click", async () => {
     prepareEnvironmentButton.disabled = true;

@@ -280,6 +280,47 @@ export async function launchGitInstaller(): Promise<void> {
   return invoke<void>("launch_git_installer");
 }
 
+export type RuntimeComponentStatus = {
+  id: string;
+  label: string;
+  ready: boolean;
+  detail: string;
+  canAutoInstall: boolean;
+};
+
+export type RuntimeSetupStatus = {
+  platform: string;
+  components: RuntimeComponentStatus[];
+  allReady: boolean;
+  message: string;
+};
+
+export type InstallStepResult = {
+  id: string;
+  ok: boolean;
+  message: string;
+};
+
+export async function getRuntimeSetupStatus(): Promise<RuntimeSetupStatus> {
+  return invoke<RuntimeSetupStatus>("get_runtime_setup_status");
+}
+
+export async function installWindowsRuntimes(): Promise<InstallStepResult[]> {
+  return invoke<InstallStepResult[]>("install_windows_runtimes");
+}
+
+export async function installAgentCli(
+  agent: AgentKind
+): Promise<InstallStepResult> {
+  return invoke<InstallStepResult>("install_agent_cli", { agent });
+}
+
+export async function installAllRequiredRuntimes(): Promise<
+  InstallStepResult[]
+> {
+  return invoke<InstallStepResult[]>("install_all_required_runtimes");
+}
+
 export async function setAgentPath(
   agent: AgentKind,
   path: string
