@@ -22,6 +22,7 @@ use agent_commands::close_web_accounts;
 use agent_commands::list_agent_runs;
 use agent_commands::restore_checkpoint;
 use agent_commands::list_checkpoints;
+#[cfg(target_os = "macos")]
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 use crate::chat_state::{get_state_db_path, load_ui_state, save_ui_state};
@@ -170,6 +171,7 @@ fn remove_staged_attachment(path: String) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(target_os = "macos")]
 fn parse_process_stats(output: &str) -> Result<(f64, f64), String> {
     let mut values = output.split_whitespace();
 
