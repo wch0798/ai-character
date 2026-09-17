@@ -12,6 +12,7 @@ import {
   getProjectDirectory,
   getRuntimeSetupStatus,
   installAllRequiredRuntimes,
+  launchAgentLogin,
   launchGitInstaller,
   prepareCradleEnvironment,
   restoreProjectCheckpoint,
@@ -175,11 +176,17 @@ export function initializeSettingsUi(): void {
   const accountsSection = document.createElement("section");
   accountsSection.className = "ai-settings-section ai-settings-accounts";
   const accountsTitle = document.createElement("h3");
-  accountsTitle.textContent = "웹 계정 창 (로그인 분리)";
+  accountsTitle.textContent = "계정 · 로그인";
   const accountsLead = document.createElement("div");
   accountsLead.className = "ai-settings-help";
   accountsLead.textContent =
-    "예전처럼 시스템 브라우저 하나에 로그인이 몰리지 않습니다. 계정마다 따로 창이 열리고, 쿠키/로그인이 서로 섞이지 않습니다. 창마다 원하는 계정으로 한 번만 로그인하면 됩니다.";
+    "여기서 준비합니다. API 키는 ‘키 파일’, 웹 Claude/ChatGPT는 ‘계정 창’, 로컬 Claude/Cursor CLI는 아래 로그인 버튼으로 진행하세요.";
+  const loginActions = document.createElement("div");
+  loginActions.className = "ai-settings-easy-actions";
+  const loginClaudeButton = makeButton("Claude CLI 로그인", "ai-settings-action");
+  const loginCursorButton = makeButton("Cursor 열기(로그인)", "ai-settings-action");
+  const loginKeysButton = makeButton("API 키 파일 열기", "ai-settings-action");
+  loginActions.append(loginClaudeButton, loginCursorButton, loginKeysButton);
   const accountsList = document.createElement("div");
   accountsList.className = "ai-web-accounts-list";
   const accountsActions = document.createElement("div");
@@ -216,6 +223,7 @@ export function initializeSettingsUi(): void {
   accountsSection.append(
     accountsTitle,
     accountsLead,
+    loginActions,
     accountsList,
     closeAfterHandoffLabel,
     closeWhenDoneLabel,
@@ -496,7 +504,13 @@ export function initializeSettingsUi(): void {
   const basicPane = document.createElement("div");
   basicPane.className = "ai-settings-pane";
   basicPane.dataset.pane = "basic";
-  basicPane.append(easySection, simpleSection, projectSection, safetySection);
+  basicPane.append(
+    easySection,
+    accountsSection,
+    simpleSection,
+    projectSection,
+    safetySection
+  );
 
   const chatPane = document.createElement("div");
   chatPane.className = "ai-settings-pane";
@@ -516,7 +530,6 @@ export function initializeSettingsUi(): void {
   advancedPane.hidden = true;
   advancedPane.append(
     environmentSection,
-    accountsSection,
     runtimeSection,
     agentsSection,
     runHistorySection,
@@ -1279,6 +1292,34 @@ export function initializeSettingsUi(): void {
     } finally {
       openAllAccountsButton.disabled = false;
     }
+  });
+
+  loginClaudeButton.addEventListener("click", async () => {
+    loginClaudeButton.disabled = true;
+    message.textContent = "Claude CLI 로그인을 시작합니다…";
+    try {
+      message.textContent = await launchAgentLogin("claude");
+    } catch (error) {
+      message.textContent = errorText(error);
+    } finally {
+      loginClaudeButton.disabled = false;
+    }
+  });
+
+  loginCursorButton.addEventListener("click", async () => {
+    loginCursorButton.disabled = true;
+    message.textContent = "Cursor를 엽니다…";
+    try {
+      message.textContent = await launchAgentLogin("cursor");
+    } catch (error) {
+      message.textContent = errorText(error);
+    } finally {
+      loginCursorButton.disabled = false;
+    }
+  });
+
+  loginKeysButton.addEventListener("click", () => {
+    openKeysButton.click();
   });
 
   openKeysButton.addEventListener("click", async () => {

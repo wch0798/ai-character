@@ -4,7 +4,6 @@ use crate::settings::load_settings;
 use serde::Serialize;
 use std::env;
 use std::path::PathBuf;
-#[cfg(windows)]
 use std::process::Command;
 
 #[derive(Clone, Debug, Serialize)]
@@ -453,5 +452,104 @@ pub fn install_all_required_runtimes() -> Result<Vec<InstallStepResult>, String>
             steps.push(install_agent_cli(agent.to_string())?);
         }
         Ok(steps)
+    }
+}
+
+/// Agent CLI 로그인 흐름 시작 (브라우저/공식 로그인 UI)
+#[tauri::command]
+pub fn launch_agent_login(agent: String) -> Result<String, String> {
+    let agent = AgentKind::parse(&agent)?;
+    let settings = load_settings().ok();
+    let saved = settings
+        .as_ref()
+        .and_then(|s| s.agent_path(agent).map(PathBuf::as_path));
+    let binary = resolve_agent_binary(agent, saved).map_err(|error| {
+        format!(
+            "{error} — 먼저 설정에서 ‘필수 프로그램 설치’를 실행하세요."
+        )
+    })?;
+
+    match agent {
+        AgentKind::Claude => {
+            #[cfg(windows)]
+            {
+                let mut command = Command::new(&binary);
+                crate::windows_process::hide_console(&mut command);
+                command
+                    .args(["auth", "login"])
+                    .spawn()
+                    .map_err(|error| format!("Claude 로그인 실행 실패: {error}"))?;
+            }
+            #[cfg(not(windows))]
+            {
+                Command::new(&binary)
+                    .args(["auth", "login"])
+                    .spawn()
+                    .map_err(|error| format!("Claude 로그인 실행 실패: {error}"))?;
+            }
+            Ok("Claude 로그인을 시작했습니다. 브라우저에서 계정 승인을 완료하세요.".to_string())
+        }
+        AgentKind::Codex => {
+            #[cfg(windows)]
+            {
+                let mut command = Command::new(&binary);
+                crate::windows_process::hide_console(&mut command);
+                command
+                    .args(["login"])
+                    .spawn()
+                    .or_else(|_| {
+                        let mut fallback = Command::new(&binary);
+                        crate::windows_process::hide_console(&mut fallback);
+                        fallback.spawn()
+                    })
+                    .map_err(|error| format!("Codex 로그인 실행 실패: {error}"))?;
+            }
+            #[cfg(not(windows))]
+            {
+                Command::new(&binary)
+                    .args(["login"])
+                    .spawn()
+                    .or_else(|_| Command::new(&binary).spawn())
+                    .map_err(|error| format!("Codex 로그인 실행 실패: {error}"))?;
+            }
+            Ok("Codex 로그인을 시작했습니다. 안내에 따라 로그인하세요.".to_string())
+        }
+        AgentKind::Cursor => {
+            #[cfg(windows)]
+            {
+                let mut command = Command::new(&binary);
+                crate::windows_process::hide_console(&mut command);
+                let _ = command.spawn();
+                // Cursor GUI도 함께 시도
+                let _ = Command::new("cmd")
+                    .args(["/C", "start", "", "cursor://"])
+                    .spawn();
+            }
+            #[cfg(not(windows))]
+            {
+                let _ = Command::new(&binary).spawn();
+                let _ = Command::new("open").arg("cursor://").spawn();
+            }
+            Ok("Cursor를 열었습니다. Cursor 앱에서 계정 로그인하세요.".to_string())
+        }
+        AgentKind::Antigravity => {
+            #[cfg(windows)]
+            {
+                let mut command = Command::new("cmd");
+                crate::windows_process::hide_console(&mut command);
+                command
+                    .args(["/C", "start", "", "https://antigravity.google/"])
+                    .spawn()
+                    .map_err(|error| format!("페이지 열기 실패: {error}"))?;
+            }
+            #[cfg(not(windows))]
+            {
+                Command::new("open")
+                    .arg("https://antigravity.google/")
+                    .spawn()
+                    .map_err(|error| format!("페이지 열기 실패: {error}"))?;
+            }
+            Ok("Antigravity 페이지를 열었습니다.".to_string())
+        }
     }
 }

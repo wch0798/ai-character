@@ -397,6 +397,7 @@ pub fn run() {
             agent_install::install_windows_runtimes,
             agent_install::install_agent_cli,
             agent_install::install_all_required_runtimes,
+            agent_install::launch_agent_login,
             live2d_resources::read_live2d_bytes,
             live2d_resources::read_live2d_text,
             live2d_user::resolve_live2d_abs_path,

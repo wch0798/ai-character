@@ -321,6 +321,10 @@ export async function installAllRequiredRuntimes(): Promise<
   return invoke<InstallStepResult[]>("install_all_required_runtimes");
 }
 
+export async function launchAgentLogin(agent: AgentKind): Promise<string> {
+  return invoke<string>("launch_agent_login", { agent });
+}
+
 export async function setAgentPath(
   agent: AgentKind,
   path: string
