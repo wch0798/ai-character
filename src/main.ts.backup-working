@@ -1,0 +1,146 @@
+import "./styles.css";
+
+import {
+  Application,
+  Ticker,
+} from "pixi.js";
+
+import {
+  Live2DModel,
+} from "@laplace.live/pixijs-live2d";
+
+import {
+  fitModelToWindow,
+} from "./live2d-layout";
+
+async function startLive2D() {
+  const canvas =
+    document.querySelector<HTMLCanvasElement>(
+      "#live2d-canvas"
+    );
+
+  const status =
+    document.querySelector<HTMLDivElement>(
+      "#status"
+    );
+
+  if (!canvas) {
+    throw new Error(
+      "Live2D canvas를 찾을 수 없습니다."
+    );
+  }
+
+  console.log("1. PixiJS 시작");
+
+  const app = new Application();
+
+  await app.init({
+    canvas,
+    resizeTo: window,
+    backgroundAlpha: 0,
+    antialias: true,
+  });
+
+  console.log("2. PixiJS 초기화 완료");
+
+  // PixiJS의 ticker로 Live2D 애니메이션 구동
+  Live2DModel.registerTicker(Ticker);
+
+  console.log("3. Live2D ticker 등록 완료");
+
+  const modelUrl =
+    "/live2d/models/Hiyori/Hiyori.model3.json";
+
+  console.log(
+    "4. Live2D 모델 로딩 시작:",
+    modelUrl
+  );
+
+  const model =
+    await Live2DModel.from(modelUrl);
+
+  console.log(
+    "5. Live2D 모델 로딩 완료"
+  );
+
+  app.stage.addChild(model);
+
+  console.log(
+    "6. Live2D stage 추가 완료"
+  );
+
+  // 처음 로딩된 원래 모델 크기 저장
+  const modelWidth = model.width;
+  const modelHeight = model.height;
+
+  console.log(
+    "모델 원본 크기:",
+    modelWidth,
+    modelHeight
+  );
+
+  model.anchor.set(0.5, 1);
+
+  function resizeModel() {
+    const layout =
+      fitModelToWindow(
+        modelWidth,
+        modelHeight,
+        window.innerWidth,
+        window.innerHeight
+      );
+
+    model.scale.set(layout.scale);
+
+    model.position.set(
+      layout.x,
+      layout.y
+    );
+
+    console.log(
+      "Live2D 배치:",
+      layout
+    );
+  }
+
+  resizeModel();
+
+  window.addEventListener(
+    "resize",
+    resizeModel
+  );
+
+  if (status) {
+    status.textContent =
+      "Hiyori 로딩 완료";
+
+    setTimeout(() => {
+      status.classList.add("hidden");
+    }, 2000);
+  }
+
+  console.log(
+    "✅ Live2D Hiyori 실행 완료"
+  );
+}
+
+startLive2D().catch(
+  (error) => {
+    console.error(
+      "❌ Live2D 시작 실패:",
+      error
+    );
+
+    const status =
+      document.querySelector<HTMLDivElement>(
+        "#status"
+      );
+
+    if (status) {
+      status.textContent =
+        "Live2D 로딩 실패";
+
+      status.classList.add("error");
+    }
+  }
+);

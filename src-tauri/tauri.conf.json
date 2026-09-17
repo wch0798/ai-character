@@ -1,0 +1,71 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "AI Character",
+  "version": "0.1.0",
+  "identifier": "local.ai.character",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "title": "AI Character",
+        "width": 980,
+        "height": 680,
+        "resizable": true,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "shadow": false,
+        "visibleOnAllWorkspaces": true,
+        "minWidth": 160,
+        "minHeight": 160
+      }
+    ],
+    "security": {
+      "assetProtocol": {
+        "enable": true,
+        "scope": [
+          "$RESOURCE/**",
+          "$APPDATA/live2d-models/**",
+          "$APPLOCALDATA/live2d-models/**",
+          "$APPDATA/**/live2d-models/**",
+          "$APPDATA/local.ai.character/live2d-models/**",
+          "$APPDATA/AI-Character/live2d-models/**",
+          "$HOME/Library/Application Support/AI-Character/live2d-models/**",
+          "$HOME/Library/Application Support/local.ai.character/live2d-models/**"
+        ]
+      },
+      "csp": "default-src 'self' asset: https://asset.localhost http://asset.localhost https://tauri.localhost tauri:; script-src 'self' 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: asset: http://asset.localhost https://asset.localhost; font-src 'self' data:; connect-src 'self' blob: data: ipc: http://ipc.localhost https://ipc.localhost asset: http://asset.localhost https://asset.localhost https://tauri.localhost tauri: http://127.0.0.1:* http://localhost:*; worker-src 'self' blob: data:; media-src 'self' blob: data:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
+    },
+    "macOSPrivateApi": true
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "resources": [
+      "resources/live2d/**/*"
+    ],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "windows": {
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper"
+      },
+      "nsis": {
+        "installMode": "currentUser",
+        "languages": ["English"],
+        "displayLanguageSelector": false
+      }
+    }
+  }
+}

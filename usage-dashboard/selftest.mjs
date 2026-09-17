@@ -1,0 +1,52 @@
+// 대시보드 동작 확인: 임시 포트로 서버를 띄우고 페이지와 API를 검사한 뒤 종료합니다.
+import { spawn } from 'node:child_process';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const PORT = 4399;
+const server = spawn(process.execPath, [join(dirname(fileURLToPath(import.meta.url)), 'server.mjs')], {
+  env: { ...process.env, PORT: String(PORT) },
+  stdio: ['ignore', 'pipe', 'inherit'],
+});
+let failed = 0;
+const check = (name, ok, detail = '') => {
+  console.log(`${ok ? '통과' : '실패'}  ${name}${detail ? `  (${detail})` : ''}`);
+  if (!ok) failed++;
+};
+
+try {
+  await new Promise((ok, fail) => {
+    server.stdout.on('data', (d) => d.toString().includes('http://') && ok());
+    server.on('exit', (code) => fail(new Error(`서버가 시작되지 않았습니다 (종료 코드 ${code})`)));
+    setTimeout(() => fail(new Error('서버 시작 시간 초과')), 10000);
+  });
+  const base = `http://127.0.0.1:${PORT}`;
+
+  const page = await fetch(base + '/');
+  check('페이지 열림', page.status === 200, `HTTP ${page.status}`);
+
+  const res = await fetch(base + '/api/usage');
+  check('API 응답', res.status === 200, `HTTP ${res.status}`);
+  const text = await res.text();
+  const data = JSON.parse(text);
+  check('앱 데이터', data.app && (!data.app.error || Array.isArray(data.app.runs)), data.app?.error ?? '');
+  check('Claude 사용량', !!data.claude);
+  check('Codex 사용량', !!data.codex);
+  check('providers 배열', Array.isArray(data.providers) && data.providers.length >= 4, `${data.providers?.length ?? 0}개`);
+  const ids = (data.providers || []).map((p) => p.id);
+  check('Cursor provider', ids.includes('cursor'));
+  check('Antigravity provider', ids.includes('antigravity'));
+  check('provider headline', data.providers.every((p) => p.headline && p.label));
+  check('키 상태 목록', Array.isArray(data.keys), `${data.keys?.length ?? 0}개, 설정됨: ${data.keys?.filter((k) => k.configured).map((k) => k.label).join(', ') || '없음'}`);
+  check('Claude 계정 이메일', !!data.accounts?.claude?.email, data.accounts?.claude?.email ?? '없음');
+  check('Codex 계정 이메일', !!(data.accounts?.codex?.email || data.accounts?.codex?.keyHint), data.accounts?.codex?.email ?? data.accounts?.codex?.keyHint ?? '없음');
+  check('Cursor 계정 이메일', !!data.accounts?.cursor?.email, data.accounts?.cursor?.email ?? '없음');
+  check('로그인 토큰이 응답에 없음', !/eyJ[A-Za-z0-9_-]{20,}|access_token|refresh_token|id_token/.test(text));
+  check('키 값이 응답에 없음', !/sk-[A-Za-z0-9_-]{16,}|AIza[0-9A-Za-z_-]{20,}/.test(text));
+} catch (err) {
+  check('실행', false, err.message);
+} finally {
+  server.kill();
+}
+console.log(failed ? `\n${failed}개 실패` : '\n모두 통과');
+process.exit(failed ? 1 : 0);

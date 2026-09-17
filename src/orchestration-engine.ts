@@ -1,0 +1,1412 @@
+import {
+  askClaudeCompat,
+  cancelAgent,
+  confirmSensitiveAgentAccess,
+  detectAgent,
+  getAppPreferences,
+  prepareCradleEnvironment,
+  runAgentTask,
+  type AgentKind,
+  type AppPreferences,
+} from "./agent-client";
+import { collectWebResearch } from "./web-research";
+import { classifyRequestIntent, extractCurrentUserRequest } from "./request-intent";
+import { compactText, compactWorkerOutput, WORKER_RESULT_SCHEMA } from "./worker-result";
+import {
+  classifyAutomaticProviderError,
+  getAutomaticProviderStatuses,
+  runAutomaticProvider,
+  type AutomaticProviderHealth,
+  type AutomaticProviderStatus,
+} from "./automatic-provider";
+import {
+  parseOrchestrationPlan,
+  parseSynthesisEnvelope,
+  extractUserFacingAnswer,
+  topologicalLayers,
+} from "./orchestration-plan";
+import type {
+  AutomaticApiTarget,
+  CradleSession,
+  CradleTaskState,
+  ManagerWebStage,
+  OrchestrationCliTarget,
+  OrchestrationPlan,
+  OrchestrationTarget,
+  OrchestrationTaskSpec,
+  WebAgentTarget,
+  WebAvailability,
+} from "./orchestration-types";
+
+export const MAX_AUTOMATIC_CLI_WORKERS = 4;
+const SESSION_EVENT = "ai-character:cradle-session";
+
+type WebWaiter = { resolve: () => void };
+type ManagerWaiterResult =
+  | { kind: "response"; response: string }
+  | { kind: "fallback" };
+type ManagerWaiter = {
+  resolve: (result: ManagerWaiterResult) => void;
+  reject: (error: Error) => void;
+};
+type SynthesisWaiter = {
+  resolve: (answer: string) => void;
+  reject: (error: Error) => void;
+};
+
+let activeSession: CradleSession | null = null;
+const webWaiters = new Map<string, WebWaiter>();
+const managerWaiters = new Map<string, ManagerWaiter>();
+const synthesisWaiters = new Map<string, SynthesisWaiter>();
+const activeCliTaskIds = new Set<string>();
+const rememberedWebAvailability: Record<WebAgentTarget, WebAvailability> = {
+  claude_web: "unknown",
+  chatgpt_web: "unknown",
+  gemini_web: "unknown",
+};
+const automaticProviderHealth: Record<AutomaticApiTarget, AutomaticProviderHealth> = {
+  gemini_api: "unknown",
+  openai_api: "unknown",
+};
+let automaticProviderStatuses: AutomaticProviderStatus[] = [];
+
+const WEB_PREFERENCE_FOR_CLI: Record<OrchestrationCliTarget, WebAgentTarget> = {
+  claude: "claude_web",
+  codex: "chatgpt_web",
+  cursor: "chatgpt_web",
+  antigravity: "gemini_web",
+};
+
+const CLI_PREFERENCE_FOR_WEB: Record<WebAgentTarget, OrchestrationCliTarget[]> = {
+  claude_web: ["claude"],
+  chatgpt_web: ["codex", "cursor", "claude"],
+  gemini_web: ["antigravity", "claude"],
+};
+
+function createSessionId(): string {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
+    return crypto.randomUUID();
+  }
+  return `cradle-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function webWaiterKey(sessionId: string, taskId: string): string {
+  return `${sessionId}:${taskId}`;
+}
+
+function managerWaiterKey(sessionId: string, stage: ManagerWebStage): string {
+  return `${sessionId}:manager:${stage}`;
+}
+
+function isWebTarget(target: OrchestrationTarget): target is WebAgentTarget {
+  return target === "claude_web" || target === "chatgpt_web" || target === "gemini_web";
+}
+
+function isAutomaticApiTarget(target: OrchestrationTarget): target is AutomaticApiTarget {
+  return target === "gemini_api" || target === "openai_api";
+}
+
+function isCliTarget(target: OrchestrationTarget): target is OrchestrationCliTarget {
+  return target === "claude" || target === "codex" || target === "cursor" || target === "antigravity";
+}
+
+export function preferredWebTargetForCli(target: OrchestrationCliTarget): WebAgentTarget {
+  return WEB_PREFERENCE_FOR_CLI[target];
+}
+
+function preferredCliFallbackForWeb(
+  target: WebAgentTarget,
+  automaticTargets: OrchestrationCliTarget[]
+): OrchestrationCliTarget | null {
+  return CLI_PREFERENCE_FOR_WEB[target].find((candidate) => automaticTargets.includes(candidate)) ?? null;
+}
+
+export function isQuotaOrLimitError(error: unknown): boolean {
+  const text = (error instanceof Error ? error.message : String(error)).toLowerCase();
+  const markers = [
+    "quota exceeded",
+    "usage limit",
+    "rate limit",
+    "credits exhausted",
+    "plan limit",
+    "limit reached",
+    "too many requests",
+    "429",
+    "사용량 초과",
+    "한도 초과",
+  ];
+  return markers.some((marker) => text.includes(marker));
+}
+
+export function isRecoverableEnvironmentError(error: unknown): boolean {
+  const text = (error instanceof Error ? error.message : String(error)).toLowerCase();
+  const markers = [
+    "environment_git_missing",
+    "not inside a trusted directory",
+    "skip-git-repo-check",
+    "cli를 찾을 수 없습니다",
+    "실행 파일을 찾을 수 없습니다",
+    "permission denied",
+    "eacces",
+    "authentication required",
+    "login required",
+    "not logged in",
+  ];
+  return markers.some((marker) => text.includes(marker));
+}
+
+
+function cloneSession(session: CradleSession): CradleSession {
+  return JSON.parse(JSON.stringify(session)) as CradleSession;
+}
+
+function dispatchSession(session: CradleSession): void {
+  if (typeof window === "undefined") {
+    return;
+  }
+  window.dispatchEvent(
+    new CustomEvent<CradleSession>(SESSION_EVENT, { detail: cloneSession(session) })
+  );
+}
+
+function setSessionStatus(
+  session: CradleSession,
+  status: CradleSession["status"],
+  message: string
+): void {
+  session.status = status;
+  session.statusMessage = message;
+  dispatchSession(session);
+}
+
+function ensureNotCancelled(session: CradleSession): void {
+  if (session.status === "cancelled") {
+    throw new Error("CRADLE 작업이 취소되었습니다.");
+  }
+}
+
+function stateFromSpec(spec: OrchestrationTaskSpec): CradleTaskState {
+  return {
+    ...spec,
+    dependsOn: [...spec.dependsOn],
+    status: "queued",
+    output: null,
+    error: null,
+    fallbackCount: 0,
+    fallbackFrom: null,
+    fallbackReason: null,
+    handoffPrompt: null,
+  };
+}
+
+function findTask(session: CradleSession, taskId: string): CradleTaskState {
+  const task = session.tasks.find((candidate) => candidate.id === taskId);
+  if (!task) {
+    throw new Error(`CRADLE task not found: ${taskId}`);
+  }
+  return task;
+}
+
+async function detectAutomaticTargets(): Promise<OrchestrationCliTarget[]> {
+  const candidates: AgentKind[] = ["cursor", "codex", "claude", "antigravity"];
+  const found = await Promise.all(
+    candidates.map(async (agent) => {
+      try {
+        await detectAgent(agent);
+        return agent;
+      } catch {
+        return null;
+      }
+    })
+  );
+  return found.filter((agent): agent is OrchestrationCliTarget => agent !== null);
+}
+
+const CLI_SPREAD_ORDER: OrchestrationCliTarget[] = [
+  "cursor",
+  "codex",
+  "claude",
+  "antigravity",
+];
+
+export function availableModifyCliTargets(
+  automaticCliTargets: OrchestrationCliTarget[]
+): OrchestrationCliTarget[] {
+  return CLI_SPREAD_ORDER.filter((target) => automaticCliTargets.includes(target));
+}
+
+function usableAutomaticProviders(
+  statuses: AutomaticProviderStatus[],
+  preferences: AppPreferences
+): AutomaticApiTarget[] {
+  const providers: AutomaticApiTarget[] = [];
+  const gemini = statuses.find((status) => status.provider === "gemini_api");
+  if (
+    preferences.geminiApiEnabled &&
+    gemini?.available &&
+    automaticProviderHealth.gemini_api !== "limited" &&
+    automaticProviderHealth.gemini_api !== "unavailable"
+  ) {
+    providers.push("gemini_api");
+  }
+  const openai = statuses.find((status) => status.provider === "openai_api");
+  if (
+    preferences.allowPaidOpenAiApi &&
+    openai?.available &&
+    automaticProviderHealth.openai_api !== "limited" &&
+    automaticProviderHealth.openai_api !== "unavailable"
+  ) {
+    providers.push("openai_api");
+  }
+  return providers;
+}
+
+function rememberAutomaticProviderFailure(provider: AutomaticApiTarget, error: unknown): void {
+  const health = classifyAutomaticProviderError(error);
+  if (health === "limited" || health === "unavailable") {
+    automaticProviderHealth[provider] = health;
+  }
+}
+
+export function createPlanningPrompt(
+  originalPrompt: string,
+  automaticTargets: OrchestrationCliTarget[],
+  researchPromptBlock = "",
+  automaticApiTargets: AutomaticApiTarget[] = [],
+  conversationContext = ""
+): string {
+  return [
+    "You are the lead manager of CRADLE inside AI-Character.",
+    "Decompose the user's request into the smallest useful set of specialist tasks.",
+    "CRADLE is AUTOMATIC-FIRST: prefer configured official automatic API providers for analysis, research, critique, planning, and review. Use CLI workers mainly when local project files must actually be modified. Manual Web handoff is the last fallback.",
+    "This path is for PROJECT work only. Simple chat questions should not be planned here.",
+    "Return JSON only. Do not use markdown fences or explanatory text.",
+    "Schema:",
+    '{"summary":"overall plan","tasks":[{"id":"task-1","title":"short title","target":"gemini_api|openai_api|claude_web|chatgpt_web|gemini_web|claude|codex|cursor|antigravity","mode":"analyze|modify","prompt":"self-contained worker instruction","dependsOn":[]}]}',
+    "Rules:",
+    "- Use 1 to 8 tasks. Prefer fewer workers when one worker is enough.",
+    "- Gemini API is the preferred free automatic analysis/research/review worker when available.",
+    "- OpenAI API is paid and may be assigned only when it appears in the available automatic API list.",
+    "- Manual Claude/ChatGPT/Gemini Web targets are fallbacks when automatic providers are unavailable.",
+    "- For mode=analyze, prefer an available automatic API target instead of CLI targets.",
+    "- Use Codex/Cursor/Claude/Antigravity CLI primarily for mode=modify when local files must be changed.",
+    "- When several CLIs are available, give different modify tasks to different CLIs. Use Cursor, Codex, Claude, and Antigravity together instead of one CLI for everything.",
+    "- Creating or editing files, apps, or web pages REQUIRES at least one mode=modify CLI task.",
+    "- The conversation workspace already has write permission. Never ask the user for /add-dir, extra folder access, or secret files.",
+    `- Available automatic API targets: ${automaticApiTargets.join(", ") || "none"}. Do not assign an unavailable API target.`,
+    `- Available automatic CLI targets: ${automaticTargets.join(", ")}. Do not assign an unavailable CLI target.`,
+    "- Web agents are always human-assisted last-resort handoffs, not APIs or DOM scraping.",
+    "- Make each worker prompt self-contained and short. Do not copy the full conversation into worker prompts.",
+    "- Instruct analyze workers to return JSON only using this schema:",
+    WORKER_RESULT_SCHEMA,
+    "- Do not place secrets, credentials, private keys, cookies, or auth tokens in web-agent prompts.",
+    conversationContext ? "COMPACT CONVERSATION CONTEXT:" : "",
+    conversationContext,
+    researchPromptBlock ? "" : "",
+    researchPromptBlock,
+    "",
+    "USER REQUEST:",
+    originalPrompt.trim(),
+  ].filter((line) => line !== "").join("\n");
+}
+
+export function normalizePlanForWebFirst(
+  plan: OrchestrationPlan,
+  availability: Record<WebAgentTarget, WebAvailability>
+): OrchestrationPlan {
+  return {
+    summary: plan.summary,
+    tasks: plan.tasks.map((task) => {
+      if (task.mode === "modify" || !isCliTarget(task.target)) {
+        return { ...task, dependsOn: [...task.dependsOn] };
+      }
+      const webTarget = preferredWebTargetForCli(task.target);
+      if (availability[webTarget] === "limited") {
+        return { ...task, dependsOn: [...task.dependsOn] };
+      }
+      return { ...task, target: webTarget, dependsOn: [...task.dependsOn] };
+    }),
+  };
+}
+
+export function normalizePlanForAutomaticProviders(
+  plan: OrchestrationPlan,
+  automaticApiTargets: AutomaticApiTarget[],
+  automaticCliTargets: OrchestrationCliTarget[],
+  availability: Record<WebAgentTarget, WebAvailability>
+): OrchestrationPlan {
+  const freeAutomatic = automaticApiTargets.includes("gemini_api") ? "gemini_api" : null;
+  const paidAutomatic = automaticApiTargets.includes("openai_api") ? "openai_api" : null;
+  const modifyClis = availableModifyCliTargets(automaticCliTargets);
+  let modifyIndex = 0;
+
+  return {
+    summary: plan.summary,
+    tasks: plan.tasks.map((task) => {
+      if (task.mode === "modify") {
+        if (modifyClis.length > 0) {
+          const target = modifyClis[modifyIndex % modifyClis.length];
+          modifyIndex += 1;
+          return { ...task, target, dependsOn: [...task.dependsOn] };
+        }
+        if (isAutomaticApiTarget(task.target) || isCliTarget(task.target)) {
+          const webTarget: WebAgentTarget = task.target === "openai_api" || task.target === "codex" || task.target === "cursor"
+            ? "chatgpt_web"
+            : "gemini_web";
+          return { ...task, target: webTarget, dependsOn: [...task.dependsOn] };
+        }
+        return { ...task, dependsOn: [...task.dependsOn] };
+      }
+
+      if (isAutomaticApiTarget(task.target)) {
+        if (automaticApiTargets.includes(task.target)) {
+          return { ...task, dependsOn: [...task.dependsOn] };
+        }
+        if (freeAutomatic) {
+          return { ...task, target: freeAutomatic, dependsOn: [...task.dependsOn] };
+        }
+        if (paidAutomatic) {
+          return { ...task, target: paidAutomatic, dependsOn: [...task.dependsOn] };
+        }
+        const webTarget: WebAgentTarget = task.target === "openai_api" ? "chatgpt_web" : "gemini_web";
+        return { ...task, target: webTarget, dependsOn: [...task.dependsOn] };
+      }
+
+      if (freeAutomatic && (isCliTarget(task.target) || isWebTarget(task.target))) {
+        return { ...task, target: freeAutomatic, dependsOn: [...task.dependsOn] };
+      }
+
+      if (isCliTarget(task.target)) {
+        const webTarget = preferredWebTargetForCli(task.target);
+        if (availability[webTarget] !== "limited") {
+          return { ...task, target: webTarget, dependsOn: [...task.dependsOn] };
+        }
+      }
+      return { ...task, dependsOn: [...task.dependsOn] };
+    }),
+  };
+}
+
+function compactResearchForPrompt(researchPromptBlock: string): string {
+  return compactText(researchPromptBlock.trim(), 2_400);
+}
+
+function dependencyContext(session: CradleSession, task: CradleTaskState): string {
+  const parts: string[] = [];
+  for (const dependencyId of task.dependsOn) {
+    const dependency = findTask(session, dependencyId);
+    const output = dependency.output
+      ? compactWorkerOutput(dependency.output, dependency.mode)
+      : `Error: ${dependency.error ?? "no output"}`;
+    parts.push(
+      [
+        `Dependency ${dependency.id}: ${dependency.title}`,
+        `Status: ${dependency.status}`,
+        `Output JSON:\n${output}`,
+      ].join("\n")
+    );
+  }
+  return parts.length > 0 ? parts.join("\n\n") : "No dependency outputs.";
+}
+
+function buildWorkerPrompt(session: CradleSession, task: CradleTaskState): string {
+  const researchPromptBlock = compactResearchForPrompt(session.webResearch.researchPromptBlock);
+  const webModifyNotice = isWebTarget(task.target) && task.mode === "modify"
+    ? "This web agent cannot modify local files directly. Return a precise patch/diff or step-by-step file edits for the Claude manager or a later CLI worker to apply."
+    : "";
+  const jsonNotice = task.mode === "analyze"
+    ? `Return JSON only using this schema:\n${WORKER_RESULT_SCHEMA}\nDo not paste long original web pages or full conversation transcripts.`
+    : "Return a concise patch/diff. Do not repeat the full project.";
+  return [
+    `You are the ${task.target} worker in a CRADLE orchestration session.`,
+    `Task: ${task.title}`,
+    `Mode: ${task.mode}`,
+    "Follow only this assigned task.",
+    jsonNotice,
+    task.mode === "modify" && isCliTarget(task.target)
+      ? "You already have permission to read and write this conversation workspace. Do not ask for /add-dir, extra folders, or keys.env. Read .ai-character-context.md if present, then start implementing immediately."
+      : "Analyze only unless a tiny temporary artifact is strictly necessary.",
+    webModifyNotice,
+    "",
+    "ORIGINAL USER REQUEST:",
+    compactText(session.originalPrompt, 800),
+    "",
+    "ASSIGNED WORK:",
+    compactText(task.prompt, 2_000),
+    researchPromptBlock ? "" : "",
+    researchPromptBlock,
+    "",
+    "DEPENDENCY RESULTS:",
+    dependencyContext(session, task),
+  ].filter(Boolean).join("\n");
+}
+
+export function buildSynthesisPrompt(session: CradleSession, allowRevision: boolean): string {
+  const researchPromptBlock = compactResearchForPrompt(session.webResearch.researchPromptBlock);
+  const workerResults = session.tasks
+    .map((task) => {
+      const result = task.output
+        ? compactWorkerOutput(task.output, task.mode)
+        : task.error ?? "No result";
+      return [
+        `### ${task.id} — ${task.title}`,
+        `Target: ${task.target}`,
+        `Status: ${task.status}`,
+        task.fallbackReason ? `Fallback: ${task.fallbackReason}` : "",
+        result,
+      ].filter(Boolean).join("\n");
+    })
+    .join("\n\n");
+
+  return [
+    "You are the Claude lead manager for CRADLE.",
+    "Review compact worker JSON results for correctness, consistency, missing pieces, and the user's original intent.",
+    "Do not ask the user to re-copy long web pages. Use the JSON envelopes already collected.",
+    "Return JSON only with this schema:",
+    '{"finalAnswer":"user-facing final answer","revisionTasks":[]}',
+    allowRevision
+      ? "If a material gap can be fixed with one more bounded worker round, include 1-4 revisionTasks using the same task schema. Otherwise use an empty array."
+      : "This is the final review round. revisionTasks MUST be an empty array.",
+    "Prefer automatic APIs for revision analysis/review; use CLI only when local file modification is required.",
+    "Revision task dependencies may only refer to other revision task IDs. Prior results are already included below.",
+    "Do not mention internal JSON or orchestration machinery in finalAnswer unless the user asked about it.",
+    "",
+    "ORIGINAL USER REQUEST:",
+    compactText(session.originalPrompt, 800),
+    "",
+    "PLAN SUMMARY:",
+    compactText(session.planSummary, 600),
+    researchPromptBlock ? "" : "",
+    researchPromptBlock,
+    "",
+    "WORKER RESULTS:",
+    workerResults,
+  ].join("\n");
+}
+
+async function runClaudeManagerCli(
+  prompt: string,
+  conversationId: string | null,
+  preferences: AppPreferences,
+  sensitiveAcknowledged: boolean
+): Promise<string> {
+  const task = runAgentTask({
+    agent: "claude",
+    prompt,
+    conversationId,
+    timeoutSeconds: preferences.timeoutSeconds,
+    sensitiveAcknowledged,
+    emitRuntimeEvents: false,
+  });
+  activeCliTaskIds.add(task.taskId);
+  try {
+    return await task.result;
+  } finally {
+    activeCliTaskIds.delete(task.taskId);
+  }
+}
+
+export async function runAutomaticManager(
+  session: CradleSession,
+  stage: ManagerWebStage,
+  prompt: string,
+  preferences: AppPreferences,
+  sensitiveAcknowledged: boolean
+): Promise<string> {
+  const availableApis = usableAutomaticProviders(automaticProviderStatuses, preferences);
+
+  if (availableApis.includes("gemini_api")) {
+    setSessionStatus(
+      session,
+      stage === "planning" ? "planning" : "synthesizing",
+      stage === "planning"
+        ? "Gemini 공식 API(무료 우선)로 CRADLE 계획을 자동 생성합니다."
+        : "Gemini 공식 API(무료 우선)로 Worker 결과를 자동 취합합니다."
+    );
+    try {
+      const response = await runAutomaticProvider("gemini_api", prompt);
+      automaticProviderHealth.gemini_api = "available";
+      return response;
+    } catch (error) {
+      rememberAutomaticProviderFailure("gemini_api", error);
+    }
+  }
+
+  if (session.automaticCliTargets.includes("claude")) {
+    setSessionStatus(session, stage === "planning" ? "planning" : "synthesizing", "Gemini 자동 Provider를 사용할 수 없어 Claude CLI 총괄로 전환합니다.");
+    try {
+      return await runClaudeManagerCli(
+        prompt,
+        session.conversationId,
+        preferences,
+        sensitiveAcknowledged
+      );
+    } catch (error) {
+      if (!isQuotaOrLimitError(error)) {
+        // A missing/broken Claude CLI can still fall through to an explicitly
+        // enabled paid API or the existing manual Web handoff.
+      }
+    }
+  }
+
+  if (preferences.allowPaidOpenAiApi && availableApis.includes("openai_api")) {
+    setSessionStatus(session, stage === "planning" ? "planning" : "synthesizing", "무료/CLI 총괄을 사용할 수 없어 허용된 OpenAI API로 전환합니다.");
+    try {
+      const response = await runAutomaticProvider("openai_api", prompt);
+      automaticProviderHealth.openai_api = "available";
+      return response;
+    } catch (error) {
+      rememberAutomaticProviderFailure("openai_api", error);
+    }
+  }
+
+  return runClaudeManagerWebFirst(
+    session,
+    stage,
+    prompt,
+    preferences,
+    sensitiveAcknowledged
+  );
+}
+
+export async function runClaudeManagerWebFirst(
+  session: CradleSession,
+  stage: ManagerWebStage,
+  prompt: string,
+  preferences: AppPreferences,
+  sensitiveAcknowledged: boolean
+): Promise<string> {
+  if (rememberedWebAvailability.claude_web === "limited") {
+    session.webAvailability.claude_web = "limited";
+    return runClaudeManagerCli(prompt, session.conversationId, preferences, sensitiveAcknowledged);
+  }
+
+  session.managerHandoff = {
+    stage,
+    target: "claude_web",
+    status: "waiting_web",
+    prompt,
+    error: null,
+  };
+  setSessionStatus(
+    session,
+    "waiting_web",
+    stage === "planning"
+      ? "Claude Web 총괄에게 작업 계획을 요청합니다."
+      : "Claude Web 총괄에게 Worker 결과 취합·검토를 요청합니다."
+  );
+
+  const key = managerWaiterKey(session.id, stage);
+  const result = await new Promise<ManagerWaiterResult>((resolve, reject) => {
+    managerWaiters.set(key, { resolve, reject });
+  });
+  managerWaiters.delete(key);
+  session.managerHandoff = null;
+
+  if (result.kind === "response") {
+    rememberedWebAvailability.claude_web = "available";
+    session.webAvailability.claude_web = "available";
+    dispatchSession(session);
+    return result.response;
+  }
+
+  session.webAvailability.claude_web = "limited";
+  return runClaudeManagerCli(prompt, session.conversationId, preferences, sensitiveAcknowledged);
+}
+
+export function submitManagerWebResponse(
+  sessionId: string,
+  stage: ManagerWebStage,
+  response: string
+): void {
+  if (!activeSession || activeSession.id !== sessionId || activeSession.managerHandoff?.stage !== stage) {
+    throw new Error("현재 Claude Web 총괄 요청이 아닙니다.");
+  }
+  const clean = response.trim();
+  if (!clean) {
+    throw new Error("Claude Web 응답을 붙여넣어 주세요.");
+  }
+  rememberedWebAvailability.claude_web = "available";
+  activeSession.webAvailability.claude_web = "available";
+  const key = managerWaiterKey(sessionId, stage);
+  const waiter = managerWaiters.get(key);
+  if (!waiter) {
+    throw new Error("Claude Web 총괄 대기 상태를 찾을 수 없습니다.");
+  }
+  activeSession.managerHandoff = null;
+  managerWaiters.delete(key);
+  waiter.resolve({ kind: "response", response: clean });
+  dispatchSession(activeSession);
+}
+
+export function markWebAgentLimited(target: WebAgentTarget): void {
+  rememberedWebAvailability[target] = "limited";
+  if (activeSession) {
+    activeSession.webAvailability[target] = "limited";
+    dispatchSession(activeSession);
+  }
+}
+
+export function fallbackManagerWebToCli(sessionId: string, stage: ManagerWebStage): void {
+  if (!activeSession || activeSession.id !== sessionId || activeSession.managerHandoff?.stage !== stage) {
+    throw new Error("현재 Claude Web 총괄 요청이 아닙니다.");
+  }
+  markWebAgentLimited("claude_web");
+  activeSession.managerHandoff.status = "fallback_cli";
+  activeSession.managerHandoff.error = "Claude Web 한도 초과/사용 불가 — Claude CLI로 전환";
+  const key = managerWaiterKey(sessionId, stage);
+  const waiter = managerWaiters.get(key);
+  if (!waiter) {
+    throw new Error("Claude Web 총괄 대기 상태를 찾을 수 없습니다.");
+  }
+  managerWaiters.delete(key);
+  waiter.resolve({ kind: "fallback" });
+  dispatchSession(activeSession);
+}
+
+function fallbackCliTaskToAlternative(
+  session: CradleSession,
+  task: CradleTaskState,
+  error: unknown
+): boolean {
+  if (!isCliTarget(task.target) || task.fallbackCount >= 1) {
+    return false;
+  }
+  const from = task.target;
+  const preference: OrchestrationCliTarget[] = ["codex", "cursor", "claude", "antigravity"];
+  const alternative = preference.find(
+    (candidate) => candidate !== from && session.automaticCliTargets.includes(candidate)
+  );
+  if (!alternative) {
+    return false;
+  }
+  task.fallbackCount += 1;
+  task.fallbackFrom = from;
+  task.fallbackReason = `${from} 작업 환경 오류 → ${alternative} CLI로 재배정`;
+  task.target = alternative;
+  task.status = "queued";
+  task.error = null;
+  task.handoffPrompt = null;
+  session.statusMessage = `${from} 작업 환경 오류를 감지해 ${alternative}로 자동 재배정합니다.`;
+  dispatchSession(session);
+  console.warn("CRADLE CLI 재배정", { from, alternative, error });
+  return true;
+}
+
+async function fallbackCliTaskToWeb(
+  session: CradleSession,
+  task: CradleTaskState,
+  error: unknown
+): Promise<void> {
+  if (!isCliTarget(task.target) || task.fallbackCount >= 1) {
+    task.error = error instanceof Error ? error.message : String(error);
+    task.status = session.status === "cancelled" ? "cancelled" : "failed";
+    return;
+  }
+  const from = task.target;
+  const webTarget = preferredWebTargetForCli(from);
+  if (rememberedWebAvailability[webTarget] === "limited") {
+    task.error = error instanceof Error ? error.message : String(error);
+    task.status = "failed";
+    return;
+  }
+  task.fallbackCount += 1;
+  task.fallbackFrom = from;
+  const reason = isQuotaOrLimitError(error) ? "사용량/한도 초과" : "작업 환경 오류";
+  task.fallbackReason = `${from} CLI ${reason} → ${webTarget} Web으로 전환`;
+  task.target = webTarget;
+  await waitForWebTask(session, task);
+}
+
+async function runAutomaticApiTask(
+  session: CradleSession,
+  task: CradleTaskState
+): Promise<void> {
+  if (!isAutomaticApiTarget(task.target)) {
+    throw new Error(`automatic API worker cannot execute target: ${task.target}`);
+  }
+  const provider = task.target;
+  task.status = "running";
+  task.error = null;
+  task.handoffPrompt = null;
+  dispatchSession(session);
+
+  try {
+    task.output = compactWorkerOutput(
+      (await runAutomaticProvider(provider, buildWorkerPrompt(session, task))).trim(),
+      task.mode
+    );
+    automaticProviderHealth[provider] = "available";
+    task.status = session.status === "cancelled" ? "cancelled" : "completed";
+  } catch (error) {
+    rememberAutomaticProviderFailure(provider, error);
+    if (session.status === "cancelled") {
+      task.error = "CRADLE 작업이 취소되었습니다.";
+      task.status = "cancelled";
+    } else if (task.fallbackCount < 1) {
+      task.fallbackCount += 1;
+      task.fallbackFrom = provider;
+      const webTarget: WebAgentTarget = provider === "openai_api" ? "chatgpt_web" : "gemini_web";
+      if (rememberedWebAvailability[webTarget] === "limited") {
+        task.error = error instanceof Error ? error.message : String(error);
+        task.status = "failed";
+      } else {
+        task.fallbackReason = `${provider} 사용 불가 → ${webTarget} 수동 Web fallback`;
+        task.target = webTarget;
+        await waitForWebTask(session, task);
+      }
+    } else {
+      task.error = error instanceof Error ? error.message : String(error);
+      task.status = "failed";
+    }
+  }
+  dispatchSession(session);
+}
+
+async function runAutomaticTask(
+  session: CradleSession,
+  task: CradleTaskState,
+  preferences: AppPreferences,
+  sensitiveAcknowledged: boolean
+): Promise<void> {
+  if (!isCliTarget(task.target)) {
+    throw new Error(`automatic worker cannot execute web target: ${task.target}`);
+  }
+  task.status = "running";
+  task.error = null;
+  task.handoffPrompt = null;
+  dispatchSession(session);
+
+  const worker = runAgentTask({
+    agent: task.target,
+    prompt: buildWorkerPrompt(session, task),
+    conversationId: session.conversationId,
+    timeoutSeconds: preferences.timeoutSeconds,
+    sensitiveAcknowledged,
+    emitRuntimeEvents: false,
+    onStream: () => {
+      // Stream ownership stays with the CRADLE task UI.
+    },
+  });
+  activeCliTaskIds.add(worker.taskId);
+
+  try {
+    task.output = compactWorkerOutput((await worker.result).trim(), task.mode);
+    task.status = session.status === "cancelled" ? "cancelled" : "completed";
+  } catch (error) {
+    if (session.status === "cancelled") {
+      task.error = "CRADLE 작업이 취소되었습니다.";
+      task.status = "cancelled";
+    } else if (isQuotaOrLimitError(error)) {
+      await fallbackCliTaskToWeb(session, task, error);
+    } else if (isRecoverableEnvironmentError(error)) {
+      if (!fallbackCliTaskToAlternative(session, task, error)) {
+        await fallbackCliTaskToWeb(session, task, error);
+      }
+    } else {
+      task.error = error instanceof Error ? error.message : String(error);
+      task.status = "failed";
+    }
+  } finally {
+    activeCliTaskIds.delete(worker.taskId);
+  }
+  dispatchSession(session);
+}
+
+function waitForWebTask(session: CradleSession, task: CradleTaskState): Promise<void> {
+  if (!isWebTarget(task.target)) {
+    return Promise.resolve();
+  }
+  task.status = "waiting_web";
+  task.error = null;
+  task.handoffPrompt = buildWorkerPrompt(session, task);
+  dispatchSession(session);
+  return new Promise<void>((resolve) => {
+    webWaiters.set(webWaiterKey(session.id, task.id), { resolve });
+  });
+}
+
+async function runLimited(
+  tasks: CradleTaskState[],
+  limit: number,
+  worker: (task: CradleTaskState) => Promise<void>
+): Promise<void> {
+  let cursor = 0;
+  const count = Math.min(limit, tasks.length);
+  const runners = Array.from({ length: count }, async () => {
+    while (cursor < tasks.length) {
+      const index = cursor;
+      cursor += 1;
+      await worker(tasks[index]);
+    }
+  });
+  await Promise.all(runners);
+}
+
+function dependencyFailed(session: CradleSession, task: CradleTaskState): string | null {
+  for (const dependencyId of task.dependsOn) {
+    const dependency = findTask(session, dependencyId);
+    if (dependency.status === "failed" || dependency.status === "cancelled") {
+      return dependencyId;
+    }
+  }
+  return null;
+}
+
+function rerouteLimitedWebTaskToCli(session: CradleSession, task: CradleTaskState): void {
+  if (!isWebTarget(task.target) || rememberedWebAvailability[task.target] !== "limited") {
+    return;
+  }
+  const from = task.target;
+  const fallback = preferredCliFallbackForWeb(from, session.automaticCliTargets);
+  if (!fallback || task.fallbackCount >= 1) {
+    task.status = "failed";
+    task.error = `${from} 사용 불가이며 대체 CLI를 사용할 수 없습니다.`;
+    return;
+  }
+  task.fallbackCount += 1;
+  task.fallbackFrom = from;
+  task.fallbackReason = `${from} Web 사용 불가 → ${fallback} CLI로 전환`;
+  task.target = fallback;
+  task.status = "queued";
+  task.handoffPrompt = null;
+}
+
+async function runQueuedCliTasks(
+  session: CradleSession,
+  tasks: CradleTaskState[],
+  preferences: AppPreferences,
+  sensitiveAcknowledged: boolean
+): Promise<void> {
+  const cliAnalyze = tasks.filter((task) => isCliTarget(task.target) && task.mode !== "modify");
+  const cliModify = tasks.filter((task) => isCliTarget(task.target) && task.mode === "modify");
+  await runLimited(cliAnalyze, MAX_AUTOMATIC_CLI_WORKERS, (task) =>
+    runAutomaticTask(session, task, preferences, sensitiveAcknowledged)
+  );
+  for (const task of cliModify) {
+    await runAutomaticTask(session, task, preferences, sensitiveAcknowledged);
+  }
+}
+
+async function runQueuedApiTasks(
+  session: CradleSession,
+  tasks: CradleTaskState[]
+): Promise<void> {
+  await runLimited(tasks.filter((task) => isAutomaticApiTarget(task.target)), 3, (task) =>
+    runAutomaticApiTask(session, task)
+  );
+}
+
+async function executePlanTasks(
+  session: CradleSession,
+  plan: OrchestrationPlan,
+  preferences: AppPreferences,
+  sensitiveAcknowledged: boolean
+): Promise<void> {
+  const layers = topologicalLayers(plan.tasks);
+
+  for (const layer of layers) {
+    ensureNotCancelled(session);
+    const layerStates = layer.map((spec) => findTask(session, spec.id));
+    for (const task of layerStates) {
+      const failedDependency = dependencyFailed(session, task);
+      if (failedDependency) {
+        task.status = "failed";
+        task.error = `선행 작업 ${failedDependency}이 실패해 이 작업을 실행하지 않았습니다. CRADLE이 가능한 재배정을 모두 시도한 뒤 중단했습니다.`;
+        continue;
+      }
+      if (task.status === "queued") {
+        rerouteLimitedWebTaskToCli(session, task);
+      }
+    }
+
+    const runnable = layerStates.filter((task) => task.status === "queued");
+    const webTasks = runnable.filter((task) => isWebTarget(task.target));
+    const apiTasks = runnable.filter((task) => isAutomaticApiTarget(task.target));
+    const cliTasks = runnable.filter((task) => isCliTarget(task.target));
+
+    const webPromises = webTasks.map((task) => waitForWebTask(session, task));
+    if (webTasks.length > 0) {
+      setSessionStatus(session, "waiting_web", "자동 Provider/CLI 작업을 실행하면서 마지막 수동 Web 응답을 기다립니다.");
+    } else {
+      setSessionStatus(session, "running", "자동 Provider와 필요한 CLI Worker를 실행 중입니다.");
+    }
+
+    await Promise.all([
+      runQueuedApiTasks(session, apiTasks),
+      runQueuedCliTasks(session, cliTasks, preferences, sensitiveAcknowledged),
+    ]);
+    await Promise.all(webPromises);
+    ensureNotCancelled(session);
+
+    // A user can mark a waiting Web Agent as unavailable. Those tasks are
+    // converted to queued CLI fallbacks and run after the web waiter resolves.
+    const webToCliFallbacks = layerStates.filter(
+      (task) => task.status === "queued" && isCliTarget(task.target)
+    );
+    if (webToCliFallbacks.length > 0) {
+      setSessionStatus(session, "running", "Web 사용 불가 작업을 CLI로 전환해 실행합니다.");
+      await runQueuedCliTasks(session, webToCliFallbacks, preferences, sensitiveAcknowledged);
+    }
+    ensureNotCancelled(session);
+  }
+}
+
+function remapRevisionTasks(tasks: OrchestrationTaskSpec[]): OrchestrationTaskSpec[] {
+  const idMap = new Map(tasks.map((task) => [task.id, `rev1-${task.id}`] as const));
+  return tasks.map((task) => ({
+    ...task,
+    id: idMap.get(task.id) ?? `rev1-${task.id}`,
+    dependsOn: task.dependsOn.map((dependency) => idMap.get(dependency) ?? dependency),
+  }));
+}
+
+async function synthesize(
+  session: CradleSession,
+  preferences: AppPreferences,
+  sensitiveAcknowledged: boolean
+): Promise<{ finalAnswer: string; revisionTasks: OrchestrationTaskSpec[] }> {
+  setSessionStatus(session, "synthesizing", "자동 총괄 Provider가 Worker 결과를 취합·검토합니다.");
+  const raw = await runAutomaticManager(
+    session,
+    "synthesis",
+    buildSynthesisPrompt(session, session.revisionRound === 0),
+    preferences,
+    sensitiveAcknowledged
+  );
+  try {
+    const parsed = parseSynthesisEnvelope(raw);
+    return {
+      finalAnswer: extractUserFacingAnswer(parsed.finalAnswer) || parsed.finalAnswer,
+      revisionTasks: parsed.revisionTasks,
+    };
+  } catch {
+    const finalAnswer = extractUserFacingAnswer(raw);
+    if (!finalAnswer) {
+      throw new Error("Claude synthesis returned an empty response.");
+    }
+    return { finalAnswer, revisionTasks: [] };
+  }
+}
+
+export function submitWebAgentResponse(
+  sessionId: string,
+  taskId: string,
+  response: string
+): void {
+  if (!activeSession || activeSession.id !== sessionId) {
+    throw new Error("현재 CRADLE 세션이 아닙니다.");
+  }
+  const task = findTask(activeSession, taskId);
+  if (!isWebTarget(task.target) || task.status !== "waiting_web") {
+    throw new Error("응답을 기다리는 Web Agent 작업이 아닙니다.");
+  }
+  const clean = response.trim();
+  if (!clean) {
+    throw new Error("Web Agent 응답을 붙여넣어 주세요.");
+  }
+  rememberedWebAvailability[task.target] = "available";
+  activeSession.webAvailability[task.target] = "available";
+  task.output = compactWorkerOutput(clean, task.mode);
+  task.error = null;
+  task.status = "completed";
+  const key = webWaiterKey(sessionId, taskId);
+  const waiter = webWaiters.get(key);
+  webWaiters.delete(key);
+  waiter?.resolve();
+  dispatchSession(activeSession);
+}
+
+export function fallbackWebTaskToCli(
+  sessionId: string,
+  taskId: string,
+  reason = "Web Agent 한도 초과/사용 불가"
+): void {
+  if (!activeSession || activeSession.id !== sessionId) {
+    throw new Error("현재 CRADLE 세션이 아닙니다.");
+  }
+  const task = findTask(activeSession, taskId);
+  if (!isWebTarget(task.target) || task.status !== "waiting_web") {
+    throw new Error("CLI로 전환할 수 있는 Web Agent 작업이 아닙니다.");
+  }
+  const from = task.target;
+  markWebAgentLimited(from);
+  if (task.fallbackCount >= 1) {
+    task.status = "failed";
+    task.error = `${reason}; 이미 fallback을 사용했습니다.`;
+  } else {
+    const fallback = preferredCliFallbackForWeb(from, activeSession.automaticCliTargets);
+    if (!fallback) {
+      task.status = "failed";
+      task.error = `${reason}; 사용 가능한 대체 CLI가 없습니다.`;
+    } else {
+      task.fallbackCount += 1;
+      task.fallbackFrom = from;
+      task.fallbackReason = `${from} Web 한도 초과/사용 불가 → ${fallback} CLI로 전환`;
+      task.target = fallback;
+      task.status = "queued";
+      task.error = null;
+      task.handoffPrompt = null;
+    }
+  }
+  const key = webWaiterKey(sessionId, taskId);
+  const waiter = webWaiters.get(key);
+  webWaiters.delete(key);
+  waiter?.resolve();
+  dispatchSession(activeSession);
+}
+
+export function skipWebAgentTask(
+  sessionId: string,
+  taskId: string,
+  reason = "사용자가 Web Agent 작업을 건너뜀"
+): void {
+  if (!activeSession || activeSession.id !== sessionId) {
+    throw new Error("현재 CRADLE 세션이 아닙니다.");
+  }
+  const task = findTask(activeSession, taskId);
+  if (!isWebTarget(task.target) || task.status !== "waiting_web") {
+    throw new Error("건너뛸 수 있는 Web Agent 작업이 아닙니다.");
+  }
+  task.status = "failed";
+  task.error = reason;
+  const key = webWaiterKey(sessionId, taskId);
+  const waiter = webWaiters.get(key);
+  webWaiters.delete(key);
+  waiter?.resolve();
+  dispatchSession(activeSession);
+}
+
+function canRetrySynthesis(session: CradleSession): boolean {
+  return session.tasks.length > 0 && session.tasks.every((task) =>
+    ["completed", "failed", "cancelled"].includes(task.status)
+  );
+}
+
+async function finishWithSynthesis(
+  session: CradleSession,
+  preferences: AppPreferences,
+  sensitiveAcknowledged: boolean
+): Promise<string> {
+  ensureNotCancelled(session);
+  let synthesis = await synthesize(session, preferences, sensitiveAcknowledged);
+  ensureNotCancelled(session);
+  if (synthesis.revisionTasks.length > 0 && session.revisionRound === 0) {
+    session.revisionRound = 1;
+    const revisionTasks = remapRevisionTasks(synthesis.revisionTasks);
+    const revisionRawPlan: OrchestrationPlan = {
+      summary: "Claude review revision round",
+      tasks: revisionTasks,
+    };
+    const revisionPlan = normalizePlanForAutomaticProviders(
+      normalizePlanForWebFirst(revisionRawPlan, session.webAvailability),
+      usableAutomaticProviders(automaticProviderStatuses, preferences),
+      session.automaticCliTargets,
+      session.webAvailability
+    );
+    session.tasks.push(...revisionPlan.tasks.map(stateFromSpec));
+    setSessionStatus(session, "running", "Claude 검토 결과에 따라 한 번 더 보완 작업을 실행합니다.");
+    await executePlanTasks(session, revisionPlan, preferences, sensitiveAcknowledged);
+    ensureNotCancelled(session);
+    synthesis = await synthesize(session, preferences, sensitiveAcknowledged);
+  }
+
+  session.finalAnswer = extractUserFacingAnswer(synthesis.finalAnswer) || synthesis.finalAnswer;
+  session.error = null;
+  setSessionStatus(session, "completed", "CRADLE 작업이 완료되었습니다.");
+  return session.finalAnswer;
+}
+
+export async function cancelCradleOrchestration(sessionId: string): Promise<void> {
+  if (!activeSession || activeSession.id !== sessionId) {
+    throw new Error("현재 CRADLE 세션이 아닙니다.");
+  }
+  if (["completed", "cancelled"].includes(activeSession.status)) {
+    return;
+  }
+
+  const session = activeSession;
+  session.status = "cancelled";
+  session.statusMessage = "CRADLE 작업을 중지했습니다.";
+  session.managerHandoff = null;
+  for (const task of session.tasks) {
+    if (["queued", "running", "waiting_web"].includes(task.status)) {
+      task.status = "cancelled";
+      task.error = "CRADLE 작업이 취소되었습니다.";
+    }
+  }
+
+  for (const [key, waiter] of [...webWaiters.entries()]) {
+    if (key.startsWith(`${session.id}:`)) {
+      webWaiters.delete(key);
+      waiter.resolve();
+    }
+  }
+  for (const [key, waiter] of [...managerWaiters.entries()]) {
+    if (key.startsWith(`${session.id}:manager:`)) {
+      managerWaiters.delete(key);
+      waiter.reject(new Error("CRADLE 작업이 취소되었습니다."));
+    }
+  }
+  const synthesisWaiter = synthesisWaiters.get(session.id);
+  if (synthesisWaiter) {
+    synthesisWaiters.delete(session.id);
+    synthesisWaiter.reject(new Error("CRADLE 작업이 취소되었습니다."));
+  }
+  dispatchSession(session);
+
+  const running = [...activeCliTaskIds];
+  await Promise.allSettled(running.map((taskId) => cancelAgent(taskId)));
+}
+
+export async function retryCradleSynthesis(sessionId: string): Promise<string> {
+  if (!activeSession || activeSession.id !== sessionId) {
+    throw new Error("현재 CRADLE 세션이 아닙니다.");
+  }
+  const session = activeSession;
+  if (session.status !== "failed" || !canRetrySynthesis(session)) {
+    throw new Error("Worker 결과가 모두 끝난 합성 실패 상태에서만 다시 시도할 수 있습니다.");
+  }
+
+  const preferences = await getAppPreferences();
+  const sensitiveAcknowledged = await confirmSensitiveAgentAccess(preferences);
+  if (!sensitiveAcknowledged) {
+    throw new Error("민감 파일 경고에서 Claude 합성 재시도를 취소했습니다.");
+  }
+  session.error = null;
+  try {
+    const answer = await finishWithSynthesis(session, preferences, sensitiveAcknowledged);
+    const waiter = synthesisWaiters.get(session.id);
+    if (waiter) {
+      synthesisWaiters.delete(session.id);
+      waiter.resolve(answer);
+    }
+    return answer;
+  } catch (error) {
+    session.error = error instanceof Error ? error.message : String(error);
+    setSessionStatus(session, "failed", "Claude 최종 합성에 실패했습니다. 합성만 다시 시도할 수 있습니다.");
+    throw error;
+  }
+}
+
+function sessionPlaceholderPrompt(prompt: string): string {
+  return prompt.trim();
+}
+
+export async function runCradleOrchestration(
+  originalPrompt: string,
+  conversationId?: string | null,
+  conversationContext = ""
+): Promise<string> {
+  if (activeSession && !["completed", "failed", "cancelled"].includes(activeSession.status)) {
+    throw new Error("이미 CRADLE 작업이 진행 중입니다. 현재 작업을 완료한 뒤 다시 시도해주세요.");
+  }
+
+  const preferences = await getAppPreferences();
+  const sensitiveAcknowledged = await confirmSensitiveAgentAccess(preferences);
+  if (!sensitiveAcknowledged) {
+    throw new Error("민감 파일 경고에서 CRADLE 실행을 취소했습니다.");
+  }
+
+  if (conversationId) {
+    try {
+      await prepareCradleEnvironment(conversationId);
+    } catch (error) {
+      // Do not kill analysis-only sessions when Git is missing. CLI modify
+      // workers will be automatically rerouted if their environment cannot run.
+      console.warn("CRADLE 환경 사전 준비 경고:", error);
+    }
+  }
+
+  const automaticCliTargets = await detectAutomaticTargets();
+  try {
+    automaticProviderStatuses = await getAutomaticProviderStatuses();
+  } catch {
+    automaticProviderStatuses = [];
+  }
+  const session: CradleSession = {
+    id: createSessionId(),
+    conversationId: conversationId ?? null,
+    originalPrompt: extractCurrentUserRequest(originalPrompt.trim()),
+    planSummary: "",
+    tasks: [],
+    status: "planning",
+    statusMessage: "자동 Provider 상태를 확인하고 CRADLE 계획을 준비합니다.",
+    revisionRound: 0,
+    finalAnswer: null,
+    error: null,
+    managerHandoff: null,
+    webAvailability: { ...rememberedWebAvailability },
+    automaticCliTargets,
+    webResearch: {
+      status: "skipped",
+      query: sessionPlaceholderPrompt(originalPrompt),
+      provider: null,
+      sourceUrls: [],
+      researchPromptBlock: "",
+      error: null,
+    },
+  };
+  activeSession = session;
+  dispatchSession(session);
+
+  try {
+    if (preferences.autoWebSearch) {
+      setSessionStatus(session, "planning", "백그라운드 웹 검색 필요 여부를 확인합니다.");
+    }
+    session.webResearch = await collectWebResearch(
+      session.originalPrompt,
+      preferences.autoWebSearch
+    );
+    const researchPromptBlock = session.webResearch.researchPromptBlock;
+    if (session.webResearch.status === "ready") {
+      setSessionStatus(session, "planning", "웹 자료를 준비했습니다. 자동 총괄 Provider에게 계획을 요청합니다.");
+    } else if (session.webResearch.status === "failed") {
+      setSessionStatus(session, "planning", "웹 검색에 실패했습니다. 기존 CRADLE 흐름으로 계속합니다.");
+    }
+
+    const automaticApiTargets = usableAutomaticProviders(automaticProviderStatuses, preferences);
+    const rawPlan = await runAutomaticManager(
+      session,
+      "planning",
+      createPlanningPrompt(
+        session.originalPrompt,
+        automaticCliTargets,
+        researchPromptBlock,
+        automaticApiTargets,
+        compactText(conversationContext, 2_400)
+      ),
+      preferences,
+      sensitiveAcknowledged
+    );
+    const parsedPlan = parseOrchestrationPlan(rawPlan);
+    const plan = normalizePlanForAutomaticProviders(
+      normalizePlanForWebFirst(parsedPlan, session.webAvailability),
+      automaticApiTargets,
+      automaticCliTargets,
+      session.webAvailability
+    );
+    session.planSummary = plan.summary;
+    session.tasks = plan.tasks.map(stateFromSpec);
+    setSessionStatus(session, "running", "CRADLE 계획을 검증했습니다. 무료 자동 Provider를 우선해 Worker 작업을 시작합니다.");
+
+    await executePlanTasks(session, plan, preferences, sensitiveAcknowledged);
+
+    try {
+      return await finishWithSynthesis(session, preferences, sensitiveAcknowledged);
+    } catch (error) {
+      if (session.status === "cancelled") {
+        throw error;
+      }
+      session.error = error instanceof Error ? error.message : String(error);
+      setSessionStatus(session, "failed", "Claude 최종 합성에 실패했습니다. 합성만 다시 시도할 수 있습니다.");
+      return await new Promise<string>((resolve, reject) => {
+        synthesisWaiters.set(session.id, { resolve, reject });
+      });
+    }
+  } catch (error) {
+    if (session.status === "cancelled") {
+      session.error = "CRADLE 작업이 취소되었습니다.";
+      dispatchSession(session);
+      throw new Error(session.error);
+    }
+    session.error = error instanceof Error ? error.message : String(error);
+    setSessionStatus(session, "failed", "CRADLE 실행 중 오류가 발생했습니다.");
+    throw error;
+  } finally {
+    for (const key of [...webWaiters.keys()]) {
+      if (key.startsWith(`${session.id}:`)) {
+        webWaiters.delete(key);
+      }
+    }
+    for (const key of [...managerWaiters.keys()]) {
+      if (key.startsWith(`${session.id}:manager:`)) {
+        managerWaiters.delete(key);
+      }
+    }
+    synthesisWaiters.delete(session.id);
+  }
+}
+
+function composeDirectPrompt(
+  prompt: string,
+  conversationContext: string,
+  researchBlock: string
+): string {
+  return [
+    "Answer the user directly. Do not create an orchestration plan, worker list, or CRADLE handoff.",
+    conversationContext ? `Recent conversation (compact):\n${compactText(conversationContext, 2_400)}` : "",
+    researchBlock,
+    "USER REQUEST:",
+    prompt,
+  ].filter(Boolean).join("\n\n");
+}
+
+async function answerDirectly(
+  prompt: string,
+  conversationId: string | null | undefined,
+  conversationContext: string,
+  researchBlock = ""
+): Promise<string> {
+  const preferences = await getAppPreferences();
+  try {
+    automaticProviderStatuses = await getAutomaticProviderStatuses();
+  } catch {
+    automaticProviderStatuses = [];
+  }
+  const composed = composeDirectPrompt(prompt, conversationContext, researchBlock);
+  const apis = usableAutomaticProviders(automaticProviderStatuses, preferences);
+  if (apis.includes("gemini_api")) {
+    try {
+      const response = (await runAutomaticProvider("gemini_api", composed)).trim();
+      if (response) {
+        automaticProviderHealth.gemini_api = "available";
+        return response;
+      }
+    } catch (error) {
+      rememberAutomaticProviderFailure("gemini_api", error);
+    }
+  }
+  if (preferences.allowPaidOpenAiApi && apis.includes("openai_api")) {
+    try {
+      const response = (await runAutomaticProvider("openai_api", composed)).trim();
+      if (response) {
+        automaticProviderHealth.openai_api = "available";
+        return response;
+      }
+    } catch (error) {
+      rememberAutomaticProviderFailure("openai_api", error);
+    }
+  }
+  return askClaudeCompat(composed, conversationId);
+}
+
+export async function askCradleCompat(
+  prompt: string,
+  conversationId?: string | null,
+  conversationContext = ""
+): Promise<string> {
+  const preferences = await getAppPreferences();
+  const current = extractCurrentUserRequest(prompt);
+  const history = compactText(conversationContext.trim(), 2_400);
+
+  if (!preferences.cradleEnabled) {
+    return askClaudeCompat(composeDirectPrompt(current, history, ""), conversationId);
+  }
+
+  const intent = classifyRequestIntent(current, history);
+  if (intent === "chat" || intent === "research") {
+    let researchBlock = "";
+    if (intent === "research" && preferences.autoWebSearch) {
+      const research = await collectWebResearch(current, true);
+      researchBlock = research.researchPromptBlock;
+    }
+    return answerDirectly(current, conversationId, history, researchBlock);
+  }
+
+  return runCradleOrchestration(current, conversationId, history);
+}
+
+export function getActiveCradleSession(): CradleSession | null {
+  return activeSession ? cloneSession(activeSession) : null;
+}

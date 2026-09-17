@@ -1,0 +1,154 @@
+use std::process::Command;
+
+const CLAUDE_BIN: &str =
+    "/opt/homebrew/bin/claude";
+
+const PROJECT_DIR: &str =
+    "/Volumes/백업/AI/AI-Character";
+
+
+fn claude_args(
+    prompt: &str,
+) -> Vec<String> {
+    vec![
+        "-p".to_string(),
+        prompt.to_string(),
+    ]
+}
+
+
+#[tauri::command]
+async fn ask_claude(
+    prompt: String,
+) -> Result<String, String> {
+    let prompt =
+        prompt.trim().to_string();
+
+    if prompt.is_empty() {
+        return Err(
+            "메시지가 비어 있습니다."
+                .to_string()
+        );
+    }
+
+    let result =
+        tauri::async_runtime::spawn_blocking(
+            move || {
+                let output =
+                    Command::new(
+                        CLAUDE_BIN
+                    )
+                    .args(
+                        claude_args(
+                            &prompt
+                        )
+                    )
+                    .current_dir(
+                        PROJECT_DIR
+                    )
+                    .env(
+                        "NO_COLOR",
+                        "1"
+                    )
+                    .output()
+                    .map_err(
+                        |error| {
+                            format!(
+                                "Claude 실행 실패: {}",
+                                error
+                            )
+                        }
+                    )?;
+
+                if !output.status.success() {
+                    let stderr =
+                        String::from_utf8_lossy(
+                            &output.stderr
+                        )
+                        .trim()
+                        .to_string();
+
+                    return Err(
+                        format!(
+                            "Claude 오류: {}",
+                            if stderr.is_empty() {
+                                "알 수 없는 오류"
+                            } else {
+                                &stderr
+                            }
+                        )
+                    );
+                }
+
+                let answer =
+                    String::from_utf8_lossy(
+                        &output.stdout
+                    )
+                    .trim()
+                    .to_string();
+
+                if answer.is_empty() {
+                    return Err(
+                        "Claude 응답이 비어 있습니다."
+                            .to_string()
+                    );
+                }
+
+                Ok(answer)
+            }
+        )
+        .await
+        .map_err(
+            |error| {
+                format!(
+                    "Claude 작업 실행 오류: {}",
+                    error
+                )
+            }
+        )?;
+
+    result
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn claude_uses_print_mode() {
+        let args =
+            claude_args("안녕");
+
+        assert_eq!(
+            args,
+            vec![
+                "-p".to_string(),
+                "안녕".to_string(),
+            ]
+        );
+    }
+}
+
+
+#[cfg_attr(
+    mobile,
+    tauri::mobile_entry_point
+)]
+pub fn run() {
+    tauri::Builder::default()
+        .plugin(
+            tauri_plugin_opener::init()
+        )
+        .invoke_handler(
+            tauri::generate_handler![
+                ask_claude
+            ]
+        )
+        .run(
+            tauri::generate_context!()
+        )
+        .expect(
+            "error while running tauri application"
+        );
+}

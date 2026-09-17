@@ -1,0 +1,318 @@
+use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static ATTACHMENT_STAGE_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+const CLAUDE_BIN: &str = "/opt/homebrew/bin/claude";
+
+const PROJECT_DIR: &str = "/Volumes/백업/AI/AI-Character";
+
+fn claude_args(prompt: &str) -> Vec<String> {
+    vec!["-p".to_string(), prompt.to_string()]
+}
+
+#[tauri::command]
+async fn ask_claude(prompt: String) -> Result<String, String> {
+    let prompt = prompt.trim().to_string();
+
+    if prompt.is_empty() {
+        return Err("메시지가 비어 있습니다.".to_string());
+    }
+
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let output = Command::new(CLAUDE_BIN)
+            .args(claude_args(&prompt))
+            .current_dir(PROJECT_DIR)
+            .env("NO_COLOR", "1")
+            .output()
+            .map_err(|error| format!("Claude 실행 실패: {}", error))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+
+            return Err(format!(
+                "Claude 오류: {}",
+                if stderr.is_empty() {
+                    "알 수 없는 오류"
+                } else {
+                    &stderr
+                }
+            ));
+        }
+
+        let answer = String::from_utf8_lossy(&output.stdout).trim().to_string();
+
+        if answer.is_empty() {
+            return Err("Claude 응답이 비어 있습니다.".to_string());
+        }
+
+        Ok(answer)
+    })
+    .await
+    .map_err(|error| format!("Claude 작업 실행 오류: {}", error))?;
+
+    result
+}
+
+fn inspect_attachment_access_impl(path: &std::path::Path) -> Vec<bool> {
+    let exists = path.exists();
+    let is_file = path.is_file();
+
+    let readable = is_file && std::fs::File::open(path).is_ok();
+
+    /*
+     * truncate/create 없이 쓰기 권한만 확인한다.
+     * 파일 내용은 변경하지 않는다.
+     */
+    let writable = is_file && std::fs::OpenOptions::new().write(true).open(path).is_ok();
+
+    vec![exists, is_file, readable, writable]
+}
+
+#[tauri::command]
+fn inspect_attachment_access(path: String) -> Result<Vec<bool>, String> {
+    if path.trim().is_empty() {
+        return Err("파일 경로가 비어 있습니다.".to_string());
+    }
+
+    Ok(inspect_attachment_access_impl(std::path::Path::new(&path)))
+}
+
+fn attachment_stage_root() -> std::path::PathBuf {
+    std::env::temp_dir()
+        .join("ai-character")
+        .join(format!("attachments-{}", std::process::id()))
+}
+
+fn stage_attachment_impl(source: &std::path::Path) -> Result<std::path::PathBuf, String> {
+    if !source.exists() {
+        return Err("원본 파일이 없습니다.".to_string());
+    }
+
+    if !source.is_file() {
+        return Err("현재는 파일만 첨부할 수 있습니다.".to_string());
+    }
+
+    /*
+     * 실제로 읽기 가능한지 먼저 확인.
+     */
+    std::fs::File::open(source).map_err(|error| format!("원본 파일 읽기 권한 없음: {}", error))?;
+
+    let root = attachment_stage_root();
+
+    std::fs::create_dir_all(&root)
+        .map_err(|error| format!("임시 첨부 폴더 생성 실패: {}", error))?;
+
+    let original_name = source
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("attachment");
+
+    let id = ATTACHMENT_STAGE_COUNTER.fetch_add(1, Ordering::Relaxed);
+
+    let target = root.join(format!("{:06}-{}", id, original_name));
+
+    std::fs::copy(source, &target)
+        .map_err(|error| format!("첨부 파일 임시복사 실패: {}", error))?;
+
+    Ok(target)
+}
+
+#[tauri::command]
+fn stage_attachment(path: String) -> Result<String, String> {
+    let staged = stage_attachment_impl(std::path::Path::new(&path))?;
+
+    staged
+        .to_str()
+        .map(|value| value.to_string())
+        .ok_or_else(|| "임시 파일 경로 변환 실패".to_string())
+}
+
+#[tauri::command]
+fn remove_staged_attachment(path: String) -> Result<(), String> {
+    let target = std::path::PathBuf::from(&path);
+
+    let root = attachment_stage_root();
+
+    if !target.starts_with(&root) {
+        return Err("임시 첨부 경로가 아닙니다.".to_string());
+    }
+
+    if target.exists() {
+        std::fs::remove_file(&target).map_err(|error| format!("임시 첨부 삭제 실패: {}", error))?;
+    }
+
+    Ok(())
+}
+
+fn parse_process_stats(output: &str) -> Result<(f64, f64), String> {
+    let mut values = output.split_whitespace();
+
+    let cpu_percent = values
+        .next()
+        .ok_or("CPU 정보가 없습니다.")?
+        .parse::<f64>()
+        .map_err(|error| format!("CPU 파싱 실패: {}", error))?;
+
+    let rss_kb = values
+        .next()
+        .ok_or("RAM 정보가 없습니다.")?
+        .parse::<f64>()
+        .map_err(|error| format!("RAM 파싱 실패: {}", error))?;
+
+    Ok((cpu_percent, rss_kb / 1024.0))
+}
+
+#[tauri::command]
+async fn get_process_stats() -> Result<Vec<f64>, String> {
+    let pid = std::process::id().to_string();
+
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let output = Command::new("/bin/ps")
+            .args(["-p", pid.as_str(), "-o", "%cpu=", "-o", "rss="])
+            .env("LC_ALL", "C")
+            .output()
+            .map_err(|error| format!("ps 실행 실패: {}", error))?;
+
+        if !output.status.success() {
+            return Err("프로세스 정보를 읽지 못했습니다.".to_string());
+        }
+
+        let text = String::from_utf8_lossy(&output.stdout);
+
+        let (cpu, memory_mb) = parse_process_stats(&text)?;
+
+        Ok(vec![cpu, memory_mb])
+    })
+    .await
+    .map_err(|error| format!("성능 조회 작업 실패: {}", error))?;
+
+    result
+}
+
+fn should_show_window(is_visible: bool) -> bool {
+    !is_visible
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn claude_uses_print_mode() {
+        let args = claude_args("안녕");
+
+        assert_eq!(args, vec!["-p".to_string(), "안녕".to_string(),]);
+    }
+
+    #[test]
+    fn stages_attachment_into_temp_area() {
+        let source =
+            std::env::temp_dir().join(format!("ai-character-source-{}.txt", std::process::id()));
+
+        std::fs::write(&source, b"temporary attachment").unwrap();
+
+        let staged = stage_attachment_impl(&source).unwrap();
+
+        assert!(staged.exists());
+
+        assert!(staged.starts_with(attachment_stage_root()));
+
+        assert_eq!(
+            std::fs::read_to_string(&staged).unwrap(),
+            "temporary attachment"
+        );
+
+        let _ = std::fs::remove_file(source);
+
+        let _ = std::fs::remove_file(staged);
+    }
+
+    #[test]
+    fn attachment_access_reports_readable_file() {
+        let path =
+            std::env::temp_dir().join(format!("ai-character-access-{}.txt", std::process::id()));
+
+        std::fs::write(&path, b"hello").unwrap();
+
+        let access = inspect_attachment_access_impl(&path);
+
+        assert_eq!(access[0], true);
+        assert_eq!(access[1], true);
+        assert_eq!(access[2], true);
+
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+#[cfg(test)]
+mod process_stats_tests {
+    use super::*;
+
+    #[test]
+    fn parses_process_stats() {
+        let (cpu, memory_mb) = parse_process_stats(" 12.5 153600\n").unwrap();
+
+        assert_eq!(cpu, 12.5);
+
+        assert_eq!(memory_mb, 150.0);
+    }
+}
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    tauri::Builder::default()
+        .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(tauri_plugin_dialog::init())
+        .setup(|app| {
+            #[cfg(desktop)]
+            {
+                use tauri::Manager;
+                use tauri_plugin_global_shortcut::ShortcutState;
+
+                app.handle().plugin(
+                    tauri_plugin_global_shortcut::Builder::new()
+                        .with_shortcuts(["ctrl+shift+space"])?
+                        .with_handler(|app, _shortcut, event| {
+                            if event.state != ShortcutState::Pressed {
+                                return;
+                            }
+
+                            let Some(window) = app.get_webview_window("main") else {
+                                eprintln!("main window를 찾지 못했습니다.");
+                                return;
+                            };
+
+                            match window.is_visible() {
+                                Ok(is_visible) => {
+                                    if should_show_window(is_visible) {
+                                        if let Err(error) = window.show() {
+                                            eprintln!("창 표시 실패: {}", error);
+                                        }
+                                    } else if let Err(error) = window.hide() {
+                                        eprintln!("창 숨김 실패: {}", error);
+                                    }
+                                }
+
+                                Err(error) => {
+                                    eprintln!("창 상태 확인 실패: {}", error);
+                                }
+                            }
+                        })
+                        .build(),
+                )?;
+            }
+
+            Ok(())
+        })
+        .plugin(tauri_plugin_opener::init())
+        .invoke_handler(tauri::generate_handler![
+            ask_claude,
+            get_process_stats,
+            inspect_attachment_access,
+            stage_attachment,
+            remove_staged_attachment
+        ])
+        .run(tauri::generate_context!())
+        .expect("error while running tauri application");
+}

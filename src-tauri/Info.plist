@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>NSRemovableVolumesUsageDescription</key>
+  <string>선택한 프로젝트 폴더가 외장/백업 디스크에 있을 때 설정·키·대화 상태를 읽고 저장하기 위해 필요합니다. 캐릭터 표시 자체에는 필수가 아닙니다.</string>
+  <key>NSDesktopFolderUsageDescription</key>
+  <string>데스크톱에 있는 프로젝트 폴더를 열기 위해 필요합니다.</string>
+  <key>NSDocumentsFolderUsageDescription</key>
+  <string>문서 폴더에 있는 프로젝트 폴더를 열기 위해 필요합니다.</string>
+  <key>NSDownloadsUsageDescription</key>
+  <string>다운로드 폴더에 있는 프로젝트 폴더를 열기 위해 필요합니다.</string>
+</dict>
+</plist>

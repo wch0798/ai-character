@@ -1,0 +1,43 @@
+
+!.env.*.example
+!.env.example
+!.vscode/extensions.json
+# App data & secrets (never commit)
+# Editor directories and files
+# Logs
+# Rust / Tauri build
+**/*.p12
+**/*.pem
+**/*.pfx
+**/credentials.json
+**/keys.env
+**/service-account.json
+**/service_account.json
+*.local
+*.log
+*.njsproj
+*.ntvs*
+*.sln
+*.suo
+*.sw?
+.DS_Store
+.ai-character-backup/
+.ai-character-logs/
+.ai-character/
+.env
+.env.*
+.idea
+.tmp-models-unofficial/
+.tmp-models/
+.vscode/*
+dist
+dist-ssr
+keys.env
+lerna-debug.log*
+logs
+node_modules
+npm-debug.log*
+pnpm-debug.log*
+src-tauri/target/
+yarn-debug.log*
+yarn-error.log*

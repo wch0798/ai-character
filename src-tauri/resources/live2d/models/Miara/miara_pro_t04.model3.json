@@ -1,0 +1,46 @@
+{
+	"Version": 3,
+	"FileReferences": {
+		"Moc": "miara_pro_t04.moc3",
+		"Textures": [
+			"miara_pro_t04.4096/texture_00.png"
+		],
+		"Physics": "miara_pro_t04.physics3.json",
+		"DisplayInfo": "miara_pro_t04.cdi3.json",
+		"Motions": {
+			"Idle": [
+				{
+					"File": "motions/Scene1.motion3.json"
+				}
+			],
+			"Tap": [
+				{
+					"File": "motions/Scene2.motion3.json"
+				}
+			],
+			"Flick": [
+				{
+					"File": "motions/Scene3.motion3.json"
+				}
+			]
+		}
+	},
+	"Groups": [
+		{
+			"Target": "Parameter",
+			"Name": "EyeBlink",
+			"Ids": [
+				"ParamEyeLOpen",
+				"ParamEyeROpen"
+			]
+		},
+		{
+			"Target": "Parameter",
+			"Name": "LipSync",
+			"Ids": [
+				"ParamMouthOpenY"
+			]
+		}
+	],
+	"HitAreas": []
+}

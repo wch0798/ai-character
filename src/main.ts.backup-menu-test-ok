@@ -1,0 +1,400 @@
+import "./styles.css";
+
+import {
+  Application,
+  Ticker,
+} from "pixi.js";
+
+import {
+  Live2DModel,
+} from "@laplace.live/pixijs-live2d";
+
+import {
+  getCurrentWindow,
+} from "@tauri-apps/api/window";
+
+async function startLive2D() {
+  const canvas =
+    document.querySelector<HTMLCanvasElement>(
+      "#live2d-canvas"
+    );
+
+  const status =
+    document.querySelector<HTMLDivElement>(
+      "#status"
+    );
+
+  const chatPanel =
+    document.querySelector<HTMLDivElement>(
+      "#chat-panel"
+    );
+
+  const chatForm =
+    document.querySelector<HTMLFormElement>(
+      "#chat-form"
+    );
+
+  const chatInput =
+    document.querySelector<HTMLInputElement>(
+      "#chat-input"
+    );
+
+  const messages =
+    document.querySelector<HTMLDivElement>(
+      "#messages"
+    );
+
+  if (!canvas) {
+    throw new Error("Live2D canvas 없음");
+  }
+
+  /*
+   * 우클릭 감지 테스트
+   */
+  window.addEventListener(
+    "contextmenu",
+    (event) => {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+
+      console.log("RIGHT CLICK DETECTED");
+
+      let menu =
+        document.querySelector<HTMLDivElement>(
+          "#rightclick-test-menu"
+        );
+
+      if (!menu) {
+        menu = document.createElement("div");
+        menu.id = "rightclick-test-menu";
+
+        menu.textContent = "✓ 우클릭 메뉴 테스트";
+
+        menu.style.position = "fixed";
+        menu.style.padding = "10px 14px";
+        menu.style.borderRadius = "10px";
+        menu.style.background = "rgba(25, 25, 30, 0.95)";
+        menu.style.color = "white";
+        menu.style.fontSize = "13px";
+        menu.style.zIndex = "99999";
+        menu.style.boxShadow =
+          "0 6px 24px rgba(0,0,0,0.35)";
+
+        document.body.appendChild(menu);
+      }
+
+      menu.style.left =
+        `${Math.min(event.clientX, window.innerWidth - 190)}px`;
+
+      menu.style.top =
+        `${Math.min(event.clientY, window.innerHeight - 50)}px`;
+
+      menu.style.display = "block";
+    },
+    true
+  );
+
+  const app = new Application();
+
+  await app.init({
+    canvas,
+    resizeTo: window,
+    backgroundAlpha: 0,
+    antialias: true,
+  });
+
+  Live2DModel.registerTicker(Ticker);
+
+  const model =
+    await Live2DModel.from(
+      "/live2d/models/Hiyori/Hiyori.model3.json"
+    );
+
+  app.stage.addChild(model);
+
+  /*
+   * 캐릭터 기본 크기
+   * 숫자를 작게 할수록 캐릭터가 작아짐.
+   */
+  const maxCharacterWidth = window.innerWidth * 0.72;
+  const maxCharacterHeight = window.innerHeight * 0.78;
+
+  let characterScale = Math.min(
+    maxCharacterWidth / model.width,
+    maxCharacterHeight / model.height
+  );
+
+  /*
+   * 캐릭터 위치
+   */
+  let characterX =
+    window.innerWidth * 0.5;
+
+  let characterY =
+    window.innerHeight - 10;
+
+  model.anchor.set(0.5, 1);
+  model.scale.set(characterScale);
+
+  model.position.set(
+    characterX,
+    characterY
+  );
+
+  /*
+   * 마우스 이벤트 활성화
+   */
+  model.eventMode = "static";
+  model.cursor = "grab";
+
+  let pointerDown = false;
+  let moved = false;
+  let nativeDragStarted = false;
+
+  let pointerStartX = 0;
+  let pointerStartY = 0;
+
+  model.on("pointerdown", (event) => {
+    pointerDown = true;
+    moved = false;
+    nativeDragStarted = false;
+
+    pointerStartX = event.global.x;
+    pointerStartY = event.global.y;
+
+    model.cursor = "grabbing";
+  });
+
+  model.on("globalpointermove", async (event) => {
+    if (!pointerDown || nativeDragStarted) {
+      return;
+    }
+
+    const dx =
+      event.global.x - pointerStartX;
+
+    const dy =
+      event.global.y - pointerStartY;
+
+    const distance =
+      Math.hypot(dx, dy);
+
+    // 단순 클릭과 드래그를 구분
+    if (distance < 6) {
+      return;
+    }
+
+    moved = true;
+    nativeDragStarted = true;
+
+    try {
+      // Live2D 모델이 아니라 Mac 창 자체를 이동
+      await getCurrentWindow().startDragging();
+    } catch (error) {
+      console.error(
+        "창 드래그 실패:",
+        error
+      );
+    }
+  });
+
+  const stopDragging = () => {
+    pointerDown = false;
+    nativeDragStarted = false;
+    model.cursor = "grab";
+  };
+
+  model.on("pointerup", stopDragging);
+  model.on("pointerupoutside", stopDragging);
+
+  /*
+   * 클릭하면:
+   * - 채팅창 열기
+   * - TapBody 모션
+   */
+  model.on("pointertap", async () => {
+    if (moved) return;
+
+    chatPanel?.classList.toggle("open");
+
+    try {
+      await model.motion("TapBody");
+    } catch (error) {
+      console.warn(
+        "TapBody motion:",
+        error
+      );
+    }
+  });
+
+  /*
+   * Idle 모션 시작
+   */
+  try {
+    model.motion("Idle");
+  } catch (error) {
+    console.warn(
+      "Idle motion:",
+      error
+    );
+  }
+
+  /*
+   * 마우스 휠로 캐릭터 크기 조절
+   */
+  canvas.addEventListener(
+    "wheel",
+    (event) => {
+      event.preventDefault();
+
+      if (event.deltaY < 0) {
+        characterScale += 0.01;
+      } else {
+        characterScale -= 0.01;
+      }
+
+      characterScale =
+        Math.max(
+          0.08,
+          Math.min(
+            0.4,
+            characterScale
+          )
+        );
+
+      model.scale.set(
+        characterScale
+      );
+
+      if (status) {
+        status.textContent =
+          `크기 ${Math.round(
+            characterScale * 100
+          )}%`;
+
+        status.classList.remove(
+          "hidden"
+        );
+
+        setTimeout(() => {
+          status.classList.add(
+            "hidden"
+          );
+        }, 700);
+      }
+    },
+    {
+      passive: false,
+    }
+  );
+
+  /*
+   * 채팅
+   */
+  function addMessage(
+    text: string,
+    type: "user" | "assistant"
+  ) {
+    if (!messages) return;
+
+    const bubble =
+      document.createElement("div");
+
+    bubble.className =
+      `message ${type}`;
+
+    bubble.textContent = text;
+
+    messages.appendChild(bubble);
+
+    messages.scrollTop =
+      messages.scrollHeight;
+  }
+
+  chatForm?.addEventListener(
+    "submit",
+    (event) => {
+      event.preventDefault();
+
+      const text =
+        chatInput?.value.trim();
+
+      if (!text) return;
+
+      addMessage(
+        text,
+        "user"
+      );
+
+      if (chatInput) {
+        chatInput.value = "";
+      }
+
+      /*
+       * 아직 Claude 연결 전이므로
+       * 테스트 응답만 표시
+       */
+      setTimeout(() => {
+        addMessage(
+          "메시지를 받았어요. 다음 단계에서 Claude Code와 연결할게요.",
+          "assistant"
+        );
+
+        try {
+          model.motion("TapBody");
+        } catch {
+          // ignore
+        }
+      }, 300);
+    }
+  );
+
+  if (status) {
+    status.textContent =
+      "캐릭터를 클릭하면 채팅창이 열립니다";
+
+    setTimeout(() => {
+      status.classList.add(
+        "hidden"
+      );
+    }, 2500);
+  }
+
+  console.log(
+    "Live2D UI ready"
+  );
+}
+
+startLive2D().catch(
+  (error) => {
+    console.error(
+      "Live2D 시작 실패:",
+      error
+    );
+
+    const status =
+      document.querySelector<HTMLDivElement>(
+        "#status"
+      );
+
+    if (status) {
+      status.textContent =
+        "Live2D 로딩 실패";
+
+      status.classList.add(
+        "error"
+      );
+    }
+  }
+);
+
+document.addEventListener("pointerdown", () => {
+  const menu =
+    document.querySelector<HTMLElement>(
+      "#rightclick-test-menu"
+    );
+
+  if (menu) {
+    menu.style.display = "none";
+  }
+});

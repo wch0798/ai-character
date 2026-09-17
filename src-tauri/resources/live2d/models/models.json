@@ -1,0 +1,242 @@
+[
+  {
+    "id": "Hiyori",
+    "name": "히요리",
+    "gender": "female",
+    "model": "/live2d/models/Hiyori/Hiyori.model3.json",
+    "motions": {
+      "Idle": 9,
+      "TapBody": 1
+    }
+  },
+  {
+    "id": "Haru",
+    "name": "하루",
+    "gender": "female",
+    "model": "/live2d/models/Haru/Haru.model3.json",
+    "motions": {
+      "Idle": 2,
+      "TapBody": 4
+    }
+  },
+  {
+    "id": "Mao",
+    "name": "마오",
+    "gender": "female",
+    "model": "/live2d/models/Mao/Mao.model3.json",
+    "motions": {
+      "Idle": 2,
+      "TapBody": 6
+    }
+  },
+  {
+    "id": "Rice",
+    "name": "라이스",
+    "gender": "female",
+    "model": "/live2d/models/Rice/Rice.model3.json",
+    "motions": {
+      "Idle": 1,
+      "TapBody": 3
+    }
+  },
+  {
+    "id": "Kei",
+    "name": "케이",
+    "gender": "female",
+    "model": "/live2d/models/Kei/Kei_basic.model3.json",
+    "motions": {
+      "Idle": 4
+    }
+  },
+  {
+    "id": "Koharu",
+    "name": "코하루",
+    "gender": "female",
+    "model": "/live2d/models/Koharu/Koharu.model3.json",
+    "motions": {
+      "Idle": 3
+    }
+  },
+  {
+    "id": "Epsilon",
+    "name": "엡실론",
+    "gender": "female",
+    "model": "/live2d/models/Epsilon/Epsilon_free.model3.json",
+    "motions": {
+      "Idle": 1,
+      "FlickUp": 2,
+      "Flick": 2,
+      "Tap": 4,
+      "Flick3": 2,
+      "FlickDown": 2,
+      "Shake": 2
+    }
+  },
+  {
+    "id": "Miara",
+    "name": "미아라",
+    "gender": "female",
+    "model": "/live2d/models/Miara/miara_pro_t04.model3.json",
+    "motions": {
+      "Idle": 1,
+      "Tap": 1,
+      "Flick": 1
+    }
+  },
+  {
+    "id": "Shizuku",
+    "name": "시즈쿠",
+    "gender": "female",
+    "model": "/live2d/models/Shizuku/shizuku.model3.json",
+    "motions": {
+      "FlickUp": 1,
+      "Tap": 1,
+      "Flick3": 1,
+      "Idle": 1
+    }
+  },
+  {
+    "id": "Hibiki",
+    "name": "히비키",
+    "gender": "female",
+    "model": "/live2d/models/Hibiki/hibiki.model3.json",
+    "motions": {
+      "Idle": 3,
+      "Flick": 1,
+      "Tap": 1
+    }
+  },
+  {
+    "id": "Izumi",
+    "name": "이즈미",
+    "gender": "female",
+    "model": "/live2d/models/Izumi/izumi_illust.model3.json",
+    "motions": {
+      "FlickRight": 2,
+      "Tap": 3,
+      "Idle": 3,
+      "FlickLeft": 1,
+      "Shake": 1
+    }
+  },
+  {
+    "id": "Tsumiki",
+    "name": "츠미키",
+    "gender": "female",
+    "model": "/live2d/models/Tsumiki/tsumiki.model3.json",
+    "motions": {
+      "Flick3": 4,
+      "FlickDown": 3,
+      "FlickUp": 3,
+      "Tap": 5,
+      "FlickRight": 2,
+      "FlickLeft": 2,
+      "Idle": 3,
+      "Shake": 1
+    }
+  },
+  {
+    "id": "Nito",
+    "name": "니토",
+    "gender": "female",
+    "model": "/live2d/models/NitoPack/nito.model3.json",
+    "motions": {
+      "Idle": 4,
+      "FlickUp": 3,
+      "Tap": 5,
+      "FlickDown": 2,
+      "FlickRight": 1,
+      "Flick3": 2,
+      "FlickLeft": 2,
+      "Shake": 2
+    }
+  },
+  {
+    "id": "Nico",
+    "name": "니코",
+    "gender": "female",
+    "model": "/live2d/models/NitoPack/nico.model3.json",
+    "motions": {
+      "Idle": 4,
+      "FlickUp": 3,
+      "Tap": 5,
+      "FlickDown": 2,
+      "FlickRight": 1,
+      "Flick3": 2,
+      "FlickLeft": 2,
+      "Shake": 2
+    }
+  },
+  {
+    "id": "Zundamon",
+    "name": "즈는다몽",
+    "gender": "female",
+    "model": "/live2d/models/Zundamon/zundamon.model3.json",
+    "motions": {
+      "Idle": 23
+    }
+  },
+  {
+    "id": "SuiKamiki",
+    "name": "스이카미키",
+    "gender": "female",
+    "source": "unofficial",
+    "license": "Apache-2.0",
+    "credit": "Log-Cig",
+    "model": "/live2d/models/SuiKamiki/SuiKamiki.model3.json",
+    "motions": {
+      "Idle": 1
+    }
+  },
+  {
+    "id": "Fili",
+    "name": "필리",
+    "gender": "female",
+    "source": "unofficial",
+    "license": "CC0-1.0",
+    "credit": "MjGjVtube",
+    "model": "/live2d/models/Fili/FILI_FINAL.model3.json",
+    "motions": {
+      "Idle": 1
+    }
+  },
+  {
+    "id": "Natori",
+    "name": "나토리",
+    "gender": "male",
+    "model": "/live2d/models/Natori/Natori.model3.json",
+    "motions": {
+      "Idle": 3,
+      "TapBody": 5
+    }
+  },
+  {
+    "id": "Ren",
+    "name": "렌",
+    "gender": "male",
+    "model": "/live2d/models/Ren/Ren.model3.json",
+    "motions": {
+      "Idle": 1,
+      "TapBody": 2
+    }
+  },
+  {
+    "id": "Mark",
+    "name": "마크",
+    "gender": "male",
+    "model": "/live2d/models/Mark/Mark.model3.json",
+    "motions": {
+      "Idle": 6
+    }
+  },
+  {
+    "id": "Wanko",
+    "name": "완코",
+    "gender": "mascot",
+    "model": "/live2d/models/Wanko/Wanko.model3.json",
+    "motions": {
+      "Idle": 3,
+      "TapBody": 2
+    }
+  }
+]

@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+
+  <meta
+    name="viewport"
+    content="width=device-width, initial-scale=1.0"
+  />
+
+  <title>AI Character</title>
+
+  <script src="/live2d/core/live2dcubismcore.min.js"></script>
+</head>
+
+<body>
+
+<div id="app">
+
+  <canvas id="live2d-canvas"></canvas>
+
+  <!-- 채팅 -->
+  <div id="chat-panel">
+
+    <div id="messages">
+      <div class="message assistant">
+        안녕하세요. 무엇을 도와드릴까요?
+      </div>
+    </div>
+
+    <form id="chat-form">
+
+      <input
+        id="chat-input"
+        type="text"
+        autocomplete="off"
+        placeholder="무엇을 할지 입력하세요..."
+      />
+
+      <button type="submit">
+        전송
+      </button>
+
+    </form>
+
+  </div>
+
+  <!-- 우클릭 메뉴 -->
+  <div
+    id="context-menu"
+    class="context-menu"
+  ></div>
+
+  <div id="status">
+    Live2D 시작 중...
+  </div>
+
+</div>
+
+<script
+  type="module"
+  src="/src/main.ts"
+></script>
+
+</body>
+</html>

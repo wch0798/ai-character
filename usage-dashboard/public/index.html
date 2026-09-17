@@ -1,0 +1,358 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI-Character 계정 사용량</title>
+<style>
+  :root {
+    color-scheme: light;
+    --page: #f9f9f7; --surface-1: #fcfcfb;
+    --text-primary: #0b0b0b; --text-secondary: #52514e; --text-muted: #898781;
+    --grid: #e1e0d9; --axis: #c3c2b7; --border: rgba(11,11,11,0.10);
+    --series-1: #2a78d6; --series-2: #eb6834; --series-3: #0f7b6c; --series-4: #8a5a00;
+    --good: #0ca30c; --warning: #fab219; --serious: #ec835a; --critical: #d03b3b;
+    --meter-track: #e1e0d9;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      color-scheme: dark;
+      --page: #0d0d0d; --surface-1: #1a1a19;
+      --text-primary: #ffffff; --text-secondary: #c3c2b7; --text-muted: #898781;
+      --grid: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,0.10);
+      --series-1: #3987e5; --series-2: #d95926; --series-3: #2bb5a0; --series-4: #d4a017;
+      --meter-track: #2c2c2a;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--page); color: var(--text-primary);
+         font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 1180px; margin: 0 auto; padding: 24px; }
+  header { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+  h1 { font-size: 22px; margin: 0; }
+  h2 { font-size: 15px; margin: 0 0 12px; }
+  .muted { color: var(--text-muted); font-size: 12px; }
+  button { font: inherit; padding: 6px 12px; border-radius: 8px; border: 1px solid var(--border);
+           background: var(--surface-1); color: var(--text-primary); cursor: pointer; }
+  .grid { display: grid; gap: 16px; margin-top: 16px; }
+  .tiles { grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); }
+  .two { grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); }
+  .card { background: var(--surface-1); border: 1px solid var(--border); border-radius: 12px; padding: 16px; min-width: 0; }
+  .tile .label { color: var(--text-secondary); font-size: 13px; }
+  .tile .value { font-size: 28px; font-weight: 600; margin: 4px 0; }
+  .accounts { display: flex; flex-wrap: wrap; gap: 8px; }
+  .acct { display: flex; align-items: flex-start; gap: 8px; padding: 8px 12px; border: 1px solid var(--border); border-radius: 10px; }
+  .acct .dot { margin-top: 6px; }
+  .acct-id { font-weight: 600; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; flex: none; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--grid); white-space: nowrap; }
+  th { color: var(--text-secondary); font-weight: 500; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .scroll { overflow-x: auto; }
+  .meter { margin: 10px 0; }
+  .meter .row { display: flex; justify-content: space-between; font-size: 13px; }
+  .meter .track { height: 8px; background: var(--meter-track); border-radius: 4px; overflow: hidden; margin-top: 4px; }
+  .meter .fill { height: 100%; border-radius: 4px; }
+  svg text { fill: var(--text-muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+  .chart { position: relative; }
+  .tip { position: absolute; pointer-events: none; background: var(--surface-1); border: 1px solid var(--border);
+         border-radius: 8px; padding: 6px 10px; font-size: 12px; box-shadow: 0 4px 12px rgba(0,0,0,.12); display: none; white-space: nowrap; }
+  .status { display: inline-flex; align-items: center; gap: 4px; }
+  .note { margin-top: 8px; color: var(--text-secondary); font-size: 12px; }
+  .error { color: var(--critical); }
+  .provider-block { margin-top: 16px; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <div>
+      <h1>AI-Character 계정 사용량</h1>
+      <div class="muted" id="updated">불러오는 중…</div>
+    </div>
+    <div>
+      <label class="muted"><input type="checkbox" id="auto" checked> 30초마다 새로고침</label>
+      <button id="refresh">새로고침</button>
+    </div>
+  </header>
+
+  <section class="card" style="margin-top:16px">
+    <h2>연결된 계정</h2>
+    <div class="accounts" id="accounts"></div>
+  </section>
+
+  <section class="grid tiles" id="tiles"></section>
+
+  <div id="providers"></div>
+
+  <section class="grid two" style="margin-top:16px">
+    <div class="card scroll"><h2>앱 대화(사용자·캐릭터)</h2><div id="conversations"></div></div>
+    <div class="card scroll"><h2>앱 에이전트 실행 요약</h2><div id="runSummary"></div></div>
+  </section>
+
+  <section class="card scroll" style="margin-top:16px">
+    <h2>앱 에이전트 실행 기록</h2>
+    <div id="runs"></div>
+  </section>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const fmt = (n) => {
+  n = Number(n) || 0;
+  if (n >= 1e9) return (n / 1e9).toFixed(1) + 'B';
+  if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
+  if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K';
+  return String(n);
+};
+const full = (n) => (Number(n) || 0).toLocaleString('ko-KR');
+const time = (ts) => ts ? new Date(ts).toLocaleString('ko-KR') : '—';
+const dur = (ms) => ms == null ? '—' : ms < 1000 ? ms + 'ms' : (ms / 1000).toFixed(1) + '초';
+const shortId = (id) => /^[0-9a-f-]{36}$/.test(id) ? id.slice(0, 8) : id;
+const homeish = (p) => String(p || '').replace(/^\/Users\/[^/]+/, '~');
+
+const COLORS = ['var(--series-1)', 'var(--series-2)', 'var(--series-3)', 'var(--series-4)'];
+const PLAN = {
+  claude_max: 'Max', claude_pro: 'Pro', claude_team: 'Team', claude_enterprise: 'Enterprise',
+};
+const STATUS = {
+  completed: ['var(--good)', '✓', '완료'],
+  running: ['var(--warning)', '●', '실행 중'],
+  cancelled: ['var(--serious)', '■', '취소'],
+  failed: ['var(--critical)', '✕', '실패'],
+};
+const statusBadge = (s) => {
+  const [c, icon, label] = STATUS[s] ?? ['var(--text-muted)', '•', s];
+  return `<span class="status"><span style="color:${c}">${icon}</span>${esc(label)}</span>`;
+};
+
+function cellValue(col, row) {
+  let v = row[col.key];
+  if (col.shortId) {
+    return `<span title="${esc(v)}">${esc(shortId(v))}</span>`;
+  }
+  if (col.fmt) return esc(fmt(v));
+  if (col.num) return esc(full(v));
+  return esc(v);
+}
+
+function table(cols, rows) {
+  if (!rows?.length) return '<div class="muted">기록 없음</div>';
+  return `<table><thead><tr>${cols.map((c) => `<th class="${c.num ? 'num' : ''}">${esc(c.label)}</th>`).join('')}</tr></thead>
+    <tbody>${rows.map((r) => `<tr>${cols.map((c) => `<td class="${c.num ? 'num' : ''}">${cellValue(c, r)}</td>`).join('')}</tr>`).join('')}</tbody></table>`;
+}
+
+function barChart(el, points, color) {
+  if (!points?.length) { el.innerHTML = '<div class="muted">기록 없음</div>'; return; }
+  const W = 520, H = 200, L = 48, R = 8, T = 10, B = 26;
+  const max = Math.max(...points.map((p) => p.value)) || 1;
+  const step = (W - L - R) / points.length;
+  const bw = Math.max(4, Math.min(28, step - 2));
+  const y = (v) => T + (H - T - B) * (1 - v / max);
+  const ticks = [0, 0.5, 1].map((f) => max * f);
+  const labelEvery = Math.ceil(points.length / 8);
+  el.innerHTML = `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img">
+    ${ticks.map((t) => `<line x1="${L}" x2="${W - R}" y1="${y(t)}" y2="${y(t)}" stroke="var(--grid)"/><text x="${L - 6}" y="${y(t) + 4}" text-anchor="end">${fmt(t)}</text>`).join('')}
+    <line x1="${L}" x2="${W - R}" y1="${H - B}" y2="${H - B}" stroke="var(--axis)"/>
+    ${points.map((p, i) => {
+      const x = L + i * step + (step - bw) / 2, top = y(p.value), h = H - B - top;
+      const r = Math.min(4, bw / 2, h);
+      const d = h <= 0 ? '' : `M${x},${H - B} V${top + r} Q${x},${top} ${x + r},${top} H${x + bw - r} Q${x + bw},${top} ${x + bw},${top + r} V${H - B} Z`;
+      return `<path d="${d}" fill="${color}"/>
+        <rect data-i="${i}" x="${L + i * step}" y="${T}" width="${step}" height="${H - T - B}" fill="transparent"/>
+        ${i % labelEvery === 0 ? `<text x="${x + bw / 2}" y="${H - 8}" text-anchor="middle">${esc(p.label.slice(5))}</text>` : ''}`;
+    }).join('')}
+  </svg><div class="tip"></div>`;
+  const tip = el.querySelector('.tip');
+  el.querySelectorAll('rect[data-i]').forEach((rect) => {
+    rect.addEventListener('mousemove', (e) => {
+      const p = points[rect.dataset.i];
+      const lines = (p.tip || []).map((t) => {
+        // tip 값이 숫자만이면 포맷, 아니면 그대로 (서버가 "입력 123" 형태를 보냄)
+        return esc(String(t).replace(/\b(\d{4,})\b/g, (_, n) => full(n)));
+      });
+      tip.innerHTML = `<b>${esc(p.label)}</b><br>${lines.join('<br>')}`;
+      const box = el.getBoundingClientRect();
+      tip.style.display = 'block';
+      tip.style.left = Math.min(e.clientX - box.left + 12, box.width - tip.offsetWidth) + 'px';
+      tip.style.top = (e.clientY - box.top - tip.offsetHeight - 8) + 'px';
+    });
+    rect.addEventListener('mouseleave', () => { tip.style.display = 'none'; });
+  });
+}
+
+function meter(label, pct, windowMin, resetsAt) {
+  const color = pct >= 90 ? 'var(--critical)' : pct >= 70 ? 'var(--serious)' : 'var(--series-1)';
+  const win = windowMin >= 1440 ? `${Math.round(windowMin / 1440)}일` : `${Math.round(windowMin / 60)}시간`;
+  const reset = resetsAt ? new Date(resetsAt * 1000) : null;
+  const resetText = !reset ? '' : reset < new Date() ? '이미 초기화됨' : `${reset.toLocaleString('ko-KR')} 초기화`;
+  return `<div class="meter"><div class="row"><span>${esc(label)} (${win} 기준)</span><b>${pct}%</b></div>
+    <div class="track"><div class="fill" style="width:${Math.min(100, pct)}%;background:${color}"></div></div>
+    <div class="muted">${esc(resetText)}</div></div>`;
+}
+
+function accountConnected(a) {
+  return !!(a?.email || a?.keyHint);
+}
+
+function accountCard(name, a, extraLines = []) {
+  const connected = accountConnected(a);
+  const id = a?.email ?? (a?.keyHint ? `API 키 ${a.keyHint}` : null);
+  const lines = [
+    a?.name && `이름: ${a.name}`,
+    a?.plan && `요금제: ${PLAN[a.plan] ?? a.plan}`,
+    a?.organization && `조직: ${a.organization}`,
+    a?.loginWith && `로그인: ${a.loginWith}`,
+    a?.accountId && `계정 ID: ${String(a.accountId).slice(0, 8)}…`,
+    a?.userId != null && `사용자 ID: ${a.userId}`,
+    ...(a?.linesExtra || []),
+    ...extraLines,
+  ].filter(Boolean);
+  return `<div class="acct"><span class="dot" style="background:${connected ? 'var(--good)' : 'var(--text-muted)'}"></span>
+    <div><div>${esc(name)} <span class="muted">${connected ? '연결됨' : '미연결'}</span></div>
+    <div class="acct-id">${esc(id ?? '로그인 정보 없음')}</div>
+    ${lines.map((l) => `<div class="muted">${esc(l)}</div>`).join('')}
+    ${a?.source ? `<div class="muted" title="${esc(a.source)}">출처: ${esc(homeish(a.source))}</div>` : ''}
+    </div></div>`;
+}
+
+function renderProvider(p, color) {
+  const parts = [];
+  if (p.meters?.items?.length) {
+    parts.push(`<div class="card"><h2>${esc(p.meters.title || (p.label + ' 한도'))}</h2>
+      ${p.meters.items.map((m) => meter(m.label, m.pct, m.windowMin, m.resetsAt)).join('')}
+      ${p.meters.note ? `<div class="note">${esc(p.meters.note)}</div>` : ''}</div>`);
+  }
+  if (p.chart) {
+    parts.push(`<div class="card"><h2>${esc(p.chart.title)}</h2><div class="chart" data-chart="${esc(p.id)}"></div>
+      ${p.note ? `<div class="note">${esc(p.note)}</div>` : ''}</div>`);
+  } else if (p.note) {
+    parts.push(`<div class="card"><h2>${esc(p.label)}</h2><div class="note">${esc(p.note)}</div></div>`);
+  }
+  const tables = [];
+  if (p.modelTable) {
+    tables.push(`<div class="card scroll"><h2>${esc(p.modelTable.title)}</h2>${table(p.modelTable.columns, p.modelTable.rows)}</div>`);
+  }
+  if (p.projectTable) {
+    tables.push(`<div class="card scroll"><h2>${esc(p.projectTable.title)}</h2>${table(p.projectTable.columns, p.projectTable.rows)}</div>`);
+  }
+  return `<section class="provider-block" data-provider="${esc(p.id)}">
+    ${parts.length ? `<div class="grid two">${parts.join('')}</div>` : ''}
+    ${tables.length ? `<div class="grid two" style="margin-top:16px">${tables.join('')}</div>` : ''}
+  </section>`;
+}
+
+function render(d) {
+  const providers = d.providers || [];
+  const app = d.app || {};
+  const keys = d.keys || [];
+  const runs = app.runs ?? [];
+  const runCounts = runs.reduce((a, r) => (a[r.status] = (a[r.status] || 0) + 1, a), {});
+  const byAgent = runs.reduce((a, r) => (a[r.agent] = (a[r.agent] || 0) + 1, a), {});
+
+  $('updated').textContent = `마지막 갱신: ${time(d.generatedAt)} · 데이터 폴더: ${d.appDir} · AI ${providers.length}개`;
+
+  // 계정: provider 계정 + API 키 + 앱 캐릭터
+  const accountHtml = [
+    ...providers.map((p) => accountCard(p.label, p.account)),
+    ...keys.map((k) => accountCard(k.label, {
+      email: k.configured ? `키 끝자리 ${k.hint}` : null,
+      source: `keys.env (${k.env})`,
+    }, [`출처: keys.env 의 ${k.env}`])),
+    accountCard('앱 캐릭터', {
+      email: app.character || null,
+      linesExtra: [app.selectedModel && `모델: ${app.selectedModel}`].filter(Boolean),
+    }),
+  ].join('');
+  $('accounts').innerHTML = accountHtml;
+
+  const tiles = [
+    ...providers.map((p) => {
+      const h = p.headline || { label: p.label, value: 0, detail: '' };
+      return [h.label, fmt(h.value), h.detail || ''];
+    }),
+    ['앱 에이전트 실행', full(runs.length), `완료 ${runCounts.completed || 0} · 실패 ${runCounts.failed || 0} · 취소 ${runCounts.cancelled || 0}`],
+    ['앱 대화', full(app.conversations?.length ?? 0), `메시지 ${full((app.conversations ?? []).reduce((s, c) => s + c.userMessages + c.assistantMessages, 0))}개`],
+  ];
+  $('tiles').innerHTML = tiles.map(([l, v, s]) =>
+    `<div class="card tile"><div class="label">${esc(l)}</div><div class="value">${esc(v)}</div><div class="muted">${esc(s)}</div></div>`
+  ).join('');
+
+  $('providers').innerHTML = providers.map((p, i) => renderProvider(p, COLORS[i % COLORS.length])).join('');
+  providers.forEach((p, i) => {
+    const el = document.querySelector(`[data-chart="${CSS.escape(p.id)}"]`);
+    if (el && p.chart) barChart(el, p.chart.points, COLORS[i % COLORS.length]);
+  });
+
+  const runsByConv = runs.reduce((a, r) => (a[r.conversation_id] = (a[r.conversation_id] || 0) + 1, a), {});
+  $('conversations').innerHTML = table([
+    { key: 'title', label: '제목' },
+    { key: 'userMessages', label: '사용자', num: true },
+    { key: 'assistantMessages', label: '캐릭터', num: true },
+    { key: 'runs', label: '실행', num: true },
+    { key: 'updatedAt', label: '마지막 대화' },
+  ], (app.conversations ?? []).map((c) => ({
+    ...c,
+    runs: runsByConv[c.id] || 0,
+    updatedAt: time(c.updatedAt),
+  })));
+
+  $('runSummary').innerHTML = table([
+    { key: 'agent', label: '에이전트' },
+    { key: 'count', label: '실행', num: true },
+  ], Object.entries(byAgent).map(([agent, count]) => ({ agent, count })).sort((a, b) => b.count - a.count));
+
+  $('runs').innerHTML = table([
+    { key: 'started', label: '시작' },
+    { key: 'agent', label: '에이전트' },
+    { key: 'model', label: '모델' },
+    { key: 'statusHtml', label: '상태' },
+    { key: 'duration', label: '소요', num: true },
+    { key: 'conv', label: '대화' },
+    { key: 'error', label: '오류' },
+  ], runs.map((r) => ({
+    started: time(r.started_at),
+    agent: r.agent,
+    model: r.model || '기본',
+    statusHtml: statusBadge(r.status),
+    duration: dur(r.duration_ms),
+    conv: shortId(r.conversation_id || ''),
+    error: r.error_summary ? r.error_summary.slice(0, 40) : '',
+  })));
+  // status/error는 HTML이 필요해서 테이블 재렌더
+  $('runs').innerHTML = (() => {
+    const cols = [
+      { label: '시작' }, { label: '에이전트' }, { label: '모델' }, { label: '상태' },
+      { label: '소요', num: 1 }, { label: '대화' }, { label: '오류' },
+    ];
+    if (!runs.length) return '<div class="muted">기록 없음</div>';
+    return `<table><thead><tr>${cols.map((c) => `<th class="${c.num ? 'num' : ''}">${c.label}</th>`).join('')}</tr></thead>
+      <tbody>${runs.map((r) => `<tr>
+        <td>${esc(time(r.started_at))}</td>
+        <td>${esc(r.agent)}</td>
+        <td>${esc(r.model || '기본')}</td>
+        <td>${statusBadge(r.status)}</td>
+        <td class="num">${esc(dur(r.duration_ms))}</td>
+        <td>${esc(shortId(r.conversation_id || ''))}</td>
+        <td>${r.error_summary ? `<span class="error" title="${esc(r.error_summary)}">${esc(r.error_summary.slice(0, 40))}</span>` : ''}</td>
+      </tr>`).join('')}</tbody></table>`;
+  })();
+}
+
+async function load() {
+  try {
+    const res = await fetch('/api/usage');
+    if (!res.ok) throw new Error(await res.text());
+    render(await res.json());
+  } catch (err) {
+    $('updated').innerHTML = `<span class="error">불러오기 실패: ${esc(err.message)}</span>`;
+  }
+}
+$('refresh').onclick = load;
+setInterval(() => { if ($('auto').checked) load(); }, 30000);
+load();
+</script>
+</body>
+</html>

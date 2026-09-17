@@ -1,0 +1,33 @@
+{
+  "name": "ai-character",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "tauri": "tauri",
+    "start": "bash tools/launch-ai-character.sh",
+    "stop": "bash tools/stop-ai-character.sh",
+    "build:app": "bash tools/build-release-macos.sh",
+    "build:app:windows": "npm run build && npm run tauri -- build --bundles nsis",
+    "install:local": "bash tools/install-local-macos.sh",
+    "verify:security": "python3 tools/verify-security-baseline.py .",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@laplace.live/pixijs-live2d": "^0.4.0",
+    "@tauri-apps/api": "^2",
+    "@tauri-apps/plugin-clipboard-manager": "^2.3.3",
+    "@tauri-apps/plugin-dialog": "^2.7.3",
+    "@tauri-apps/plugin-opener": "^2",
+    "pixi.js": "^8.20.1"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2",
+    "typescript": "~6.0.3",
+    "vite": "^8.0.16",
+    "vitest": "^5.0.0"
+  }
+}

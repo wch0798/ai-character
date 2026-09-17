@@ -1,0 +1,112 @@
+import "./styles.css";
+
+import {
+  Application,
+  Ticker,
+} from "pixi.js";
+
+import {
+  Live2DModel,
+} from "@jannchie/pixi-live2d-display/cubism4";
+
+import {
+  fitModelToWindow,
+} from "./live2d-layout";
+
+async function startLive2D() {
+  const canvas =
+    document.querySelector<HTMLCanvasElement>(
+      "#live2d-canvas"
+    );
+
+  const status =
+    document.querySelector<HTMLDivElement>(
+      "#status"
+    );
+
+  if (!canvas) {
+    throw new Error("Live2D canvas를 찾을 수 없습니다.");
+  }
+
+  const app = new Application();
+
+  await app.init({
+    canvas,
+    resizeTo: window,
+    backgroundAlpha: 0,
+    antialias: true,
+  });
+
+  const model = await Live2DModel.from(
+    "/live2d/models/Hiyori/Hiyori.model3.json",
+    {
+      ticker: Ticker.shared,
+    }
+  );
+
+  app.stage.addChild(model);
+
+  function resizeModel() {
+    const layout = fitModelToWindow(
+      model.width / model.scale.x,
+      model.height / model.scale.y,
+      window.innerWidth,
+      window.innerHeight
+    );
+
+    model.anchor.set(0.5, 1);
+
+    model.scale.set(layout.scale);
+
+    model.position.set(
+      layout.x,
+      layout.y
+    );
+  }
+
+  resizeModel();
+
+  window.addEventListener(
+    "resize",
+    resizeModel
+  );
+
+  model.eventMode = "static";
+  model.cursor = "pointer";
+
+  model.on(
+    "pointertap",
+    () => {
+      model.motion("Idle");
+    }
+  );
+
+  if (status) {
+    status.textContent = "Hiyori";
+    setTimeout(() => {
+      status.classList.add("hidden");
+    }, 1500);
+  }
+
+  console.log(
+    "Live2D Hiyori loaded successfully"
+  );
+}
+
+startLive2D().catch((error) => {
+  console.error(
+    "Live2D 시작 실패:",
+    error
+  );
+
+  const status =
+    document.querySelector<HTMLDivElement>(
+      "#status"
+    );
+
+  if (status) {
+    status.textContent =
+      "Live2D 로딩 실패 - 개발자 콘솔을 확인하세요.";
+    status.classList.add("error");
+  }
+});
