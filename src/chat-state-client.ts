@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { waitForTauri } from "./tauri-ready";
 
 type LocalStorageSnapshot = Record<string, string>;
 
@@ -7,6 +8,13 @@ let initialized = false;
 let lastSyncedPayload: string | null = null;
 let syncInFlight = false;
 let lastWarningAt = 0;
+
+function isTransientTauriError(error: unknown): boolean {
+  const text = error instanceof Error ? error.message : String(error);
+  return /invoke|metadata|Failed to fetch|callback id|준비되지 않았습니다/i.test(
+    text
+  );
+}
 
 function readLocalStorageSnapshot(): LocalStorageSnapshot {
   const snapshot: LocalStorageSnapshot = {};
@@ -52,6 +60,7 @@ function restoreSnapshot(snapshot: LocalStorageSnapshot): void {
 
 async function persistIfChanged(): Promise<void> {
   if (syncInFlight) return;
+  if (!(await waitForTauri(1500))) return;
   const payload = encodeSnapshot(readLocalStorageSnapshot());
   if (payload === lastSyncedPayload) return;
 
@@ -60,10 +69,12 @@ async function persistIfChanged(): Promise<void> {
     await invoke("save_ui_state", { payload });
     lastSyncedPayload = payload;
   } catch (error) {
-    const now = Date.now();
-    if (now - lastWarningAt > 10_000) {
-      console.warn("SQLite UI 상태 저장 대기 중:", error);
-      lastWarningAt = now;
+    if (!isTransientTauriError(error)) {
+      const now = Date.now();
+      if (now - lastWarningAt > 10_000) {
+        console.warn("SQLite UI 상태 저장 대기 중:", error);
+        lastWarningAt = now;
+      }
     }
   } finally {
     syncInFlight = false;
@@ -75,6 +86,7 @@ export async function initializeSqliteStateMirror(): Promise<void> {
   initialized = true;
 
   try {
+    await waitForTauri();
     const payload = await invoke<string | null>("load_ui_state");
     if (payload !== null) {
       const snapshot = decodeSnapshot(payload);
@@ -84,9 +96,9 @@ export async function initializeSqliteStateMirror(): Promise<void> {
       await persistIfChanged();
     }
   } catch (error) {
-    // A project may not have been selected yet. Keep the app usable and let the
-    // periodic sync begin persisting as soon as a project becomes available.
-    console.warn("SQLite UI 상태 복원을 건너뜁니다:", error);
+    if (!isTransientTauriError(error)) {
+      console.warn("SQLite UI 상태 복원을 건너뜁니다:", error);
+    }
   }
 
   window.setInterval(() => {

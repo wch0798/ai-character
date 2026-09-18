@@ -28,11 +28,17 @@ def main() -> int:
     check("PROVIDERS" in server and "collectCursor" in server, "dashboard has extensible provider registry with Cursor", failures)
     check("AI-Character 계정 사용량" in page and "/api/usage" in page, "dashboard page present", failures)
     check("data.providers" in page or "providers.map" in page, "dashboard UI renders providers dynamically", failures)
+    index_html = (root / "index.html").read_text(encoding="utf-8") if (root / "index.html").is_file() else ""
+    capabilities = (root / "src-tauri" / "capabilities" / "default.json").read_text(encoding="utf-8") if (root / "src-tauri" / "capabilities" / "default.json").is_file() else ""
+
     check("open_usage_dashboard" in rust and "spawn_dashboard_server" in rust, "backend starts usage dashboard", failures)
+    check("get_usage_snapshot" in rust and "http_get_127" in rust, "backend returns usage snapshot to the app", failures)
+    check("Get-NetTCPConnection" not in rust, "backend does not hang on Windows port cleanup", failures)
     check("dashboard_api_is_current" in rust and "clear_port" in rust, "backend restarts stale usage dashboard", failures)
-    check("open_usage_dashboard" in lib and "mod usage_dashboard" in lib, "Tauri exposes usage dashboard command", failures)
-    check("openUsageDashboard" in client, "frontend bridge for usage dashboard", failures)
-    check('"사용량"' in main_ts and "openUsageDashboard" in main_ts, "right-click opens usage dashboard", failures)
+    check("open_usage_dashboard" in lib and "get_usage_snapshot" in lib and "mod usage_dashboard" in lib, "Tauri exposes usage dashboard command", failures)
+    check("getUsageSnapshot" in client, "frontend bridge for usage snapshot", failures)
+    check("initializeUsageDashboardUi" in main_ts, "chat toolbar opens in-app usage panel", failures)
+    check('id="usage-dashboard-panel"' in index_html, "chat has usage dashboard panel", failures)
 
     print(f"\nRESULT: {'PASS' if not failures else 'FAIL'}")
     return 1 if failures else 0

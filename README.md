@@ -4,6 +4,23 @@ Tauri + Vanilla TypeScript 데스크톱 캐릭터 앱.
 
 ## 실행 (터미널 없이)
 
+### Windows
+
+1. 처음 한 번: `npm run setup:windows`  
+   Git, Node.js, WebView2, Rust, C++ Build Tools를 자동 설치합니다.
+2. `AI Character.bat` 을 더블클릭하거나 `npm start` 로 실행합니다.
+3. 앱이 뜨면 Windows에서는 **없는 필수 프로그램(Git/Node/Claude/Cursor Agent/Codex/Antigravity)을 자동 설치**합니다.  
+   실패 항목은 설정 → **필수 프로그램 설치**로 다시 시도하세요.
+
+설치 파일(NSIS) 만들기:
+
+```powershell
+npm run build:app:windows
+npm run install:local:windows
+```
+
+### macOS
+
 프로젝트 폴더의 **`AI Character.app`** 을 더블클릭하세요.  
 터미널 창은 뜨지 않고, 캐릭터 앱만 실행됩니다.
 

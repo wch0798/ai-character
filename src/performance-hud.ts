@@ -18,9 +18,16 @@ export function readPerformanceHudVisible(
   return storedValue !== "false";
 }
 
+function clamp(value: number, min: number, max: number): number {
+  if (max < min) {
+    return min;
+  }
+  return Math.max(min, Math.min(value, max));
+}
+
 /**
- * HUD의 **왼쪽 위** 좌표를 반환한다.
- * (CSS transform 중앙정렬을 쓰지 않아 Windows DPI/좁은 창에서 RAM이 잘리지 않게 함)
+ * HUD의 **왼쪽 위** 좌표.
+ * 발 아래 예약 스트립에 한 줄로 둔다. 채팅은 이 스트립 위에 있어서 가로를 채팅에 맞추지 않는다.
  */
 export function getPerformanceHudPosition(
   modelBounds: BoundsLike,
@@ -29,83 +36,41 @@ export function getPerformanceHudPosition(
   screenHeight: number,
   hudWidth: number,
   hudHeight: number,
-  chatTop: number | null,
-  gap = 6
+  chatRect: DomRectLike | null,
+  _gap = 6,
+  stripHeight = 40
 ): {
   left: number;
   top: number;
+  maxWidth: number;
 } {
-  if (
-    screenWidth <= 0 ||
-    screenHeight <= 0
-  ) {
+  const canvasBottom = canvasRect.top + canvasRect.height;
+  const strip = Math.max(22, stripHeight);
+  const usedHeight = Math.min(Math.max(hudHeight, 16), strip - 4);
+  const top =
+    canvasBottom - strip + Math.max(2, Math.floor((strip - usedHeight) / 2));
+
+  const minLeft = canvasRect.left + 4;
+  const maxRight = canvasRect.left + canvasRect.width - 4;
+  const maxWidth = Math.max(80, maxRight - minLeft);
+
+  if (screenWidth <= 0 || screenHeight <= 0 || (chatRect && chatRect.width > 0)) {
     return {
-      left: canvasRect.left + 4,
-      top: canvasRect.top + 4,
+      left: minLeft,
+      top: Math.max(canvasRect.top + 2, top),
+      maxWidth,
     };
   }
 
-  const scaleX =
-    canvasRect.width / screenWidth;
-
-  const scaleY =
-    canvasRect.height / screenHeight;
-
+  const scaleX = canvasRect.width / screenWidth;
   const centerX =
-    canvasRect.left +
-    (
-      modelBounds.x +
-      modelBounds.width / 2
-    ) * scaleX;
-
-  let left = centerX - hudWidth / 2;
-
-  let top =
-    canvasRect.top +
-    (
-      modelBounds.y +
-      modelBounds.height
-    ) * scaleY +
-    gap;
-
-  const minLeft = canvasRect.left + 4;
-  const maxLeft =
-    canvasRect.left +
-    canvasRect.width -
-    hudWidth -
-    4;
-
-  if (maxLeft < minLeft) {
-    left = minLeft;
-  } else {
-    left = Math.max(
-      minLeft,
-      Math.min(left, maxLeft)
-    );
-  }
-
-  if (chatTop !== null) {
-    top = Math.min(
-      top,
-      chatTop - hudHeight - 4
-    );
-  }
-
-  const canvasBottom =
-    canvasRect.top + canvasRect.height;
-
-  top = Math.min(
-    top,
-    canvasBottom - hudHeight - 4
-  );
-
-  top = Math.max(
-    canvasRect.top + 4,
-    top
-  );
+    canvasRect.left + (modelBounds.x + modelBounds.width / 2) * scaleX;
+  const usedWidth = Math.min(Math.max(hudWidth, 80), maxWidth);
+  const left = clamp(centerX - usedWidth / 2, minLeft, maxRight - usedWidth);
 
   return {
     left,
-    top,
+    top: Math.max(canvasRect.top + 2, top),
+    maxWidth,
   };
 }

@@ -178,7 +178,8 @@ export function setupChatHistory(options: SetupOptions): ChatHistoryManager {
     }
   };
 
-  historyButton?.addEventListener("click", () => {
+  historyButton?.addEventListener("click", (event) => {
+    event.stopPropagation();
     drawer?.classList.toggle("open");
 
     if (drawer?.classList.contains("open")) {
@@ -192,7 +193,10 @@ export function setupChatHistory(options: SetupOptions): ChatHistoryManager {
     drawer?.classList.remove("open");
   });
 
-  newButton?.addEventListener("click", createNewConversation);
+  newButton?.addEventListener("click", (event) => {
+    event.stopPropagation();
+    createNewConversation();
+  });
   searchInput?.addEventListener("input", renderList);
 
   deleteAllButton?.addEventListener("click", () => {

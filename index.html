@@ -18,31 +18,91 @@
 <div id="app">
 
   <canvas id="live2d-canvas"></canvas>
+  <!-- 보이는 캐릭터 몸에만 맞춤. 창 사각형이 아님 -->
+  <div id="character-hit-layer" aria-hidden="true"></div>
+  <div id="chat-resize-capture" aria-hidden="true"></div>
 
   <!-- 채팅 -->
   <div id="chat-panel">
 
     <div
+      id="chat-resize-n"
+      class="chat-resize-handle chat-resize-n"
+      data-resize="n"
+      title="위로 크기 조절"
+    ></div>
+    <div
+      id="chat-resize-ne"
+      class="chat-resize-handle chat-resize-ne"
+      data-resize="ne"
+      title="위로 크기 조절"
+    ></div>
+    <div
       id="chat-resize-handle"
-      title="채팅창 크기 조절"
+      class="chat-resize-handle chat-resize-s"
+      data-resize="s"
+      title="높이 조절"
+    ></div>
+    <div
+      id="chat-resize-e"
+      class="chat-resize-handle chat-resize-e"
+      data-resize="e"
+      title="너비 조절"
+    ></div>
+    <div
+      id="chat-resize-se"
+      class="chat-resize-handle chat-resize-se"
+      data-resize="se"
+      title="크기 조절"
     ></div>
 
     <div id="chat-history-toolbar">
-      <button
-        id="chat-history-button"
-        type="button"
-        title="대화 목록"
-      >
-        대화
-      </button>
+      <div class="chat-toolbar-start">
+        <button
+          id="chat-history-button"
+          type="button"
+          title="대화 목록"
+        >
+          대화
+        </button>
 
-      <button
-        id="new-chat-button"
-        type="button"
-        title="새 채팅"
-      >
-        + 새 채팅
-      </button>
+        <button
+          id="new-chat-button"
+          type="button"
+          title="새 채팅"
+        >
+          새 채팅
+        </button>
+      </div>
+
+      <div class="chat-toolbar-end">
+        <button
+          id="usage-dashboard-button"
+          type="button"
+          title="사용량"
+        >
+          사용량
+        </button>
+        <button
+          id="chat-close-button"
+          type="button"
+          title="채팅 닫기"
+          aria-label="채팅 닫기"
+        >
+          ×
+        </button>
+      </div>
+    </div>
+
+    <div id="usage-dashboard-panel" hidden>
+      <div class="usage-dashboard-header">
+        <div class="usage-dashboard-title">사용량</div>
+        <button type="button" id="usage-dashboard-login">로그인</button>
+        <button type="button" id="usage-dashboard-web">자세한 창</button>
+        <button type="button" id="usage-dashboard-refresh">새로고침</button>
+        <button type="button" id="usage-dashboard-close" aria-label="사용량 닫기">×</button>
+      </div>
+      <div id="usage-dashboard-body">불러오는 중…</div>
     </div>
 
     <div id="chat-history-drawer">
@@ -121,7 +181,7 @@
     FPS -- · CPU -- · RAM --
   </div>
 
-  <div id="status">
+  <div id="status" class="hidden">
     Live2D 시작 중...
   </div>
 

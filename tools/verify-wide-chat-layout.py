@@ -36,23 +36,25 @@ def main() -> None:
     )
     check(pane_match is not None, "original character lane width preserved", failures)
     check(
-        "left: calc(var(--ai-character-character-pane-width) + 12px)" in css
-        and "top: 12px" in css
-        and "bottom: 12px" in css
-        and "height: auto" in css,
+        "left: var(--ai-character-chat-left) !important" in css
+        and "bottom: var(--ai-character-hud-strip, 40px) !important" in css
+        and "min-width: 480px !important" in css,
         "chat occupies added right-side window area",
         failures,
     )
     check(
-        "/* AI-Character wide chat model anchor v22.1 */" in main_ts
-        and "characterPaneCenter" in main_ts
+        "chatLeftForCharacterLayout" in main_ts
+        and "characterPaneWidthForChat" in main_ts
+        and "occupancyFromModelBounds" in main_ts
+        and "applyCharacterChatLane" in main_ts
         and "model.x =" in main_ts,
         "Live2D character anchored inside original-width left lane",
         failures,
     )
     check(
-        "modelYBeforeChat = null" in main_ts,
-        "side chat disables legacy vertical character lift",
+        "characterBaselineY" in main_ts
+        and "syncChatModelPosition" in main_ts,
+        "side chat keeps character on the same baseline",
         failures,
     )
     stale_model_y_import = (
@@ -80,9 +82,15 @@ def main() -> None:
                 "main window widened while character lane stays fixed",
                 failures,
             )
-            check(window.get("resizable") is True, "main window remains resizable", failures)
             check(
-                isinstance(min_width, (int, float)) and min_width >= pane_width + 320,
+                window.get("resizable") is False,
+                "OS chrome resize disabled; chat uses in-app handles",
+                failures,
+            )
+            check(
+                "MIN_CHAT_WIDTH" in main_ts
+                and "setMinSize" in main_ts
+                and "minChatAppWindowSize" in main_ts,
                 "minimum width protects side-by-side layout",
                 failures,
             )

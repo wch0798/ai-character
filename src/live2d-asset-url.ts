@@ -70,23 +70,12 @@ export function isUserLive2DPath(path: string): boolean {
   return relative.startsWith("user/");
 }
 
-async function debugLog(message: string): Promise<void> {
-  if (!isTauriRuntime()) return;
-  try {
-    await invoke("append_debug_log", { message });
-  } catch {
-    // ignore
-  }
-}
-
 async function resolveAbsPath(relative: string): Promise<string | null> {
   if (!isTauriRuntime()) return null;
   const path = decodeLive2DPath(toLive2DRelative(relative));
   try {
     return await invoke<string>("resolve_live2d_abs_path", { path });
-  } catch (error) {
-    console.warn("Live2D abs path 실패:", path, error);
-    await debugLog(`abs path fail: ${path} :: ${String(error)}`);
+  } catch {
     return null;
   }
 }
@@ -96,8 +85,7 @@ async function readResourceBase64(relative: string): Promise<string | null> {
   const path = decodeLive2DPath(toLive2DRelative(relative));
   try {
     return await invoke<string>("read_live2d_bytes", { path });
-  } catch (error) {
-    console.warn("Live2D invoke 읽기 실패:", path, error);
+  } catch {
     return null;
   }
 }
@@ -147,21 +135,15 @@ async function textureToDisplayUrl(absPath: string, live2dRelative: string): Pro
   try {
     const encoded = await readResourceBase64(live2dRelative);
     if (encoded && encoded.length > 0 && encoded.length < 45_000_000) {
-      await debugLog(
-        `texture data-url ok: ${live2dRelative} bytes~${Math.round((encoded.length * 3) / 4)}`
-      );
       return `data:image/png;base64,${encoded}`;
     }
-  } catch (error) {
-    await debugLog(`texture invoke fail: ${live2dRelative} :: ${String(error)}`);
+  } catch {
+    // invoke 실패 시 asset/blob 경로로 이어간다
   }
   // Large texture fallback: asset protocol → blob URL
   try {
-    const url = await assetFileToObjectUrl(absPath, "image/png");
-    await debugLog(`texture blob-url ok: ${absPath}`);
-    return url;
-  } catch (error) {
-    await debugLog(`texture asset fail: ${absPath} :: ${String(error)}`);
+    return await assetFileToObjectUrl(absPath, "image/png");
+  } catch {
     throw new Error(`텍스처 로드 실패: ${absPath}`);
   }
 }
@@ -201,15 +183,11 @@ async function rewriteUserFileReferencesAsync(
     const abs = joinFs(baseDir, value);
     const fromInvoke = await fileToObjectUrlFromInvoke(live2dRel, mime);
     if (fromInvoke) {
-      await debugLog(`blob invoke ok: ${live2dRel}`);
       return fromInvoke;
     }
     try {
-      const url = await assetFileToObjectUrl(abs, mime);
-      await debugLog(`blob asset ok: ${abs}`);
-      return url;
-    } catch (error) {
-      await debugLog(`blob fail: ${live2dRel} :: ${String(error)}`);
+      return await assetFileToObjectUrl(abs, mime);
+    } catch {
       return toAssetUrl(abs);
     }
   };
@@ -307,11 +285,6 @@ async function resolveUserLive2DModelSource(
   // Live2D/WKWebView는 url에 일본어가 있으면 텍스처가 안 그려지는 경우가 있음.
   // 참조는 이미 blob/data 절대 URL이므로 ASCII placeholder만 둡니다.
   modelJson.url = "https://tauri.localhost/live2d/user-runtime/";
-  await debugLog(
-    `user model ready: ${relative} textures=${
-      Array.isArray(refs?.Textures) ? refs.Textures.length : 0
-    } mocType=${String((refs as { Moc?: string } | undefined)?.Moc ?? "").slice(0, 24)}`
-  );
   return modelJson;
 }
 
@@ -386,7 +359,11 @@ export async function fetchLive2DBytesViaInvoke(
     decodedUrl = url;
   }
 
-  if (/asset\.localhost|asset:\/\//i.test(decodedUrl)) {
+  if (
+    /^(ipc|tauri):/i.test(decodedUrl) ||
+    /ipc\.localhost/i.test(decodedUrl) ||
+    /asset\.localhost|asset:\/\//i.test(decodedUrl)
+  ) {
     return null;
   }
 

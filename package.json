@@ -8,13 +8,21 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
-    "start": "bash tools/launch-ai-character.sh",
-    "stop": "bash tools/stop-ai-character.sh",
+    "start": "node tools/launch.mjs",
+    "stop": "node tools/launch.mjs stop",
+    "setup:windows": "powershell -NoProfile -ExecutionPolicy Bypass -File tools/setup-windows.ps1",
+    "setup:window": "powershell -NoProfile -ExecutionPolicy Bypass -File tools/setup-windows.ps1",
     "build:app": "bash tools/build-release-macos.sh",
-    "build:app:windows": "npm run build && npm run tauri -- build --bundles nsis",
+    "build:app:windows": "powershell -NoProfile -ExecutionPolicy Bypass -File tools/build-release-windows.ps1",
     "install:local": "bash tools/install-local-macos.sh",
+    "install:local:windows": "powershell -NoProfile -ExecutionPolicy Bypass -File tools/install-local-windows.ps1",
+    "start:windows": "powershell -NoProfile -ExecutionPolicy Bypass -File tools/launch-ai-character.ps1",
     "verify:security": "python3 tools/verify-security-baseline.py .",
-    "test": "vitest run"
+    "verify:windows-install": "python tools/verify-windows-auto-install.py .",
+    "test": "node --require ./tools/patch-styletext.cjs ./node_modules/vitest/vitest.mjs run"
+  },
+  "engines": {
+    "node": ">=22.12.0"
   },
   "dependencies": {
     "@laplace.live/pixijs-live2d": "^0.4.0",

@@ -1,8 +1,4 @@
-import {
-  describe,
-  expect,
-  it,
-} from "vitest";
+import { describe, expect, it } from "vitest";
 
 import {
   getPerformanceHudPosition,
@@ -11,119 +7,90 @@ import {
 
 describe("performance HUD", () => {
   it("저장값이 없으면 기본으로 표시한다", () => {
-    expect(
-      readPerformanceHudVisible(null)
-    ).toBe(true);
-
-    expect(
-      readPerformanceHudVisible("false")
-    ).toBe(false);
-
-    expect(
-      readPerformanceHudVisible("true")
-    ).toBe(true);
+    expect(readPerformanceHudVisible(null)).toBe(true);
+    expect(readPerformanceHudVisible("false")).toBe(false);
+    expect(readPerformanceHudVisible("true")).toBe(true);
   });
 
-  it("캐릭터 아래 중앙(왼쪽 기준)에 배치한다", () => {
-    const position =
-      getPerformanceHudPosition(
-        {
-          x: 100,
-          y: 100,
-          width: 200,
-          height: 300,
-        },
-        {
-          left: 0,
-          top: 0,
-          width: 400,
-          height: 600,
-        },
-        400,
-        600,
-        180,
-        20,
-        null
-      );
+  it("창 맨 아래 스트립, 캐릭터 아래 중앙에 둔다", () => {
+    const position = getPerformanceHudPosition(
+      {
+        x: 100,
+        y: 100,
+        width: 200,
+        height: 300,
+      },
+      {
+        left: 0,
+        top: 0,
+        width: 400,
+        height: 600,
+      },
+      400,
+      600,
+      180,
+      20,
+      null
+    );
 
-    // center 200 - half 90 = 110
     expect(position.left).toBe(110);
-    expect(position.top).toBe(406);
+    expect(position.top).toBe(570);
   });
 
   it("좁은 창에서도 HUD 전체가 창 안에 들어온다", () => {
-    const position =
-      getPerformanceHudPosition(
-        {
-          x: 10,
-          y: 40,
-          width: 80,
-          height: 200,
-        },
-        {
-          left: 0,
-          top: 0,
-          width: 160,
-          height: 400,
-        },
-        160,
-        400,
-        140,
-        20,
-        null
-      );
+    const position = getPerformanceHudPosition(
+      {
+        x: 10,
+        y: 40,
+        width: 80,
+        height: 200,
+      },
+      {
+        left: 0,
+        top: 0,
+        width: 160,
+        height: 400,
+      },
+      160,
+      400,
+      140,
+      20,
+      null
+    );
 
     expect(position.left).toBeGreaterThanOrEqual(4);
     expect(position.left + 140).toBeLessThanOrEqual(156);
+    expect(position.top).toBe(370);
   });
 
-  it("채팅창이 있으면 그 위를 넘지 않는다", () => {
-    const position =
-      getPerformanceHudPosition(
-        {
-          x: 100,
-          y: 100,
-          width: 200,
-          height: 300,
-        },
-        {
-          left: 0,
-          top: 0,
-          width: 400,
-          height: 600,
-        },
-        400,
-        600,
-        180,
-        20,
-        420
-      );
+  it("채팅이 켜져도 발 아래 스트립에서 한 줄이 창 가로를 쓴다", () => {
+    const position = getPerformanceHudPosition(
+      {
+        x: 40,
+        y: 40,
+        width: 140,
+        height: 300,
+      },
+      {
+        left: 0,
+        top: 0,
+        width: 500,
+        height: 420,
+      },
+      500,
+      420,
+      260,
+      20,
+      {
+        left: 160,
+        top: 40,
+        width: 320,
+        height: 360,
+      }
+    );
 
-    expect(position.top).toBe(396);
-  });
-
-  it("채팅창이 닫혀도 HUD가 화면 아래로 잘리지 않는다", () => {
-    const position =
-      getPerformanceHudPosition(
-        {
-          x: 100,
-          y: 300,
-          width: 200,
-          height: 290,
-        },
-        {
-          left: 0,
-          top: 0,
-          width: 400,
-          height: 600,
-        },
-        400,
-        600,
-        180,
-        20,
-        null
-      );
-
-    expect(position.top).toBe(576);
+    expect(position.top).toBe(390);
+    expect(position.left).toBe(4);
+    expect(position.maxWidth).toBe(492);
   });
 });

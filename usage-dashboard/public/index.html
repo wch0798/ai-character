@@ -62,13 +62,18 @@
   .note { margin-top: 8px; color: var(--text-secondary); font-size: 12px; }
   .error { color: var(--critical); }
   .provider-block { margin-top: 16px; }
+  .intro p { margin: 0 0 12px; }
+  .glossary { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; }
+  .glossary div { display: grid; gap: 2px; padding: 10px; border: 1px solid var(--border); border-radius: 10px; }
+  .glossary span { color: var(--text-secondary); font-size: 12px; }
+  .acct .state { font-size: 12px; font-weight: 700; }
 </style>
 </head>
 <body>
 <main>
   <header>
     <div>
-      <h1>AI-Character 계정 사용량</h1>
+      <h1>지금 AI를 얼마나 썼나요?</h1>
       <div class="muted" id="updated">불러오는 중…</div>
     </div>
     <div>
@@ -77,8 +82,20 @@
     </div>
   </header>
 
+  <section class="card intro" style="margin-top:16px">
+    <h2>처음 보는 분께</h2>
+    <p class="note">이 페이지는 <b>어떤 AI에 로그인했는지</b>, <b>얼마나 썼는지</b>를 모아 보여줍니다. 큰 숫자일수록 그 AI를 많이 쓴 거예요. 토큰은 ‘읽고 쓴 글자 분량’이라고 생각하면 됩니다.</p>
+    <div class="glossary">
+      <div><b>연결됨</b><span>그 AI 계정으로 로그인한 상태</span></div>
+      <div><b>미연결</b><span>앱 설정 → 로그인에서 연결이 필요해요</span></div>
+      <div><b>한도 %</b><span>요금제에서 허용한 양의 몇 %를 썼는지</span></div>
+      <div><b>앱 실행</b><span>이 캐릭터 앱이 파일 작업을 시킨 횟수</span></div>
+    </div>
+  </section>
+
   <section class="card" style="margin-top:16px">
     <h2>연결된 계정</h2>
+    <div class="muted" style="margin-bottom:10px">초록 점은 준비됨, 회색 점은 아직 로그인/키가 없는 상태입니다.</div>
     <div class="accounts" id="accounts"></div>
   </section>
 
@@ -194,27 +211,21 @@ function meter(label, pct, windowMin, resetsAt) {
 }
 
 function accountConnected(a) {
-  return !!(a?.email || a?.keyHint);
+  return !!(a?.connected || a?.email || a?.keyHint);
 }
 
 function accountCard(name, a, extraLines = []) {
   const connected = accountConnected(a);
-  const id = a?.email ?? (a?.keyHint ? `API 키 ${a.keyHint}` : null);
   const lines = [
-    a?.name && `이름: ${a.name}`,
     a?.plan && `요금제: ${PLAN[a.plan] ?? a.plan}`,
-    a?.organization && `조직: ${a.organization}`,
     a?.loginWith && `로그인: ${a.loginWith}`,
-    a?.accountId && `계정 ID: ${String(a.accountId).slice(0, 8)}…`,
-    a?.userId != null && `사용자 ID: ${a.userId}`,
     ...(a?.linesExtra || []),
     ...extraLines,
   ].filter(Boolean);
   return `<div class="acct"><span class="dot" style="background:${connected ? 'var(--good)' : 'var(--text-muted)'}"></span>
-    <div><div>${esc(name)} <span class="muted">${connected ? '연결됨' : '미연결'}</span></div>
-    <div class="acct-id">${esc(id ?? '로그인 정보 없음')}</div>
+    <div><div>${esc(name)} <span class="state" style="color:${connected ? 'var(--good)' : 'var(--warning)'}">${connected ? '연결됨' : '로그인 필요'}</span></div>
+    <div class="acct-id">${esc(connected ? '로그인되어 있어요' : '아직 로그인하지 않았어요')}</div>
     ${lines.map((l) => `<div class="muted">${esc(l)}</div>`).join('')}
-    ${a?.source ? `<div class="muted" title="${esc(a.source)}">출처: ${esc(homeish(a.source))}</div>` : ''}
     </div></div>`;
 }
 
@@ -252,18 +263,17 @@ function render(d) {
   const runCounts = runs.reduce((a, r) => (a[r.status] = (a[r.status] || 0) + 1, a), {});
   const byAgent = runs.reduce((a, r) => (a[r.agent] = (a[r.agent] || 0) + 1, a), {});
 
-  $('updated').textContent = `마지막 갱신: ${time(d.generatedAt)} · 데이터 폴더: ${d.appDir} · AI ${providers.length}개`;
+  $('updated').textContent = `마지막 갱신: ${time(d.generatedAt)} · AI ${providers.length}개`;
 
   // 계정: provider 계정 + API 키 + 앱 캐릭터
   const accountHtml = [
     ...providers.map((p) => accountCard(p.label, p.account)),
     ...keys.map((k) => accountCard(k.label, {
-      email: k.configured ? `키 끝자리 ${k.hint}` : null,
-      source: `keys.env (${k.env})`,
-    }, [`출처: keys.env 의 ${k.env}`])),
-    accountCard('앱 캐릭터', {
-      email: app.character || null,
-      linesExtra: [app.selectedModel && `모델: ${app.selectedModel}`].filter(Boolean),
+      connected: !!k.configured,
+    }, [k.configured ? '키가 준비되어 있어요' : '아직 키가 없어요'])),
+    accountCard('이 앱 캐릭터', {
+      email: app.character || '캐릭터는 로그인이 아니에요',
+      linesExtra: [app.selectedModel && `모델: ${app.selectedModel}`, '채팅 화면에 보이는 친구입니다'].filter(Boolean),
     }),
   ].join('');
   $('accounts').innerHTML = accountHtml;
@@ -343,7 +353,13 @@ function render(d) {
 
 async function load() {
   try {
-    const res = await fetch('/api/usage');
+    const token = window.__AI_CHARACTER_USAGE_TOKEN__
+      || new URLSearchParams(location.search).get('t')
+      || '';
+    const res = await fetch('/api/usage', {
+      credentials: 'same-origin',
+      headers: token ? { 'X-AI-Character-Token': token } : {},
+    });
     if (!res.ok) throw new Error(await res.text());
     render(await res.json());
   } catch (err) {

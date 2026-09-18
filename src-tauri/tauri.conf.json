@@ -10,16 +10,18 @@
     "frontendDist": "../dist"
   },
   "app": {
-    "withGlobalTauri": true,
+    "withGlobalTauri": false,
     "windows": [
       {
         "title": "AI Character",
         "width": 980,
         "height": 680,
-        "resizable": true,
+        "resizable": false,
         "decorations": false,
         "transparent": true,
         "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "label": "main",
         "shadow": false,
         "visibleOnAllWorkspaces": true,
         "minWidth": 160,

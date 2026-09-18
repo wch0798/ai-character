@@ -1,15 +1,18 @@
 //! Windows에서 콘솔(CMD) 창이 깜빡이지 않게 프로세스를 실행하고,
 //! 셸 없이 CPU/RAM 통계를 읽습니다.
 
+use std::path::Path;
+use std::process::Command;
+
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
-#[cfg(windows)]
-use std::process::Command;
 #[cfg(windows)]
 use std::sync::atomic::{AtomicU64, Ordering};
 
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+#[cfg(windows)]
+const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
 
 #[cfg(windows)]
 pub fn hide_console(command: &mut Command) -> &mut Command {
@@ -17,8 +20,81 @@ pub fn hide_console(command: &mut Command) -> &mut Command {
 }
 
 #[cfg(not(windows))]
-pub fn hide_console(command: &mut std::process::Command) -> &mut std::process::Command {
+pub fn hide_console(command: &mut Command) -> &mut Command {
     command
+}
+
+/// `.cmd`/`.bat`는 CreateProcess로 바로 못 띄우므로 `cmd /S /C`로 실행합니다.
+/// 추가 인자는 `/C` 문자열 안에 넣어야 전달됩니다.
+pub fn command_with_args(path: &Path, args: &[&str]) -> Command {
+    #[cfg(windows)]
+    {
+        command_with_creation_flags(path, args, CREATE_NO_WINDOW)
+    }
+    #[cfg(not(windows))]
+    {
+        let mut command = Command::new(path);
+        command.args(args);
+        command
+    }
+}
+
+#[cfg(windows)]
+fn command_with_creation_flags(path: &Path, args: &[&str], flags: u32) -> Command {
+    let ext = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if matches!(ext.as_str(), "cmd" | "bat") {
+        let mut command = Command::new("cmd.exe");
+        command.creation_flags(flags);
+        let mut line = format!("\"{}\"", path.display());
+        for arg in args {
+            line.push(' ');
+            if arg.contains(char::is_whitespace) {
+                line.push('"');
+                line.push_str(arg);
+                line.push('"');
+            } else {
+                line.push_str(arg);
+            }
+        }
+        command.arg("/D").arg("/S").arg("/C").arg(line);
+        return command;
+    }
+    let mut command = Command::new(path);
+    command.creation_flags(flags);
+    command.args(args);
+    command
+}
+
+#[allow(dead_code)]
+pub fn command_for(path: &Path) -> Command {
+    command_with_args(path, &[])
+}
+
+/// CLI 로그인은 숨긴 콘솔에서 실패하므로 보이는 콘솔 창을 띄웁니다.
+#[cfg(windows)]
+#[allow(dead_code)]
+pub fn launch_visible_cli(path: &Path, args: &[&str]) -> Result<(), String> {
+    launch_visible_cli_with_env(path, args, &[])
+}
+
+#[cfg(windows)]
+pub fn launch_visible_cli_with_env(
+    path: &Path,
+    args: &[&str],
+    envs: &[(String, String)],
+) -> Result<(), String> {
+    let mut command = command_with_creation_flags(path, args, CREATE_NEW_CONSOLE);
+    for (key, value) in envs {
+        command.env(key, value);
+    }
+    command
+        .spawn()
+        .map_err(|error| format!("로그인 창 실행 실패: {error}"))?;
+    Ok(())
 }
 
 #[cfg(windows)]

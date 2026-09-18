@@ -264,6 +264,10 @@ export async function openUsageDashboard(): Promise<string> {
   return invoke<string>("open_usage_dashboard");
 }
 
+export async function getUsageSnapshot(): Promise<unknown> {
+  return invoke("get_usage_snapshot");
+}
+
 export async function ensureKeysEnvFile(): Promise<string> {
   return invoke<string>("ensure_keys_env_file");
 }

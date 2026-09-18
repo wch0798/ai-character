@@ -1,9 +1,13 @@
-use crate::agent_core::{resolve_agent_binary, AgentKind};
+use crate::agent_core::{
+    is_preferred_windows_binary, resolve_agent_binary, AgentKind,
+};
 use crate::environment_preflight::git_binary;
 use crate::settings::load_settings;
 use serde::Serialize;
+#[cfg(not(windows))]
 use std::env;
 use std::path::PathBuf;
+#[cfg(not(windows))]
 use std::process::Command;
 
 #[derive(Clone, Debug, Serialize)]
@@ -49,84 +53,24 @@ fn platform_name() -> &'static str {
 }
 
 fn node_binary() -> Option<PathBuf> {
-    if let Some(value) = env::var_os("PATH") {
-        for dir in env::split_paths(&value) {
-            for name in ["node.exe", "node"] {
-                let candidate = dir.join(name);
-                if candidate.is_file() {
-                    return Some(candidate);
-                }
-            }
-        }
-    }
     #[cfg(windows)]
     {
-        if let Some(program_files) = env::var_os("ProgramFiles") {
-            let candidate = PathBuf::from(program_files)
-                .join("nodejs")
-                .join("node.exe");
-            if candidate.is_file() {
-                return Some(candidate);
-            }
-        }
-        if let Some(local) = env::var_os("LOCALAPPDATA") {
-            let candidate = PathBuf::from(local)
-                .join("Programs")
-                .join("node")
-                .join("node.exe");
-            if candidate.is_file() {
-                return Some(candidate);
-            }
-        }
+        return crate::windows_setup::node_binary();
     }
-    None
-}
-
-#[cfg(windows)]
-fn npm_binary() -> Option<PathBuf> {
-    if let Some(value) = env::var_os("PATH") {
-        for dir in env::split_paths(&value) {
-            for name in ["npm.cmd", "npm.exe", "npm"] {
-                let candidate = dir.join(name);
-                if candidate.is_file() {
-                    return Some(candidate);
+    #[cfg(not(windows))]
+    {
+        if let Some(value) = env::var_os("PATH") {
+            for dir in env::split_paths(&value) {
+                for name in ["node.exe", "node"] {
+                    let candidate = dir.join(name);
+                    if candidate.is_file() {
+                        return Some(candidate);
+                    }
                 }
             }
         }
+        None
     }
-    if let Some(program_files) = env::var_os("ProgramFiles") {
-        let candidate = PathBuf::from(program_files)
-            .join("nodejs")
-            .join("npm.cmd");
-        if candidate.is_file() {
-            return Some(candidate);
-        }
-    }
-    None
-}
-
-#[cfg(windows)]
-fn winget_binary() -> Option<PathBuf> {
-    if let Some(value) = env::var_os("PATH") {
-        for dir in env::split_paths(&value) {
-            for name in ["winget.exe", "winget"] {
-                let candidate = dir.join(name);
-                if candidate.is_file() {
-                    return Some(candidate);
-                }
-            }
-        }
-    }
-    if let Some(local) = env::var_os("LOCALAPPDATA") {
-        let candidate = PathBuf::from(local)
-            .join("Microsoft")
-            .join("WindowsApps")
-            .join("winget.exe");
-        if candidate.is_file() {
-            return Some(candidate);
-        }
-    }
-    None
 }
 
 fn agent_status(agent: AgentKind) -> RuntimeComponentStatus {
@@ -154,6 +98,11 @@ fn agent_status(agent: AgentKind) -> RuntimeComponentStatus {
 
 #[tauri::command]
 pub fn get_runtime_setup_status() -> RuntimeSetupStatus {
+    #[cfg(windows)]
+    {
+        crate::windows_setup::refresh_process_path();
+    }
+
     let mut components = Vec::new();
 
     match git_binary() {
@@ -222,210 +171,102 @@ pub fn get_runtime_setup_status() -> RuntimeSetupStatus {
     }
 }
 
-#[cfg(windows)]
-fn run_winget(package_id: &str) -> Result<String, String> {
-    let winget = winget_binary().ok_or_else(|| {
-        "winget이 없습니다. Microsoft Store에서 '앱 설치 관리자'를 설치하세요.".to_string()
-    })?;
-    let mut command = Command::new(winget);
-    crate::windows_process::hide_console(&mut command);
-    let output = command
-        .args([
-            "install",
-            "--id",
-            package_id,
-            "-e",
-            "--accept-package-agreements",
-            "--accept-source-agreements",
-            "--disable-interactivity",
-        ])
-        .output()
-        .map_err(|error| format!("winget 실행 실패: {error}"))?;
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    // 이미 설치됨도 성공으로 처리
-    if output.status.success()
-        || stdout.contains("already installed")
-        || stderr.contains("already installed")
-        || stdout.contains("No available upgrade")
-    {
-        return Ok(format!("{package_id} 설치 완료"));
-    }
-    Err(format!(
-        "{package_id} 설치 실패: {}",
-        if stderr.trim().is_empty() {
-            stdout.trim()
-        } else {
-            stderr.trim()
-        }
-    ))
-}
-
-#[cfg(windows)]
-fn run_npm_global(package: &str) -> Result<String, String> {
-    let npm = npm_binary().ok_or_else(|| {
-        "npm이 없습니다. Node.js를 먼저 설치하세요.".to_string()
-    })?;
-    let mut command = Command::new(npm);
-    crate::windows_process::hide_console(&mut command);
-    let output = command
-        .args(["install", "-g", package])
-        .output()
-        .map_err(|error| format!("npm 실행 실패: {error}"))?;
-    if output.status.success() {
-        return Ok(format!("{package} 전역 설치 완료"));
-    }
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    Err(format!(
-        "{package} 설치 실패: {}",
-        if stderr.trim().is_empty() {
-            stdout.trim()
-        } else {
-            stderr.trim()
-        }
-    ))
-}
-
-#[cfg(windows)]
-fn open_url(url: &str) -> Result<(), String> {
-    let mut command = Command::new("cmd");
-    crate::windows_process::hide_console(&mut command);
-    command
-        .args(["/C", "start", "", url])
-        .spawn()
-        .map_err(|error| format!("브라우저 열기 실패: {error}"))?;
-    Ok(())
-}
-
-/// Git + Node 등 기반 런타임 설치
-#[tauri::command]
-pub fn install_windows_runtimes() -> Result<Vec<InstallStepResult>, String> {
+fn install_windows_runtimes_impl() -> Result<Vec<InstallStepResult>, String> {
     #[cfg(not(windows))]
     {
-        return Err("이 기능은 Windows에서만 사용할 수 있습니다.".to_string());
+        Err("이 기능은 Windows에서만 사용할 수 있습니다.".to_string())
     }
     #[cfg(windows)]
     {
+        crate::windows_setup::refresh_process_path();
         let mut steps = Vec::new();
-
-        if git_binary().is_none() {
-            match run_winget("Git.Git") {
-                Ok(message) => steps.push(InstallStepResult {
-                    id: "git".into(),
-                    ok: true,
-                    message,
-                }),
-                Err(error) => {
-                    let _ = open_url("https://git-scm.com/download/win");
-                    steps.push(InstallStepResult {
-                        id: "git".into(),
-                        ok: false,
-                        message: format!("{error} — 다운로드 페이지를 열었습니다."),
-                    });
-                }
-            }
-        } else {
-            steps.push(InstallStepResult {
+        match crate::windows_setup::install_git() {
+            Ok(message) => steps.push(InstallStepResult {
                 id: "git".into(),
                 ok: true,
-                message: "Git 이미 설치됨".into(),
-            });
+                message,
+            }),
+            Err(error) => steps.push(InstallStepResult {
+                id: "git".into(),
+                ok: false,
+                message: error,
+            }),
         }
-
-        if node_binary().is_none() {
-            match run_winget("OpenJS.NodeJS.LTS") {
-                Ok(message) => steps.push(InstallStepResult {
-                    id: "node".into(),
-                    ok: true,
-                    message,
-                }),
-                Err(error) => {
-                    let _ = open_url("https://nodejs.org/en/download");
-                    steps.push(InstallStepResult {
-                        id: "node".into(),
-                        ok: false,
-                        message: format!("{error} — Node 다운로드 페이지를 열었습니다."),
-                    });
-                }
-            }
-        } else {
-            steps.push(InstallStepResult {
+        match crate::windows_setup::install_node() {
+            Ok(message) => steps.push(InstallStepResult {
                 id: "node".into(),
                 ok: true,
-                message: "Node.js 이미 설치됨".into(),
-            });
+                message,
+            }),
+            Err(error) => steps.push(InstallStepResult {
+                id: "node".into(),
+                ok: false,
+                message: error,
+            }),
         }
-
         Ok(steps)
     }
 }
 
-/// Agent CLI 설치 (가능한 것만 자동, 나머지는 공식 설치 페이지)
-#[tauri::command]
-pub fn install_agent_cli(agent: String) -> Result<InstallStepResult, String> {
+fn install_agent_cli_impl(agent: String) -> Result<InstallStepResult, String> {
     let agent = AgentKind::parse(&agent)?;
     #[cfg(not(windows))]
     {
-        return Ok(InstallStepResult {
+        Ok(InstallStepResult {
             id: agent.as_str().to_string(),
             ok: false,
             message: format!(
                 "{} Windows 자동 설치는 Windows에서만 지원합니다.",
                 agent.display_name()
             ),
-        });
+        })
     }
     #[cfg(windows)]
     {
-        // 이미 있으면 스킵
-        let settings = load_settings().ok();
-        let saved = settings
-            .as_ref()
-            .and_then(|s| s.agent_path(agent).map(PathBuf::as_path));
-        if resolve_agent_binary(agent, saved).is_ok() {
-            return Ok(InstallStepResult {
-                id: agent.as_str().to_string(),
-                ok: true,
-                message: format!("{} 이미 설치됨", agent.display_name()),
-            });
+        crate::windows_setup::refresh_process_path();
+        if let Ok(path) = resolve_agent_binary(agent, None) {
+            if is_preferred_windows_binary(agent, &path) {
+                return Ok(InstallStepResult {
+                    id: agent.as_str().to_string(),
+                    ok: true,
+                    message: format!(
+                        "{} 이미 설치됨 ({})",
+                        agent.display_name(),
+                        path.display()
+                    ),
+                });
+            }
         }
 
         let result = match agent {
             AgentKind::Claude => {
                 if node_binary().is_none() {
-                    let _ = install_windows_runtimes();
+                    let _ = crate::windows_setup::install_node();
                 }
-                run_npm_global("@anthropic-ai/claude-code").or_else(|error| {
-                    let _ = open_url("https://docs.anthropic.com/en/docs/claude-code/overview");
-                    Err(format!("{error} — 문서를 열었습니다."))
-                })
+                crate::windows_setup::install_claude()
             }
             AgentKind::Codex => {
                 if node_binary().is_none() {
-                    let _ = install_windows_runtimes();
+                    let _ = crate::windows_setup::install_node();
                 }
-                run_npm_global("@openai/codex").or_else(|error| {
-                    let _ = open_url("https://github.com/openai/codex");
-                    Err(format!("{error} — 문서를 열었습니다."))
-                })
+                crate::windows_setup::install_codex()
             }
-            AgentKind::Cursor => run_winget("Anysphere.Cursor").or_else(|error| {
-                let _ = open_url("https://cursor.com/download");
-                Err(format!("{error} — Cursor 다운로드 페이지를 열었습니다."))
-            }),
-            AgentKind::Antigravity => {
-                let _ = open_url("https://antigravity.google/");
-                Err("Antigravity는 공식 설치 페이지를 열었습니다. 설치 후 앱을 다시 실행하세요.".to_string())
-            }
+            AgentKind::Cursor => crate::windows_setup::install_cursor_agent(),
+            AgentKind::Antigravity => crate::windows_setup::install_antigravity(),
         };
 
         match result {
-            Ok(message) => Ok(InstallStepResult {
-                id: agent.as_str().to_string(),
-                ok: true,
-                message,
-            }),
+            Ok(message) => {
+                crate::windows_setup::refresh_process_path();
+                let resolved = resolve_agent_binary(agent, None)
+                    .map(|path| format!(" → {}", path.display()))
+                    .unwrap_or_default();
+                Ok(InstallStepResult {
+                    id: agent.as_str().to_string(),
+                    ok: true,
+                    message: format!("{message}{resolved}"),
+                })
+            }
             Err(message) => Ok(InstallStepResult {
                 id: agent.as_str().to_string(),
                 ok: false,
@@ -435,50 +276,74 @@ pub fn install_agent_cli(agent: String) -> Result<InstallStepResult, String> {
     }
 }
 
-/// 한 번에: Git/Node + Claude/Cursor/Codex (Antigravity는 링크)
-#[tauri::command]
-pub fn install_all_required_runtimes() -> Result<Vec<InstallStepResult>, String> {
+fn install_all_required_runtimes_impl() -> Result<Vec<InstallStepResult>, String> {
     #[cfg(not(windows))]
     {
-        return Err(
+        Err(
             "필수 프로그램 일괄 설치는 Windows에서만 지원합니다. macOS는 Homebrew 등으로 설치하세요."
                 .to_string(),
-        );
+        )
     }
     #[cfg(windows)]
     {
-        let mut steps = install_windows_runtimes()?;
+        let mut steps = install_windows_runtimes_impl()?;
         for agent in ["claude", "cursor", "codex", "antigravity"] {
-            steps.push(install_agent_cli(agent.to_string())?);
+            steps.push(install_agent_cli_impl(agent.to_string())?);
         }
         Ok(steps)
     }
 }
 
+/// Git + Node 등 기반 런타임 설치
+#[tauri::command]
+pub async fn install_windows_runtimes() -> Result<Vec<InstallStepResult>, String> {
+    tauri::async_runtime::spawn_blocking(install_windows_runtimes_impl)
+        .await
+        .map_err(|error| format!("설치 작업 실패: {error}"))?
+}
+
+/// Agent CLI 설치 (가능한 것만 자동, 나머지는 공식 설치 페이지)
+#[tauri::command]
+pub async fn install_agent_cli(agent: String) -> Result<InstallStepResult, String> {
+    tauri::async_runtime::spawn_blocking(move || install_agent_cli_impl(agent))
+        .await
+        .map_err(|error| format!("설치 작업 실패: {error}"))?
+}
+
+/// 한 번에: Git/Node + Claude/Cursor/Codex (Antigravity는 링크)
+#[tauri::command]
+pub async fn install_all_required_runtimes() -> Result<Vec<InstallStepResult>, String> {
+    tauri::async_runtime::spawn_blocking(install_all_required_runtimes_impl)
+        .await
+        .map_err(|error| format!("설치 작업 실패: {error}"))?
+}
+
 /// Agent CLI 로그인 흐름 시작 (브라우저/공식 로그인 UI)
 #[tauri::command]
-pub fn launch_agent_login(agent: String) -> Result<String, String> {
+pub fn launch_agent_login(app: tauri::AppHandle, agent: String) -> Result<String, String> {
+    crate::window_stack::suppress_main_always_on_top(&app);
     let agent = AgentKind::parse(&agent)?;
     let settings = load_settings().ok();
     let saved = settings
         .as_ref()
         .and_then(|s| s.agent_path(agent).map(PathBuf::as_path));
     let binary = resolve_agent_binary(agent, saved).map_err(|error| {
-        format!(
-            "{error} — 먼저 설정에서 ‘필수 프로그램 설치’를 실행하세요."
-        )
+        format!("{error} — 먼저 설정에서 ‘필수 프로그램 설치’를 실행하세요.")
     })?;
 
     match agent {
         AgentKind::Claude => {
             #[cfg(windows)]
             {
-                let mut command = Command::new(&binary);
-                crate::windows_process::hide_console(&mut command);
-                command
-                    .args(["auth", "login"])
-                    .spawn()
-                    .map_err(|error| format!("Claude 로그인 실행 실패: {error}"))?;
+                let envs = crate::isolated_browser::cli_browser_env("claude-cli")
+                    .unwrap_or_default();
+                crate::windows_process::launch_visible_cli_with_env(
+                    &binary,
+                    &["auth", "login"],
+                    &envs,
+                )
+                .map_err(|error| format!("Claude 로그인 실행 실패: {error}"))?;
+                let _ = crate::isolated_browser::open_url("claude-cli", "https://claude.ai/login");
             }
             #[cfg(not(windows))]
             {
@@ -487,22 +352,19 @@ pub fn launch_agent_login(agent: String) -> Result<String, String> {
                     .spawn()
                     .map_err(|error| format!("Claude 로그인 실행 실패: {error}"))?;
             }
-            Ok("Claude 로그인을 시작했습니다. 브라우저에서 계정 승인을 완료하세요.".to_string())
+            Ok("Claude 로그인을 시작했습니다. 기본 구글 계정과 분리된 창에서 로그인하세요.".to_string())
         }
         AgentKind::Codex => {
             #[cfg(windows)]
             {
-                let mut command = Command::new(&binary);
-                crate::windows_process::hide_console(&mut command);
-                command
-                    .args(["login"])
-                    .spawn()
+                let envs = crate::isolated_browser::cli_browser_env("codex-cli")
+                    .unwrap_or_default();
+                crate::windows_process::launch_visible_cli_with_env(&binary, &["login"], &envs)
                     .or_else(|_| {
-                        let mut fallback = Command::new(&binary);
-                        crate::windows_process::hide_console(&mut fallback);
-                        fallback.spawn()
+                        crate::windows_process::launch_visible_cli_with_env(&binary, &[], &envs)
                     })
                     .map_err(|error| format!("Codex 로그인 실행 실패: {error}"))?;
+                let _ = crate::isolated_browser::open_url("codex-cli", "https://chatgpt.com/");
             }
             #[cfg(not(windows))]
             {
@@ -512,35 +374,35 @@ pub fn launch_agent_login(agent: String) -> Result<String, String> {
                     .or_else(|_| Command::new(&binary).spawn())
                     .map_err(|error| format!("Codex 로그인 실행 실패: {error}"))?;
             }
-            Ok("Codex 로그인을 시작했습니다. 안내에 따라 로그인하세요.".to_string())
+            Ok("Codex 로그인을 시작했습니다. 기본 구글 계정과 분리된 창에서 로그인하세요.".to_string())
         }
         AgentKind::Cursor => {
             #[cfg(windows)]
             {
-                let mut command = Command::new(&binary);
-                crate::windows_process::hide_console(&mut command);
-                let _ = command.spawn();
-                // Cursor GUI도 함께 시도
-                let _ = Command::new("cmd")
-                    .args(["/C", "start", "", "cursor://"])
-                    .spawn();
+                let envs = crate::isolated_browser::cli_browser_env("cursor-cli")
+                    .unwrap_or_default();
+                crate::windows_process::launch_visible_cli_with_env(&binary, &[], &envs)
+                    .map_err(|error| format!("Cursor 실행 실패: {error}"))?;
+                let _ = crate::isolated_browser::open_url(
+                    "cursor-cli",
+                    "https://authenticator.cursor.sh/",
+                );
             }
             #[cfg(not(windows))]
             {
                 let _ = Command::new(&binary).spawn();
                 let _ = Command::new("open").arg("cursor://").spawn();
             }
-            Ok("Cursor를 열었습니다. Cursor 앱에서 계정 로그인하세요.".to_string())
+            Ok("Cursor 로그인을 시작했습니다. 기본 구글 계정과 분리된 창에서 로그인하세요.".to_string())
         }
         AgentKind::Antigravity => {
             #[cfg(windows)]
             {
-                let mut command = Command::new("cmd");
-                crate::windows_process::hide_console(&mut command);
-                command
-                    .args(["/C", "start", "", "https://antigravity.google/"])
-                    .spawn()
-                    .map_err(|error| format!("페이지 열기 실패: {error}"))?;
+                crate::isolated_browser::open_url(
+                    "antigravity-cli",
+                    "https://antigravity.google/",
+                )
+                .map_err(|error| format!("페이지 열기 실패: {error}"))?;
             }
             #[cfg(not(windows))]
             {
@@ -549,7 +411,7 @@ pub fn launch_agent_login(agent: String) -> Result<String, String> {
                     .spawn()
                     .map_err(|error| format!("페이지 열기 실패: {error}"))?;
             }
-            Ok("Antigravity 페이지를 열었습니다.".to_string())
+            Ok("Antigravity 페이지를 분리된 브라우저 창에서 열었습니다. 기본 구글 계정과 섞이지 않습니다.".to_string())
         }
     }
 }

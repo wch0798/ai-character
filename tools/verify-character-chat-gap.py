@@ -28,21 +28,22 @@ def main() -> None:
         failures,
     )
     check(
-        "--ai-character-chat-gap: 12px" in css
+        "--ai-character-chat-gap:" in css
         and "left: var(--ai-character-chat-left) !important" in css,
         "chat left edge uses runtime visible-character position",
         failures,
     )
     check(
-        "/* AI-Character visible character edge anchor v22.2 */" in main_ts
-        and "modelWithBounds.getBounds()" in main_ts
-        and "modelRightCss" in main_ts,
+        "chatLeftForCharacterLayout" in main_ts
+        and "characterPaneWidthForChat" in main_ts
+        and "characterDisplaySize" in main_ts
+        and "occupancyFromModelBounds" in main_ts,
         "Live2D visible right edge measured for compact spacing",
         failures,
     )
     check(
-        "minimumChatWidth = 340" in main_ts
-        and "maximumChatLeft" in main_ts,
+        "MIN_CHAT_WIDTH" in main_ts
+        and "minChatAppWindowSize" in main_ts,
         "dynamic chat position preserves usable chat width",
         failures,
     )

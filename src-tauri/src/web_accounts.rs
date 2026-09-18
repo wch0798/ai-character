@@ -314,6 +314,7 @@ pub fn close_accounts(app: &AppHandle, account_ids: &[String]) -> Result<(), Str
 }
 
 fn open_account_window(app: &AppHandle, account: &WebAccountSlot) -> Result<(), String> {
+    crate::window_stack::suppress_main_always_on_top(app);
     let label = window_label(&account.id);
     let url = Url::parse(account.provider.url())
         .map_err(|error| format!("URL 파싱 실패: {error}"))?;
@@ -331,6 +332,15 @@ fn open_account_window(app: &AppHandle, account: &WebAccountSlot) -> Result<(), 
     let data_dir = profile_dir(app, &account.id)?;
     fs::create_dir_all(&data_dir)
         .map_err(|error| format!("계정 프로필 폴더 생성 실패: {error}"))?;
+
+    #[cfg(windows)]
+    {
+        if crate::isolated_browser::open_url(&format!("web-{}", account.id), account.provider.url())
+            .is_ok()
+        {
+            return Ok(());
+        }
+    }
 
     WebviewWindowBuilder::new(app, &label, WebviewUrl::External(url))
         .title(title)

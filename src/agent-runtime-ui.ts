@@ -45,11 +45,25 @@ export function initializeAgentRuntimeUi(): void {
     return;
   }
 
-  const agentBadge = document.createElement("span");
+  const agentBadge = document.createElement("button");
+  agentBadge.type = "button";
   agentBadge.id = "agent-runtime-agent";
-  agentBadge.textContent = "Agent: 확인 중…";
-  agentBadge.title = "현재 기본 Agent";
-  toolbar?.append(agentBadge);
+  agentBadge.textContent = "여러 Agent";
+  agentBadge.title = "Agent 설정 열기";
+  agentBadge.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    window.dispatchEvent(
+      new CustomEvent("ai-character:open-settings", { detail: { tab: "basic" } })
+    );
+  });
+  const toolbarEnd = document.querySelector<HTMLElement>(".chat-toolbar-end");
+  const chatCloseButton = document.querySelector<HTMLElement>("#chat-close-button");
+  if (toolbarEnd && chatCloseButton && toolbarEnd.contains(chatCloseButton)) {
+    toolbarEnd.insertBefore(agentBadge, chatCloseButton);
+  } else {
+    toolbar?.append(agentBadge);
+  }
 
   const agentLabel = (agent: string): string => ({
     claude: "Claude",
@@ -63,8 +77,8 @@ export function initializeAgentRuntimeUi(): void {
       ? "여러 Agent"
       : `Agent: ${agentLabel(preferences.defaultAgent)}`;
     agentBadge.title = preferences.cradleEnabled
-      ? "질문은 바로 답하고, 파일 작업은 설치된 Cursor·Codex·Claude 등에 나눕니다."
-      : "현재 기본 Agent";
+      ? "질문은 바로 답하고, 파일 작업은 설치된 Cursor·Codex·Claude 등에 나눕니다. 클릭하면 설정이 열립니다."
+      : "현재 기본 Agent. 클릭하면 설정이 열립니다.";
   };
 
   void getAppPreferences().then(updateAgentBadge).catch(() => {

@@ -77,7 +77,12 @@ pub fn git_binary() -> Option<PathBuf> {
 }
 
 fn git_version_for(binary: &Path) -> Option<String> {
-    let output = Command::new(binary)
+    let mut command = Command::new(binary);
+    #[cfg(windows)]
+    {
+        crate::windows_process::hide_console(&mut command);
+    }
+    let output = command
         .arg("--version")
         .stdin(Stdio::null())
         .output()
@@ -90,7 +95,12 @@ fn git_version_for(binary: &Path) -> Option<String> {
 }
 
 fn run_git(binary: &Path, workspace: &Path, args: &[&str]) -> Result<String, String> {
-    let output = Command::new(binary)
+    let mut command = Command::new(binary);
+    #[cfg(windows)]
+    {
+        crate::windows_process::hide_console(&mut command);
+    }
+    let output = command
         .arg("-C")
         .arg(workspace)
         .args(args)
@@ -210,39 +220,7 @@ pub fn launch_git_installer() -> Result<(), String> {
 
     #[cfg(windows)]
     {
-        // winget이 있으면 조용히 설치, 없으면 다운로드 페이지
-        let winget = env::var_os("LOCALAPPDATA").and_then(|local| {
-            let candidate = PathBuf::from(local)
-                .join("Microsoft")
-                .join("WindowsApps")
-                .join("winget.exe");
-            candidate.is_file().then_some(candidate)
-        });
-        if let Some(winget) = winget {
-            let mut command = Command::new(winget);
-            crate::windows_process::hide_console(&mut command);
-            let status = command
-                .args([
-                    "install",
-                    "--id",
-                    "Git.Git",
-                    "-e",
-                    "--accept-package-agreements",
-                    "--accept-source-agreements",
-                    "--disable-interactivity",
-                ])
-                .status();
-            if status.map(|s| s.success()).unwrap_or(false) {
-                return Ok(());
-            }
-        }
-        let mut command = Command::new("cmd");
-        crate::windows_process::hide_console(&mut command);
-        command
-            .args(["/C", "start", "", "https://git-scm.com/download/win"])
-            .spawn()
-            .map_err(|error| format!("Git 다운로드 페이지 열기 실패: {error}"))?;
-        return Ok(());
+        crate::windows_setup::install_git().map(|_| ())
     }
 
     #[cfg(all(unix, not(target_os = "macos")))]

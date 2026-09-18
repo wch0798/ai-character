@@ -3,6 +3,7 @@ export function patchPerformanceHudActivity(
   activityLabel: string
 ): string {
   const parts = currentText
+    .replace(/\n/g, " · ")
     .split(" · ")
     .map((part) => part.trim())
     .filter(Boolean);

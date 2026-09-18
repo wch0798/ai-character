@@ -33,6 +33,8 @@ def main() -> int:
     check("agent_extra_args" in settings, "per-agent CLI args persisted", failures)
     check("settings.agent_extra_args(agent)" in commands, "per-agent CLI args reach execution", failures)
     check("args_for_with_options" in core and "request.extra_args" in core, "AgentRequest prepends extra args", failures)
+    check("claude_plugin_dir_args" in core and "--plugin-dir" in core, "Claude plugin dirs are passed through", failures)
+    check("sanitize_claude_extra_args" in core and "--bare" in core, "Claude --bare is stripped so plugins load", failures)
     check("agentExtraArgs" in client and "agentExtraArgs" in settings_ui, "frontend edits per-agent CLI args", failures)
     check("ai-agent-advanced" in settings_ui and "보통은 비워두세요" in settings_ui, "extra CLI args collapsed under advanced options", failures)
     check("고급 옵션 · ${count}개 설정됨" in settings_ui, "saved CLI arg count is surfaced", failures)

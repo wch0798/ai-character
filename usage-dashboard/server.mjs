@@ -5,10 +5,10 @@
 import { createServer } from 'node:http';
 import { readFile, readdir } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
-import { DatabaseSync } from 'node:sqlite';
 import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { randomBytes, timingSafeEqual } from 'node:crypto';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const HOME = homedir();
@@ -33,6 +33,7 @@ const CODEX_DIR = join(CODEX_HOME, 'sessions');
 const CURSOR_HOME = process.env.CURSOR_HOME || join(HOME, '.cursor');
 const ANTIGRAVITY_HOME = process.env.ANTIGRAVITY_HOME || join(HOME, '.antigravity');
 const PORT = Number(process.env.PORT || 4318);
+const USAGE_TOKEN = String(process.env.AI_CHARACTER_USAGE_TOKEN || '').trim() || randomBytes(32).toString('hex');
 
 async function walkJsonl(dir) {
   const out = [];
@@ -449,9 +450,20 @@ const PROVIDERS = [
   { id: 'antigravity', collect: collectAntigravity },
 ];
 
-function appData() {
+async function appData() {
   const dbPath = join(APP_DIR, 'state.db');
   if (!existsSync(dbPath)) return { available: false, runs: [], conversations: [] };
+  let DatabaseSync;
+  try {
+    ({ DatabaseSync } = await import('node:sqlite'));
+  } catch (err) {
+    return {
+      available: false,
+      runs: [],
+      conversations: [],
+      error: `앱 기록은 Node 22.5+ 가 필요합니다 (${String(err?.message ?? err)})`,
+    };
+  }
   let db;
   try {
     db = new DatabaseSync(dbPath, { readOnly: true });
@@ -491,10 +503,10 @@ async function keyStatus() {
     for (const line of (await readFile(file, 'utf8')).split('\n')) {
       const m = line.match(/^\s*([A-Z_]+)\s*=\s*(.*)$/);
       const v = m && names[m[1]] ? m[2].trim().replace(/^["']|["']$/g, '') : '';
-      if (v) configured[m[1]] = '…' + v.slice(-4);
+      if (v) configured[m[1]] = true;
     }
   }
-  return Object.entries(names).map(([env, label]) => ({ env, label, configured: !!configured[env], hint: configured[env] ?? null }));
+  return Object.entries(names).map(([env, label]) => ({ env, label, configured: !!configured[env] }));
 }
 
 async function accountInfo() {
@@ -554,7 +566,7 @@ async function accountInfo() {
 }
 
 async function snapshot() {
-  const [keys, accounts, app] = await Promise.all([keyStatus(), accountInfo(), Promise.resolve(appData())]);
+  const [keys, accounts, app] = await Promise.all([keyStatus(), accountInfo(), appData()]);
   const ctx = { app, accounts, keys };
   const providers = [];
   for (const def of PROVIDERS) {
@@ -572,44 +584,159 @@ async function snapshot() {
     }
   }
 
-  // 하위 호환: 예전 필드 유지 (selftest / 외부 스크립트)
   const claudeP = providers.find((p) => p.id === 'claude');
   const codexP = providers.find((p) => p.id === 'codex');
-  return {
+  return publicSnapshot({
     generatedAt: Date.now(),
-    appDir: APP_DIR,
     app,
     keys,
     accounts,
     providers,
     providerIds: providers.map((p) => p.id),
-    claude: {
-      available: claudeP?.available,
-      ...(claudeP?.raw ?? {}),
-    },
-    codex: {
-      available: codexP?.available,
-      ...(codexP?.raw ?? {}),
-    },
+    claude: { available: claudeP?.available },
+    codex: { available: codexP?.available },
+  });
+}
+
+function publicAccount(account) {
+  return {
+    connected: Boolean(account?.email || account?.keyHint),
+    plan: account?.plan ?? null,
+    loginWith: account?.loginWith ?? null,
   };
+}
+
+function publicSnapshot(raw) {
+  const providers = (raw.providers || []).map((provider) => ({
+    id: provider.id,
+    label: provider.label,
+    available: provider.available,
+    account: publicAccount(provider.account),
+    headline: provider.headline,
+    chart: provider.chart,
+    modelTable: provider.modelTable,
+    projectTable: provider.projectTable,
+    meters: provider.meters,
+    note: provider.note,
+  }));
+  const accounts = Object.fromEntries(
+    Object.entries(raw.accounts || {}).map(([id, account]) => [id, publicAccount(account)])
+  );
+  return {
+    generatedAt: raw.generatedAt,
+    app: {
+      available: raw.app?.available,
+      character: raw.app?.character ?? null,
+      selectedModel: raw.app?.selectedModel ?? null,
+      conversations: raw.app?.conversations ?? [],
+      runs: raw.app?.runs ?? [],
+    },
+    keys: raw.keys,
+    accounts,
+    providers,
+    providerIds: raw.providerIds,
+    claude: { available: !!raw.claude?.available },
+    codex: { available: !!raw.codex?.available },
+  };
+}
+
+function isLocalHostname(host) {
+  const name = String(host || '').split(':')[0].toLowerCase();
+  return !name || name === '127.0.0.1' || name === 'localhost' || name === '[::1]' || name === '::1';
+}
+
+function isLocalOrigin(origin) {
+  if (!origin) return false;
+  try {
+    const url = new URL(origin);
+    return (url.protocol === 'http:' || url.protocol === 'https:') && isLocalHostname(url.hostname);
+  } catch {
+    return false;
+  }
+}
+
+function tokenFromCookie(req) {
+  const cookie = String(req.headers.cookie ?? '');
+  const match = cookie.match(/(?:^|;\s*)ai_character_usage=([^;]+)/);
+  if (!match) return '';
+  try {
+    return decodeURIComponent(match[1]).trim();
+  } catch {
+    return String(match[1] || '').trim();
+  }
+}
+
+function tokenFromRequest(req, allowQuery = false) {
+  const header = req.headers['x-ai-character-token'];
+  if (header) return String(Array.isArray(header) ? header[0] : header).trim();
+  const cookie = tokenFromCookie(req);
+  if (cookie) return cookie;
+  if (!allowQuery) return '';
+  try {
+    const url = new URL(req.url || '/', 'http://127.0.0.1');
+    return String(url.searchParams.get('t') || '').trim();
+  } catch {
+    return '';
+  }
+}
+
+function tokenMatches(received) {
+  const expected = Buffer.from(USAGE_TOKEN);
+  const actual = Buffer.from(received);
+  return expected.length === actual.length && expected.length > 0 && timingSafeEqual(expected, actual);
 }
 
 createServer(async (req, res) => {
   try {
-    // 로컬호스트 외 Host 요청 거부 (실수로 외부 공개된 경우 보호)
     const host = String(req.headers.host ?? '').split(':')[0].toLowerCase();
-    if (host && host !== '127.0.0.1' && host !== 'localhost' && host !== '[::1]') {
+    if (!isLocalHostname(host)) {
       res.writeHead(403, { 'content-type': 'text/plain; charset=utf-8' });
       res.end('Forbidden: local only');
       return;
     }
+    const origin = String(req.headers.origin ?? '');
+    if (origin && !isLocalOrigin(origin)) {
+      res.writeHead(403, { 'content-type': 'text/plain; charset=utf-8' });
+      res.end('Forbidden');
+      return;
+    }
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Cache-Control', 'no-store');
+    if (isLocalOrigin(origin)) {
+      res.setHeader('Access-Control-Allow-Origin', origin);
+      res.setHeader('Vary', 'Origin');
+      res.setHeader('Access-Control-Allow-Headers', 'X-AI-Character-Token');
+      res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+    }
+    if (req.method === 'OPTIONS') {
+      res.writeHead(204);
+      res.end();
+      return;
+    }
 
-    if (req.url === '/api/usage') {
+    const url = new URL(req.url || '/', 'http://127.0.0.1');
+    const pathname = url.pathname;
+    if (pathname === '/auth') {
+      if (!tokenMatches(tokenFromRequest(req, true))) {
+        res.writeHead(401, { 'content-type': 'text/plain; charset=utf-8' });
+        return res.end('Unauthorized');
+      }
+      res.writeHead(302, {
+        Location: '/',
+        'Set-Cookie': `ai_character_usage=${encodeURIComponent(USAGE_TOKEN)}; Path=/; SameSite=Strict; HttpOnly`,
+      });
+      return res.end();
+    }
+    if (pathname === '/api/usage') {
+      if (!tokenMatches(tokenFromRequest(req))) {
+        res.writeHead(401, { 'content-type': 'text/plain; charset=utf-8' });
+        return res.end('Unauthorized');
+      }
       const payload = JSON.stringify(await snapshot());
-      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
       return res.end(payload);
     }
-    if (req.url === '/' || req.url === '/index.html') {
+    if (pathname === '/' || pathname === '/index.html') {
       const html = await readFile(join(HERE, 'public', 'index.html'));
       res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
       return res.end(html);
@@ -631,4 +758,4 @@ createServer(async (req, res) => {
     process.exit(1);
   }
   throw err;
-}).listen(PORT, '127.0.0.1', () => console.log(`사용량 대시보드: http://localhost:${PORT}  (끄려면 Ctrl+C)`));
+}).listen(PORT, '127.0.0.1', () => console.log(`사용량 대시보드: http://127.0.0.1:${PORT}`));

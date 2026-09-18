@@ -170,12 +170,16 @@ fn extract_archive_to_temp(archive_path: &Path) -> Result<tempfile::TempDir, Str
 
     // macOS bsdtar: Shift-JIS ZIP / RAR 파일명 깨짐 방지
     match extract_with_bsdtar(archive_path, dest_root) {
-        Ok(()) => Ok(temp),
+        Ok(()) => {
+            scrub_escaped_extracts(dest_root)?;
+            Ok(temp)
+        }
         Err(bsdtar_error) => {
             if is_zip_path(archive_path) {
                 extract_zip_rust(archive_path, dest_root).map_err(|zip_error| {
                     format!("{bsdtar_error} / ZIP 폴백도 실패: {zip_error}")
                 })?;
+                scrub_escaped_extracts(dest_root)?;
                 Ok(temp)
             } else {
                 Err(format!(
@@ -184,6 +188,43 @@ fn extract_archive_to_temp(archive_path: &Path) -> Result<tempfile::TempDir, Str
             }
         }
     }
+}
+
+fn scrub_escaped_extracts(dest_root: &Path) -> Result<(), String> {
+    let root = dest_root
+        .canonicalize()
+        .map_err(|error| format!("압축 폴더 확인 실패: {error}"))?;
+    fn walk(dir: &Path, root: &Path) -> Result<bool, String> {
+        let mut escaped = false;
+        let entries = match fs::read_dir(dir) {
+            Ok(value) => value,
+            Err(_) => return Ok(false),
+        };
+        for entry in entries {
+            let entry = entry.map_err(|error| format!("압축 검사 실패: {error}"))?;
+            let path = entry.path();
+            match path.canonicalize() {
+                Ok(canonical) if crate::path_guard::is_path_within(root, &canonical) => {
+                    if entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false) {
+                        escaped = walk(&path, root)? || escaped;
+                    }
+                }
+                _ => {
+                    escaped = true;
+                    if path.is_dir() {
+                        let _ = fs::remove_dir_all(&path);
+                    } else {
+                        let _ = fs::remove_file(&path);
+                    }
+                }
+            }
+        }
+        Ok(escaped)
+    }
+    if walk(dest_root, &root)? {
+        return Err("압축 파일이 폴더 밖으로 풀리려 해서 가져오기를 중단했습니다.".to_string());
+    }
+    Ok(())
 }
 
 fn is_zip_path(path: &Path) -> bool {
@@ -630,18 +671,44 @@ pub fn clear_force_live2d_model() -> Result<(), String> {
     Ok(())
 }
 
+const MAX_DEBUG_LOG_BYTES: u64 = 1_048_576;
+const MAX_DEBUG_LOG_MESSAGE: usize = 2048;
+
+fn sanitize_debug_message(message: &str) -> String {
+    let mut out: String = message
+        .chars()
+        .filter(|ch| *ch == '\t' || !ch.is_control())
+        .take(MAX_DEBUG_LOG_MESSAGE)
+        .collect();
+    for pat in ["sk-", "AIza", "Bearer ", "ghp_", "xox", "keys.env="] {
+        if let Some(idx) = out.find(pat) {
+            out.replace_range(idx.., "[redacted]");
+            break;
+        }
+    }
+    out
+}
+
 #[tauri::command]
 pub fn append_debug_log(message: String) -> Result<(), String> {
     let dir = platform_app_support_dir("local.ai.character")?;
     let _ = fs::create_dir_all(&dir);
     let path = dir.join("live2d-load.log");
+    if path.is_file() {
+        if let Ok(meta) = fs::metadata(&path) {
+            if meta.len() > MAX_DEBUG_LOG_BYTES {
+                let _ = fs::write(&path, b"[log truncated]\n");
+            }
+        }
+    }
+    let clean = sanitize_debug_message(&message);
     use std::io::Write;
     let mut file = fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(&path)
         .map_err(|error| format!("로그 열기 실패: {error}"))?;
-    let _ = writeln!(file, "{}", message);
+    let _ = writeln!(file, "{clean}");
     Ok(())
 }
 

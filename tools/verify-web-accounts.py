@@ -25,6 +25,7 @@ handoff = text("src/web-agent-handoff.ts")
 css = text("src/styles.css")
 
 check("isolated profile data_directory", "data_directory" in backend and "profiles" in backend)
+check("login uses isolated browser profiles", "isolated_browser" in text("src-tauri/src/lib.rs") and "cli_browser_env" in text("src-tauri/src/isolated_browser.rs") and "disable-sync" in text("src-tauri/src/isolated_browser.rs"))
 check("default multi-account slots", "claude-1" in backend and "chatgpt-1" in backend and "gemini-2" in backend)
 check("open all accounts command", "open_all_web_accounts" in commands and "open_all_web_accounts" in lib)
 check("capability allows webacct windows", "webacct-*" in caps)

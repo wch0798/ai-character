@@ -1,7 +1,7 @@
 export const CHAT_WINDOW_WIDTH = 980;
 export const CHAT_WINDOW_HEIGHT = 680;
 export const CHARACTER_WINDOW_PADDING = 16;
-export const CHARACTER_WINDOW_HUD_EXTRA = 30;
+export const CHARACTER_WINDOW_HUD_EXTRA = 40;
 export const WINDOW_POSITION_KEY = "ai-character-window-position";
 
 /** 채팅 배치용 폭 비율(캐릭터가 커질수록 채팅도 같이 오른쪽으로 밀림) */
@@ -81,19 +81,160 @@ export function characterCenterXForChat(
 /** 보이는 몸 오른쪽 기준으로 채팅 left */
 export function chatLeftForCharacterLayout(
   characterCenterX: number,
-  bodyWidth: number,
+  occupancyWidth: number,
   gap: number,
   windowWidth: number,
   minimumChatWidth = 340,
   rightMargin = 12
 ): number {
-  const bodyRight = characterCenterX + bodyWidth * 0.5;
-  const preferred = Math.ceil(bodyRight + gap);
+  const preferred = preferredChatLeft(characterCenterX, occupancyWidth, gap);
+  if (!Number.isFinite(windowWidth) || windowWidth <= 0) {
+    return preferred;
+  }
   const maximumLeft = Math.max(
     gap,
     windowWidth - minimumChatWidth - rightMargin
   );
-  return Math.min(maximumLeft, Math.max(gap, preferred));
+  // 창이 좁아도 채팅을 캐릭터 위로 당기지 않는다. 창을 키운 뒤 맞춘다.
+  if (preferred > maximumLeft) {
+    return preferred;
+  }
+  return preferred;
+}
+
+export function preferredChatLeft(
+  characterCenterX: number,
+  occupancyWidth: number,
+  gap: number
+): number {
+  const bodyRight = characterCenterX + Math.max(1, occupancyWidth) * 0.5;
+  return Math.max(gap, Math.ceil(bodyRight + gap));
+}
+
+/** 채팅 왼쪽이 붙는 캐릭터 칸 폭 (모델 전체 + 여백) */
+export function characterPaneWidthForChat(
+  displayWidth: number,
+  leftPadding = 10,
+  gap = 6
+): number {
+  return Math.ceil(leftPadding + Math.max(1, displayWidth) + gap);
+}
+
+/**
+ * Live2D 메시는 Cubism 캔버스보다 조금 넓을 수 있다.
+ * 창 전체/로컬 원본 박스처럼 비정상적으로 큰 값은 버린다.
+ */
+export function occupancyFromModelBounds(
+  displayWidth: number,
+  modelX: number,
+  bounds: { x: number; width: number } | null,
+  leftPadding = 10,
+  maxOverscanRatio = 2.2
+): { centerX: number; occupancyWidth: number } {
+  const occupancyWidth = Math.max(1, displayWidth);
+  const fallbackCenter =
+    Number.isFinite(modelX) && modelX > 0
+      ? modelX
+      : characterCenterXForChat(occupancyWidth, leftPadding);
+  const fallback = {
+    centerX: fallbackCenter,
+    occupancyWidth,
+  };
+
+  if (
+    !bounds ||
+    !Number.isFinite(bounds.x) ||
+    !Number.isFinite(bounds.width) ||
+    bounds.width < 8
+  ) {
+    return fallback;
+  }
+
+  if (bounds.width > occupancyWidth * maxOverscanRatio) {
+    return fallback;
+  }
+
+  const boundsCenter = bounds.x + bounds.width / 2;
+  if (bounds.x <= 1 && bounds.width >= occupancyWidth * 2.5) {
+    return fallback;
+  }
+  if (
+    Math.abs(boundsCenter - fallbackCenter) >
+    Math.max(occupancyWidth, bounds.width) * 0.85
+  ) {
+    return fallback;
+  }
+
+  return {
+    centerX: boundsCenter,
+    occupancyWidth: Math.max(occupancyWidth, bounds.width),
+  };
+}
+
+export function pickVisualModelBox(
+  displayWidth: number,
+  raw: {
+    x?: number;
+    width?: number;
+    rectangle?: { x: number; width: number };
+  } | null
+): { x: number; width: number } | null {
+  if (!raw) {
+    return null;
+  }
+  const candidates: { x: number; width: number }[] = [];
+  if (
+    Number.isFinite(raw.x) &&
+    Number.isFinite(raw.width) &&
+    (raw.width as number) > 8
+  ) {
+    candidates.push({ x: raw.x as number, width: raw.width as number });
+  }
+  const nested = raw.rectangle;
+  if (
+    nested &&
+    Number.isFinite(nested.x) &&
+    Number.isFinite(nested.width) &&
+    nested.width > 8
+  ) {
+    candidates.push({ x: nested.x, width: nested.width });
+  }
+  if (candidates.length === 0) {
+    return null;
+  }
+  let best = candidates[0];
+  let bestScore = Math.abs(best.width - displayWidth);
+  for (const candidate of candidates.slice(1)) {
+    const score = Math.abs(candidate.width - displayWidth);
+    if (score < bestScore) {
+      best = candidate;
+      bestScore = score;
+    }
+  }
+  return best;
+}
+
+/** 채팅을 옆에 둔 채 모니터 안에 들어오게 하는 스케일 상한 */
+export function maxCharacterScaleBesideChat(
+  modelBaseWidth: number,
+  modelBaseHeight: number,
+  maxWindowWidth: number,
+  maxWindowHeight: number,
+  chatWidth: number,
+  leftPadding = 10,
+  gap = 6,
+  windowMargin = 12
+): number {
+  const reserved =
+    Math.max(chatWidth, 480) + windowMargin + leftPadding + gap;
+  const maxDisplayWidth = Math.max(80, maxWindowWidth - reserved);
+  const maxDisplayHeight = Math.max(80, maxWindowHeight - windowMargin);
+  return maxCharacterScaleForMonitor(
+    modelBaseWidth,
+    modelBaseHeight,
+    maxDisplayWidth,
+    maxDisplayHeight
+  );
 }
 
 export function windowPositionKeepingCharacter(

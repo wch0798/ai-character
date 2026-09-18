@@ -36,6 +36,8 @@ mod agent_core;
 mod agent_install;
 mod settings;
 mod windows_process;
+#[cfg(windows)]
+mod windows_setup;
 mod workspace;
 mod live2d_resources;
 mod live2d_user;
@@ -45,12 +47,16 @@ mod provider_router;
 mod environment_preflight;
 mod local_env;
 mod web_accounts;
+mod isolated_browser;
+mod path_guard;
+mod window_stack;
+mod app_tray;
 
 use agent_commands::{
     ask_claude, cancel_agent, detect_agent, get_project_dir, run_agent,
     set_agent_path, set_project_dir,
 };
-use usage_dashboard::open_usage_dashboard;
+use usage_dashboard::{get_usage_snapshot, open_usage_dashboard};
 
 static ATTACHMENT_STAGE_COUNTER: AtomicU64 = AtomicU64::new(1);
 #[cfg(test)]
@@ -79,7 +85,8 @@ fn inspect_attachment_access(path: String) -> Result<Vec<bool>, String> {
         return Err("파일 경로가 비어 있습니다.".to_string());
     }
 
-    Ok(inspect_attachment_access_impl(std::path::Path::new(&path)))
+    let allowed = crate::path_guard::assert_inspectable_path(std::path::Path::new(&path))?;
+    Ok(inspect_attachment_access_impl(&allowed))
 }
 
 fn configured_attachment_project_dir() -> std::path::PathBuf {
@@ -98,6 +105,7 @@ fn attachment_stage_root() -> std::path::PathBuf {
 }
 
 fn stage_attachment_impl(source: &std::path::Path) -> Result<std::path::PathBuf, String> {
+    let source = crate::path_guard::assert_inspectable_path(source)?;
     if !source.exists() {
         return Err("원본 파일이 없습니다.".to_string());
     }
@@ -109,7 +117,7 @@ fn stage_attachment_impl(source: &std::path::Path) -> Result<std::path::PathBuf,
     /*
      * 실제로 읽기 가능한지 먼저 확인.
      */
-    std::fs::File::open(source).map_err(|error| format!("원본 파일 읽기 권한 없음: {}", error))?;
+    std::fs::File::open(&source).map_err(|error| format!("원본 파일 읽기 권한 없음: {}", error))?;
 
     let root = attachment_stage_root();
 
@@ -284,8 +292,16 @@ mod tests {
 
         let _ = std::fs::remove_file(path);
     }
+
+    #[test]
+    fn attachment_access_rejects_secret_and_system_paths() {
+        assert!(inspect_attachment_access("keys.env".to_string()).is_err());
+        assert!(inspect_attachment_access("/etc/passwd".to_string()).is_err());
+        assert!(inspect_attachment_access(r"C:\Windows\System32\config\SAM".to_string()).is_err());
+    }
 }
 
+#[cfg(target_os = "macos")]
 #[cfg(test)]
 mod process_stats_tests {
     use super::*;
@@ -349,6 +365,9 @@ pub fn run() {
                 )?;
             }
 
+            crate::window_stack::bind_main_focus_restore(app.handle());
+            crate::app_tray::install(app)?;
+
             Ok(())
         })
         .plugin(tauri_plugin_opener::init())
@@ -391,6 +410,7 @@ pub fn run() {
             open_keys_env_file,
             ensure_keys_env_file,
             open_usage_dashboard,
+            get_usage_snapshot,
             run_automatic_provider,
             get_cradle_environment_status,
             prepare_cradle_environment,

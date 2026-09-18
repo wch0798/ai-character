@@ -3,9 +3,13 @@ import {
   characterBodyWidth,
   characterCenterXForChat,
   characterDisplaySize,
+  characterPaneWidthForChat,
   chatLeftForCharacterLayout,
   compactWindowSizeForCharacter,
+  maxCharacterScaleBesideChat,
   maxCharacterScaleForMonitor,
+  occupancyFromModelBounds,
+  pickVisualModelBox,
 } from "../window-layout";
 
 describe("character / chat layout", () => {
@@ -28,16 +32,49 @@ describe("character / chat layout", () => {
     ).toEqual({ width: 400, height: 500 });
   });
 
-  it("attaches chat to visible body, not full Live2D canvas", () => {
+  it("attaches chat to the full visible character, not just the hit body", () => {
     const display = characterDisplaySize(2000, 3000, 0.1);
     expect(display).toEqual({ width: 200, height: 300 });
     const body = characterBodyWidth(display.width, 0.72);
     expect(body).toBeCloseTo(144);
     const center = characterCenterXForChat(display.width, 10);
-    // full model starts at x=10, center=110
     expect(center).toBe(110);
-    // body right = 110 + 72 = 182, chat at 188
-    expect(chatLeftForCharacterLayout(center, body, 6, 980)).toBe(188);
+    expect(chatLeftForCharacterLayout(center, display.width, 6, 980)).toBe(216);
+    expect(characterPaneWidthForChat(display.width)).toBe(216);
+  });
+
+  it("uses Live2D mesh bounds when they belong to the character", () => {
+    const occupancy = occupancyFromModelBounds(200, 110, { x: 20, width: 280 });
+    expect(occupancy.occupancyWidth).toBe(280);
+    expect(occupancy.centerX).toBe(160);
+    expect(chatLeftForCharacterLayout(occupancy.centerX, occupancy.occupancyWidth, 12)).toBe(312);
+  });
+
+  it("ignores Cubism local boxes that are many times larger than the on-screen character", () => {
+    const occupancy = occupancyFromModelBounds(180, 100, { x: 40, width: 1400 });
+    expect(occupancy.occupancyWidth).toBe(180);
+    expect(occupancy.centerX).toBe(100);
+  });
+
+  it("picks the bounds closest to the displayed character width", () => {
+    expect(
+      pickVisualModelBox(180, {
+        x: 10,
+        width: 190,
+        rectangle: { x: 0, width: 2400 },
+      })
+    ).toEqual({ x: 10, width: 190 });
+  });
+
+  it("does not pull chat over a larger character when the window is still small", () => {
+    const center = characterCenterXForChat(700, 10);
+    expect(chatLeftForCharacterLayout(center, 700, 6, 760, 480)).toBe(716);
+  });
+
+  it("limits scale beside chat so both fit on the monitor", () => {
+    expect(
+      maxCharacterScaleBesideChat(2000, 3000, 1400, 900, 560)
+    ).toBeCloseTo(0.296, 3);
   });
 
   it("limits scale so enlarged character still fits", () => {

@@ -13,11 +13,13 @@ import {
   getProjectDirectory,
   getRuntimeSetupStatus,
   installAllRequiredRuntimes,
+  installAgentCli,
   launchAgentLogin,
   launchGitInstaller,
   prepareCradleEnvironment,
   restoreProjectCheckpoint,
   setAppPreferences,
+  getUsageSnapshot,
   type AgentKind,
   type AgentRunRecord,
   type CheckpointRecord,
@@ -84,14 +86,16 @@ export function initializeSettingsUi(): void {
 
   const chatPanel = document.querySelector<HTMLElement>("#chat-panel");
   const toolbar = document.querySelector<HTMLElement>("#chat-history-toolbar");
+  const toolbarEnd = document.querySelector<HTMLElement>(".chat-toolbar-end");
+  const chatCloseButton = document.querySelector<HTMLElement>("#chat-close-button");
   if (!chatPanel || !toolbar) {
     return;
   }
 
-  const launcher = makeButton("⚙", "ai-settings-button");
+  const launcher = makeButton("설정", "ai-settings-button");
   launcher.id = "ai-settings-button";
-  launcher.title = "AI-Character 설정";
-  launcher.setAttribute("aria-label", "AI-Character 설정 열기");
+  launcher.title = "설정";
+  launcher.setAttribute("aria-label", "설정 열기");
 
   const overlay = document.createElement("section");
   overlay.id = "ai-settings-panel";
@@ -181,18 +185,20 @@ export function initializeSettingsUi(): void {
   const accountsLead = document.createElement("div");
   accountsLead.className = "ai-settings-help";
   accountsLead.textContent =
-    "여기서 준비합니다. API 키는 ‘키 파일’, 웹 Claude/ChatGPT는 ‘계정 창’, 로컬 Claude/Cursor CLI는 아래 로그인 버튼으로 진행하세요.";
-  const loginActions = document.createElement("div");
-  loginActions.className = "ai-settings-easy-actions";
-  const loginClaudeButton = makeButton("Claude CLI 로그인", "ai-settings-action");
-  const loginCursorButton = makeButton("Cursor 열기(로그인)", "ai-settings-action");
-  const loginKeysButton = makeButton("API 키 파일 열기", "ai-settings-action");
-  loginActions.append(loginClaudeButton, loginCursorButton, loginKeysButton);
+    "사용량에 나오는 Claude·Codex·Cursor·Antigravity는 여기 로그인과 API 키가 있어야 연결됨으로 표시됩니다. 미연결이면 그 줄의 로그인을 누르세요.";
+  const loginStatusList = document.createElement("div");
+  loginStatusList.className = "ai-web-accounts-list ai-login-status-list";
+  const webWindowsTitle = document.createElement("h3");
+  webWindowsTitle.textContent = "웹 창 (CRADLE 전달용)";
+  const webWindowsHelp = document.createElement("div");
+  webWindowsHelp.className = "ai-settings-help";
+  webWindowsHelp.textContent =
+    "사람이 브라우저에서 보고 복사할 창입니다. Agent CLI 로그인과는 별개입니다.";
   const accountsList = document.createElement("div");
   accountsList.className = "ai-web-accounts-list";
   const accountsActions = document.createElement("div");
   accountsActions.className = "ai-settings-easy-actions";
-  const openAllAccountsButton = makeButton("모든 계정 창 열기", "ai-settings-action");
+  const openAllAccountsButton = makeButton("모든 웹 창 열기", "ai-settings-action");
   const refreshAccountsButton = makeButton("계정 상태 새로고침", "ai-settings-action");
   accountsActions.append(openAllAccountsButton, refreshAccountsButton);
   const closeAfterHandoffLabel = document.createElement("label");
@@ -224,7 +230,9 @@ export function initializeSettingsUi(): void {
   accountsSection.append(
     accountsTitle,
     accountsLead,
-    loginActions,
+    loginStatusList,
+    webWindowsTitle,
+    webWindowsHelp,
     accountsList,
     closeAfterHandoffLabel,
     closeWhenDoneLabel,
@@ -366,9 +374,13 @@ export function initializeSettingsUi(): void {
   agentsSection.className = "ai-settings-section";
   const agentsTitle = document.createElement("h3");
   agentsTitle.textContent = "Agents";
+  const agentsLead = document.createElement("div");
+  agentsLead.className = "ai-settings-help";
+  agentsLead.textContent =
+    "Windows에서 .exe와 .cmd는 모두 정식입니다. .cmd는 공식/npm 실행 파일이며 앱이 cmd로 실행합니다. 둘 다 있으면 .exe를 씁니다. 없을 때만 ‘찾을 수 없음 (설치)’를 누르세요.";
   const agentsGrid = document.createElement("div");
   agentsGrid.className = "ai-agent-settings-list";
-  agentsSection.append(agentsTitle, agentsGrid);
+  agentsSection.append(agentsTitle, agentsLead, agentsGrid);
 
   const runHistorySection = document.createElement("section");
   runHistorySection.className = "ai-settings-section";
@@ -507,11 +519,16 @@ export function initializeSettingsUi(): void {
   basicPane.dataset.pane = "basic";
   basicPane.append(
     easySection,
-    accountsSection,
     simpleSection,
     projectSection,
     safetySection
   );
+
+  const accountsPane = document.createElement("div");
+  accountsPane.className = "ai-settings-pane";
+  accountsPane.dataset.pane = "accounts";
+  accountsPane.hidden = true;
+  accountsPane.append(accountsSection);
 
   const chatPane = document.createElement("div");
   chatPane.className = "ai-settings-pane";
@@ -538,16 +555,18 @@ export function initializeSettingsUi(): void {
   );
 
   const tabDefs: Array<{
-    id: "basic" | "chat" | "character" | "advanced";
+    id: "basic" | "accounts" | "chat" | "character" | "advanced";
     label: string;
   }> = [
     { id: "basic", label: "기본" },
+    { id: "accounts", label: "로그인" },
     { id: "chat", label: "대화" },
     { id: "character", label: "캐릭터" },
     { id: "advanced", label: "고급" },
   ];
   const panes = {
     basic: basicPane,
+    accounts: accountsPane,
     chat: chatPane,
     character: characterPane,
     advanced: advancedPane,
@@ -566,6 +585,10 @@ export function initializeSettingsUi(): void {
       }
       pane.hidden = !active;
     }
+    if (id === "accounts") {
+      void refreshLoginStatus();
+      void refreshWebAccounts();
+    }
   };
 
   for (const def of tabDefs) {
@@ -582,29 +605,35 @@ export function initializeSettingsUi(): void {
     tabs,
     message,
     basicPane,
+    accountsPane,
     chatPane,
     characterPane,
     advancedPane
   );
-  toolbar.append(launcher);
+  if (toolbarEnd && chatCloseButton && toolbarEnd.contains(chatCloseButton)) {
+    toolbarEnd.insertBefore(launcher, chatCloseButton);
+  } else {
+    toolbar.append(launcher);
+  }
   chatPanel.append(overlay);
-
-  // 채팅이 닫혀 있어도 설정에 들어갈 수 있게 항상 보이는 버튼
-  const floatingLauncher = makeButton("⚙", "ai-settings-fab");
-  floatingLauncher.id = "ai-settings-fab";
-  floatingLauncher.title = "설정";
-  floatingLauncher.setAttribute("aria-label", "AI-Character 설정 열기");
-  document.body.append(floatingLauncher);
 
   const positionSettingsPanel = (): void => {
     const top = toolbar.offsetTop + toolbar.offsetHeight + 4;
     overlay.style.top = `${top}px`;
   };
 
+  const closeSettings = (): void => {
+    overlay.hidden = true;
+    window.dispatchEvent(
+      new CustomEvent("ai-character:settings-closed")
+    );
+  };
+
   const openSettings = (): void => {
     chatPanel.classList.add("open");
     positionSettingsPanel();
     overlay.hidden = false;
+    overlay.scrollTop = 0;
     void getCurrentWindow()
       .setIgnoreCursorEvents(false)
       .catch(() => undefined);
@@ -618,6 +647,7 @@ export function initializeSettingsUi(): void {
   const pathNodes = new Map<AgentKind, HTMLElement>();
   const statusNodes = new Map<AgentKind, HTMLElement>();
   const actionButtons = new Map<AgentKind, HTMLButtonElement>();
+  const installButtons = new Map<AgentKind, HTMLButtonElement>();
   const agentArgsInputs = new Map<AgentKind, HTMLTextAreaElement>();
   const agentAdvancedSummaries = new Map<AgentKind, HTMLElement>();
   const agentModelSelects = new Map<AgentKind, HTMLSelectElement>();
@@ -686,6 +716,13 @@ export function initializeSettingsUi(): void {
     path.textContent = "-";
 
     const choose = makeButton("경로 지정", "ai-settings-action");
+    const login = makeButton("로그인", "ai-settings-action");
+    const install = makeButton("찾을 수 없음 (설치)", "ai-settings-action ai-settings-install");
+    install.hidden = true;
+    install.title = `${row.label} 공식 설치 파일을 받아 설치합니다`;
+    const rowActions = document.createElement("div");
+    rowActions.className = "ai-agent-settings-actions";
+    rowActions.append(choose, login);
 
     const modelField = document.createElement("div");
     modelField.className = "ai-agent-model-field";
@@ -738,13 +775,14 @@ export function initializeSettingsUi(): void {
     advancedBody.append(argsLabel);
     advanced.append(summary, advancedBody);
 
-    info.append(name, status, path);
-    card.append(info, choose, modelField, advanced);
+    info.append(name, status, install, path);
+    card.append(info, rowActions, modelField, advanced);
     agentsGrid.append(card);
 
     pathNodes.set(row.agent, path);
     statusNodes.set(row.agent, status);
     actionButtons.set(row.agent, choose);
+    installButtons.set(row.agent, install);
     agentArgsInputs.set(row.agent, argsInput);
     agentAdvancedSummaries.set(row.agent, summary);
     agentModelSelects.set(row.agent, modelSelect);
@@ -805,11 +843,53 @@ export function initializeSettingsUi(): void {
         path.title = selected;
         status.textContent = "설치됨";
         status.dataset.state = "ok";
+        status.hidden = false;
+        install.hidden = true;
         message.textContent = `${row.label} 경로를 저장했습니다.`;
       } catch (error) {
         message.textContent = errorText(error);
       } finally {
         choose.disabled = false;
+      }
+    });
+
+    login.addEventListener("click", async () => {
+      login.disabled = true;
+      message.textContent = `${row.label} 로그인을 시작합니다…`;
+      try {
+        message.textContent = await launchAgentLogin(row.agent);
+      } catch (error) {
+        message.textContent = errorText(error);
+      } finally {
+        login.disabled = false;
+      }
+    });
+
+    install.addEventListener("click", async () => {
+      install.disabled = true;
+      choose.disabled = true;
+      login.disabled = true;
+      status.hidden = true;
+      install.hidden = false;
+      install.textContent = "설치 중…";
+      message.textContent = `${row.label} 설치 파일을 받아 설치합니다…`;
+      try {
+        const result = await installAgentCli(row.agent);
+        message.textContent = result.ok
+          ? `${row.label} 설치 완료. ${result.message}`
+          : `${row.label} 설치 실패. ${result.message}`;
+        await refreshAgents();
+      } catch (error) {
+        status.hidden = false;
+        status.textContent = "찾을 수 없음";
+        status.dataset.state = "missing";
+        install.hidden = false;
+        install.textContent = "찾을 수 없음 (설치)";
+        message.textContent = errorText(error);
+      } finally {
+        install.disabled = false;
+        choose.disabled = false;
+        login.disabled = false;
       }
     });
   }
@@ -1015,10 +1095,15 @@ export function initializeSettingsUi(): void {
         const path = pathNodes.get(agent);
         const status = statusNodes.get(agent);
         const button = actionButtons.get(agent);
+        const install = installButtons.get(agent);
         if (!path || !status || !button) {
           return;
         }
         button.disabled = true;
+        if (install) {
+          install.disabled = true;
+        }
+        status.hidden = false;
         status.textContent = "검색 중…";
         status.dataset.state = "loading";
         try {
@@ -1027,13 +1112,25 @@ export function initializeSettingsUi(): void {
           path.title = detected;
           status.textContent = "설치됨";
           status.dataset.state = "ok";
+          status.hidden = false;
+          if (install) {
+            install.hidden = true;
+          }
         } catch {
-          path.textContent = "자동 감지 실패";
+          path.textContent = "자동 감지 실패 — 설치를 눌러 공식 파일을 받으세요.";
           path.removeAttribute("title");
+          status.hidden = true;
           status.textContent = "찾을 수 없음";
           status.dataset.state = "missing";
+          if (install) {
+            install.hidden = false;
+            install.textContent = "찾을 수 없음 (설치)";
+          }
         } finally {
           button.disabled = false;
+          if (install) {
+            install.disabled = false;
+          }
         }
       })
     );
@@ -1061,6 +1158,152 @@ export function initializeSettingsUi(): void {
       if (!installGitButton.hidden) {
         prepareEnvironmentButton.disabled = true;
       }
+    }
+  }
+
+  async function refreshLoginStatus(): Promise<void> {
+    try {
+      const snapshot = (await getUsageSnapshot()) as {
+        providers?: Array<{
+          id?: string;
+          label?: string;
+          account?: {
+            connected?: boolean;
+            email?: string | null;
+            keyHint?: string | null;
+            name?: string | null;
+            plan?: string | null;
+            loginWith?: string | null;
+            linesExtra?: string[];
+          };
+        }>;
+        keys?: Array<{
+          env?: string;
+          label?: string;
+          configured?: boolean;
+          hint?: string | null;
+        }>;
+      };
+      renderLoginStatus(snapshot);
+    } catch (error) {
+      loginStatusList.replaceChildren();
+      const failure = document.createElement("div");
+      failure.className = "ai-settings-help";
+      failure.textContent = `로그인 상태를 읽지 못했습니다: ${errorText(error)}`;
+      loginStatusList.append(failure);
+    }
+  }
+
+  function renderLoginStatus(snapshot: {
+    providers?: Array<{
+      id?: string;
+      label?: string;
+      account?: {
+        connected?: boolean;
+        email?: string | null;
+        keyHint?: string | null;
+        name?: string | null;
+        plan?: string | null;
+        loginWith?: string | null;
+        linesExtra?: string[];
+      };
+    }>;
+    keys?: Array<{
+      env?: string;
+      label?: string;
+      configured?: boolean;
+      hint?: string | null;
+    }>;
+  }): void {
+    const agentIds: AgentKind[] = ["claude", "codex", "cursor", "antigravity"];
+    const rows: HTMLElement[] = [];
+
+    for (const id of agentIds) {
+      const provider = (snapshot.providers ?? []).find((item) => item.id === id);
+      const account = provider?.account;
+      const connected = Boolean(account?.connected || account?.email || account?.keyHint);
+      const connectedDetail = [
+        account?.plan && `요금제 ${account.plan}`,
+        account?.loginWith && `로그인 ${account.loginWith}`,
+      ]
+        .filter(Boolean)
+        .join(" · ");
+      const detail = connected
+        ? connectedDetail || "로그인되어 있어요"
+        : "로그인 정보 없음 — 로그인이 필요합니다";
+      rows.push(
+        makeLoginRow({
+          label: provider?.label || id,
+          connected,
+          detail,
+          actionLabel: connected ? "다시 로그인" : "로그인",
+          onAction: () => startAgentLogin(id, provider?.label || id),
+        })
+      );
+    }
+
+    for (const key of snapshot.keys ?? []) {
+      rows.push(
+        makeLoginRow({
+          label: key.label || key.env || "API 키",
+          connected: Boolean(key.configured),
+          detail: key.configured
+            ? "키가 준비되어 있어요"
+            : "keys.env에 없음 — 키 파일을 열어 넣으세요",
+          actionLabel: "키 파일 열기",
+          onAction: () => openKeysButton.click(),
+        })
+      );
+    }
+
+    loginStatusList.replaceChildren(...rows);
+  }
+
+  function makeLoginRow(options: {
+    label: string;
+    connected: boolean;
+    detail: string;
+    actionLabel: string;
+    onAction: () => void | Promise<void>;
+  }): HTMLElement {
+    const row = document.createElement("div");
+    row.className = "ai-web-account-row";
+    const meta = document.createElement("div");
+    meta.className = "ai-web-account-meta";
+    const title = document.createElement("strong");
+    const dot = document.createElement("span");
+    dot.className = `usage-dot ${options.connected ? "is-on" : ""}`;
+    title.append(
+      dot,
+      document.createTextNode(
+        ` ${options.label} · ${options.connected ? "연결됨" : "미연결"}`
+      )
+    );
+    const state = document.createElement("small");
+    state.className = "ai-settings-help";
+    state.textContent = options.detail;
+    meta.append(title, state);
+    const actions = document.createElement("div");
+    actions.className = "ai-web-account-actions";
+    const button = makeButton(options.actionLabel, "ai-settings-action");
+    button.addEventListener("click", () => {
+      void options.onAction();
+    });
+    actions.append(button);
+    row.append(meta, actions);
+    return row;
+  }
+
+  async function startAgentLogin(agent: AgentKind, label: string): Promise<void> {
+    message.textContent = `${label} 로그인을 시작합니다…`;
+    try {
+      message.textContent = `${await launchAgentLogin(agent)} 완료되면 아래 상태가 연결됨으로 바뀝니다.`;
+      for (let i = 0; i < 12; i += 1) {
+        await new Promise((resolve) => window.setTimeout(resolve, 2500));
+        await refreshLoginStatus();
+      }
+    } catch (error) {
+      message.textContent = errorText(error);
     }
   }
 
@@ -1206,6 +1449,7 @@ export function initializeSettingsUi(): void {
       refreshEnvironment(),
       refreshFreeAutoReadiness(),
       refreshWebAccounts(),
+      refreshLoginStatus(),
       refreshAutomaticProviders(),
       refreshAgents(),
       refreshRunHistory(),
@@ -1300,6 +1544,7 @@ export function initializeSettingsUi(): void {
 
   refreshAccountsButton.addEventListener("click", () => {
     void refreshWebAccounts();
+    void refreshLoginStatus();
   });
 
   openAllAccountsButton.addEventListener("click", async () => {
@@ -1316,41 +1561,14 @@ export function initializeSettingsUi(): void {
     }
   });
 
-  loginClaudeButton.addEventListener("click", async () => {
-    loginClaudeButton.disabled = true;
-    message.textContent = "Claude CLI 로그인을 시작합니다…";
-    try {
-      message.textContent = await launchAgentLogin("claude");
-    } catch (error) {
-      message.textContent = errorText(error);
-    } finally {
-      loginClaudeButton.disabled = false;
-    }
-  });
-
-  loginCursorButton.addEventListener("click", async () => {
-    loginCursorButton.disabled = true;
-    message.textContent = "Cursor를 엽니다…";
-    try {
-      message.textContent = await launchAgentLogin("cursor");
-    } catch (error) {
-      message.textContent = errorText(error);
-    } finally {
-      loginCursorButton.disabled = false;
-    }
-  });
-
-  loginKeysButton.addEventListener("click", () => {
-    openKeysButton.click();
-  });
-
   openKeysButton.addEventListener("click", async () => {
     openKeysButton.disabled = true;
     message.textContent = "키 파일을 엽니다…";
     try {
       const path = await openKeysEnvFile();
-      message.textContent = `키 파일을 열었습니다: ${path} — 값을 저장한 뒤 앱을 다시 실행하세요.`;
+      message.textContent = `키 파일을 열었습니다: ${path} — 값을 저장한 뒤 상태 새로고침을 누르세요.`;
       await refreshFreeAutoReadiness();
+      await refreshLoginStatus();
     } catch (error) {
       message.textContent = errorText(error);
     } finally {
@@ -1413,22 +1631,41 @@ export function initializeSettingsUi(): void {
     }
   });
 
-  // 첫 실행: 빠진 필수 프로그램이 있으면 안내만 (자동 설치는 사용자가 버튼을 누를 때)
+  // 첫 실행(Windows): 빠진 필수 프로그램을 자동 설치한다.
   void getRuntimeSetupStatus()
-    .then((status) => {
+    .then(async (status) => {
       if (status.allReady || status.platform !== "windows") {
         return;
       }
-      const key = "ai-character-runtime-setup-prompted";
-      if (localStorage.getItem(key) === "1") {
-        return;
-      }
-      localStorage.setItem(key, "1");
       const missing = status.components
         .filter((item) => !item.ready)
         .map((item) => item.label)
         .join(", ");
-      message.textContent = `아직 없는 프로그램: ${missing}. 설정 → ‘필수 프로그램 설치’로 설치하세요.`;
+      const key = "ai-character-runtime-auto-install";
+      if (localStorage.getItem(key) === "1") {
+        message.textContent = `아직 없는 프로그램: ${missing}. 설정 → ‘필수 프로그램 설치’로 다시 설치하세요.`;
+        return;
+      }
+      localStorage.setItem(key, "1");
+      installRuntimesButton.disabled = true;
+      message.textContent = `없는 프로그램을 자동 설치합니다: ${missing}`;
+      try {
+        const steps = await installAllRequiredRuntimes();
+        const failed = steps.filter((step) => !step.ok);
+        const okCount = steps.filter((step) => step.ok).length;
+        message.textContent =
+          failed.length === 0
+            ? `설치 완료 (${okCount}개). Agent는 각 앱에서 한 번 로그인하세요.`
+            : `일부 완료 (${okCount}/${steps.length}). ${failed
+                .map((step) => step.message)
+                .join(" / ")}`;
+        await refreshFreeAutoReadiness();
+        await refreshAgents();
+      } catch (error) {
+        message.textContent = errorText(error);
+      } finally {
+        installRuntimesButton.disabled = false;
+      }
     })
     .catch(() => {
       // ignore
@@ -1641,18 +1878,35 @@ export function initializeSettingsUi(): void {
     }
   });
 
-  launcher.addEventListener("click", () => {
-    openSettings();
-  });
-  floatingLauncher.addEventListener("click", () => {
+  launcher.addEventListener("click", (event) => {
+    event.stopPropagation();
     openSettings();
   });
 
+  window.addEventListener("ai-character:open-settings", ((event: Event) => {
+    const tab = (event as CustomEvent<{ tab?: keyof typeof panes }>)
+      .detail?.tab;
+    openSettings();
+    if (tab) {
+      setActiveTab(tab);
+    }
+  }) as EventListener);
+
   closeButton.addEventListener("click", () => {
-    overlay.hidden = true;
-    window.dispatchEvent(
-      new CustomEvent("ai-character:settings-closed")
-    );
+    closeSettings();
+  });
+
+  const chatOpenObserver = new MutationObserver(() => {
+    if (!chatPanel.classList.contains("open") && !overlay.hidden) {
+      closeSettings();
+    }
+    if (!overlay.hidden) {
+      positionSettingsPanel();
+    }
+  });
+  chatOpenObserver.observe(chatPanel, {
+    attributes: true,
+    attributeFilter: ["class"],
   });
 
   window.addEventListener("resize", () => {

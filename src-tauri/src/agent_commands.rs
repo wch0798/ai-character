@@ -1,6 +1,8 @@
 use crate::agent_core::{
-    canonical_existing_dir, managed_workspace_permission_args, merge_extra_args, request_cancel,
-    resolve_agent_binary, run_request_streaming, AgentKind, AgentRequest, AgentStreamChunk,
+    canonical_existing_dir, claude_plugin_dir_args, managed_workspace_permission_args,
+    merge_extra_args, merge_plugin_dir_args, request_cancel, resolve_agent_binary,
+    run_request_streaming, sanitize_claude_extra_args, seed_claude_project_settings, AgentKind,
+    AgentRequest, AgentStreamChunk,
 };
 use crate::settings::{load_settings, save_settings};
 use crate::run_history::{self, AgentRunRecord, RunStatus};
@@ -195,6 +197,7 @@ pub fn get_project_dir() -> Result<Option<String>, String> {
 #[tauri::command]
 pub fn set_project_dir(path: String) -> Result<String, String> {
     let canonical = canonical_existing_dir(PathBuf::from(path.trim()).as_path())?;
+    crate::path_guard::assert_project_dir_allowed(&canonical)?;
     let app_dir = canonical.join(".ai-character");
     std::fs::create_dir_all(&app_dir).map_err(|error| {
         format!(
@@ -223,10 +226,10 @@ pub fn set_project_dir(path: String) -> Result<String, String> {
 #[tauri::command]
 pub fn set_agent_path(agent: String, path: String) -> Result<String, String> {
     let agent = AgentKind::parse(&agent)?;
-    let path = PathBuf::from(path.trim());
-    if !path.is_file() {
-        return Err(format!("실행 파일을 찾을 수 없습니다: {}", path.display()));
-    }
+    let path = crate::path_guard::assert_agent_binary_path(
+        agent.binary_names(),
+        PathBuf::from(path.trim()).as_path(),
+    )?;
     let mut settings = load_settings()?;
     settings.set_agent_path(agent, path.clone());
     save_settings(&settings)?;
@@ -413,7 +416,8 @@ pub fn prepare_cradle_environment(
 }
 
 #[tauri::command]
-pub fn launch_git_installer() -> Result<(), String> {
+pub fn launch_git_installer(app: tauri::AppHandle) -> Result<(), String> {
+    crate::window_stack::suppress_main_always_on_top(&app);
     launch_git_install_helper()
 }
 
@@ -440,7 +444,8 @@ pub fn ensure_keys_env_file() -> Result<String, String> {
 }
 
 #[tauri::command]
-pub fn open_keys_env_file() -> Result<String, String> {
+pub fn open_keys_env_file(app: tauri::AppHandle) -> Result<String, String> {
+    crate::window_stack::suppress_main_always_on_top(&app);
     crate::local_env::open_keys_env_file()
 }
 
@@ -601,6 +606,16 @@ where
         }
 
         let mut extra_args = settings.agent_extra_args(agent).to_vec();
+        if agent == AgentKind::Claude {
+            extra_args = sanitize_claude_extra_args(&extra_args);
+            if managed_workspace {
+                seed_claude_project_settings(&configured_project, &working_dir);
+            }
+            extra_args = merge_plugin_dir_args(
+                &extra_args,
+                &claude_plugin_dir_args(&configured_project, &working_dir),
+            );
+        }
         if managed_workspace {
             extra_args = merge_extra_args(
                 &extra_args,
