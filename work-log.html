@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>기술 로그</title>
+  <style>
+    html, body {
+      margin: 0;
+      height: 100%;
+      background: #12151c;
+      color: #e8ecf4;
+      font: 13px/1.45 "Segoe UI", sans-serif;
+    }
+    body {
+      display: grid;
+      grid-template-rows: auto auto 1fr;
+    }
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 10px 12px;
+      background: #1b202b;
+      border-bottom: 1px solid rgba(255,255,255,.08);
+    }
+    header span {
+      color: #9aa3b5;
+      font-size: 12px;
+    }
+    button {
+      border: 0;
+      border-radius: 8px;
+      padding: 6px 10px;
+      background: #2c3344;
+      color: #e8ecf4;
+      cursor: pointer;
+    }
+    #work-log-status {
+      padding: 8px 12px;
+      color: #c5cddc;
+      border-bottom: 1px solid rgba(255,255,255,.06);
+    }
+    #work-log-body {
+      margin: 0;
+      padding: 12px;
+      overflow: auto;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      font: 12px/1.45 ui-monospace, Consolas, monospace;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <strong>기술 로그</strong>
+    <span>다른 창을 클릭하면 닫힙니다</span>
+    <button type="button" id="work-log-close">닫기</button>
+  </header>
+  <div id="work-log-status">불러오는 중…</div>
+  <pre id="work-log-body">아직 기록된 로그가 없습니다.</pre>
+  <script type="module" src="/src/work-log.ts"></script>
+</body>
+</html>

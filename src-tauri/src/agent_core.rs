@@ -204,11 +204,16 @@ fn user_home_dir() -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
+fn is_claude_plugin_manifest(path: &Path) -> bool {
+    path.join("plugin.json").is_file()
+        || path.join(".claude-plugin").join("plugin.json").is_file()
+}
+
 fn dir_contains_claude_plugins(path: &Path) -> bool {
     if !path.is_dir() {
         return false;
     }
-    if path.join("plugin.json").is_file() {
+    if is_claude_plugin_manifest(path) {
         return true;
     }
     fs::read_dir(path)
@@ -218,7 +223,7 @@ fn dir_contains_claude_plugins(path: &Path) -> bool {
         .flatten()
         .any(|entry| {
             let child = entry.path();
-            child.is_dir() && child.join("plugin.json").is_file()
+            child.is_dir() && is_claude_plugin_manifest(&child)
         })
 }
 
@@ -263,6 +268,7 @@ fn claude_plugin_dir_args_with_home(
     if let Some(home) = home {
         consider(home.join(".claude").join("plugins"));
         consider(home.join(".claude").join("plugins").join("local"));
+        consider(home.join(".claude").join("skills"));
     }
     consider(project_dir.join(".claude").join("plugins"));
     if working_dir != project_dir {
@@ -338,6 +344,89 @@ pub fn is_preferred_windows_binary(agent: AgentKind, path: &Path) -> bool {
     matches!(windows_extension_rank(path), 0 | 1)
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AgentBinaryKind {
+    Cli,
+    App,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct AgentRuntime {
+    pub cli: Option<PathBuf>,
+    pub app: Option<PathBuf>,
+}
+
+fn path_key(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/").to_ascii_lowercase()
+}
+
+pub fn classify_agent_binary(agent: AgentKind, path: &Path) -> AgentBinaryKind {
+    let text = path_key(path);
+    let name = path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if text.ends_with(".cmd") || text.ends_with(".bat") {
+        return AgentBinaryKind::Cli;
+    }
+    if name.contains("agent") || name == "agy" || name == "codex" {
+        return AgentBinaryKind::Cli;
+    }
+    if text.contains("/npm/")
+        || text.contains("/.local/bin")
+        || text.contains("/winget/links")
+        || text.contains("/.claude/bin")
+        || text.contains("/.cursor/bin")
+        || text.contains("/.antigravity/bin")
+        || text.contains("/cursor-agent/")
+    {
+        return AgentBinaryKind::Cli;
+    }
+    match agent {
+        AgentKind::Claude
+            if text.contains("anthropicclaude")
+                || text.contains("/programs/claude/")
+                || name == "claude app" =>
+        {
+            AgentBinaryKind::App
+        }
+        AgentKind::Cursor if name == "cursor" && !name.contains("agent") => AgentBinaryKind::App,
+        AgentKind::Antigravity
+            if name == "antigravity" && !text.contains("cli") && !name.contains("agy") =>
+        {
+            AgentBinaryKind::App
+        }
+        _ => AgentBinaryKind::Cli,
+    }
+}
+
+fn assign_runtime(runtime: &mut AgentRuntime, path: &Path, agent: AgentKind) {
+    if !path_is_runnable(path) {
+        return;
+    }
+    match classify_agent_binary(agent, path) {
+        AgentBinaryKind::Cli if runtime.cli.is_none() => runtime.cli = Some(path.to_path_buf()),
+        AgentBinaryKind::App if runtime.app.is_none() => runtime.app = Some(path.to_path_buf()),
+        _ => {}
+    }
+}
+
+pub fn inspect_agent_runtime(agent: AgentKind, saved_override: Option<&Path>) -> AgentRuntime {
+    let mut runtime = AgentRuntime::default();
+    if let Some(path) = saved_override {
+        assign_runtime(&mut runtime, path, agent);
+        if runtime.cli.is_some() && runtime.app.is_some() {
+            return runtime;
+        }
+    }
+    visit_agent_binaries(agent, |path| {
+        assign_runtime(&mut runtime, &path, agent);
+        runtime.cli.is_none() || runtime.app.is_none()
+    });
+    runtime
+}
+
 fn executable_variants(name: &str) -> Vec<String> {
     #[cfg(windows)]
     {
@@ -355,12 +444,15 @@ fn executable_variants(name: &str) -> Vec<String> {
     }
 }
 
-fn discover_agent_binaries(agent: AgentKind) -> Vec<PathBuf> {
+fn visit_agent_binaries(agent: AgentKind, mut visit: impl FnMut(PathBuf) -> bool) {
     let mut seen = HashSet::new();
-    let mut found = Vec::new();
+    let mut keep_going = true;
     let mut consider = |path: PathBuf| {
+        if !keep_going {
+            return;
+        }
         if path_is_runnable(&path) && seen.insert(path.clone()) {
-            found.push(path);
+            keep_going = visit(path);
         }
     };
 
@@ -380,8 +472,6 @@ fn discover_agent_binaries(agent: AgentKind) -> Vec<PathBuf> {
             }
         }
     }
-    found.sort_by_key(|path| windows_extension_rank(path));
-    found
 }
 
 fn common_directories() -> Vec<PathBuf> {
@@ -407,8 +497,12 @@ fn common_directories() -> Vec<PathBuf> {
         if let Some(local) = env::var_os("LOCALAPPDATA") {
             let local = PathBuf::from(local);
             dirs.push(local.join("Programs"));
+            dirs.push(local.join("Programs").join("claude"));
+            dirs.push(local.join("Programs").join("Claude"));
+            dirs.push(local.join("AnthropicClaude"));
             dirs.push(local.join("Programs").join("cursor"));
             dirs.push(local.join("Programs").join("Cursor"));
+            dirs.push(local.join("Programs").join("Antigravity"));
             dirs.push(local.join("Microsoft").join("WinGet").join("Links"));
             dirs.push(local.join("cursor-agent"));
             dirs.push(
@@ -449,42 +543,27 @@ pub fn resolve_agent_binary(
     agent: AgentKind,
     saved_override: Option<&Path>,
 ) -> Result<PathBuf, String> {
-    let best = discover_agent_binaries(agent).into_iter().next();
-
     if let Some(path) = saved_override {
         if path_is_runnable(path) {
-            if let Some(ref discovered) = best {
-                if windows_extension_rank(discovered) < windows_extension_rank(path) {
-                    return Ok(discovered.clone());
-                }
-            }
             return Ok(path.to_path_buf());
         }
-        return Err(format!(
-            "{} 실행 파일 경로가 유효하지 않습니다: {}",
-            agent.display_name(),
-            path.display()
-        ));
+    }
+    let runtime = inspect_agent_runtime(agent, None);
+    if let Some(path) = runtime.cli.or(runtime.app) {
+        return Ok(path);
     }
 
     if let Some(value) = env::var_os(agent.env_override_key()) {
         let path = PathBuf::from(value);
         if path_is_runnable(&path) {
-            if let Some(ref discovered) = best {
-                if windows_extension_rank(discovered) < windows_extension_rank(&path) {
-                    return Ok(discovered.clone());
-                }
-            }
             return Ok(path);
         }
     }
 
-    best.ok_or_else(|| {
-        format!(
-            "{} CLI를 찾을 수 없습니다. CLI를 설치하거나 설정에서 실행 파일 위치를 지정해주세요.",
-            agent.display_name()
-        )
-    })
+    Err(format!(
+        "{} CLI/앱을 찾을 수 없습니다. 설정에서 CLI와 exe를 같이 설치하세요.",
+        agent.display_name()
+    ))
 }
 
 fn cancelled_tasks() -> &'static Mutex<HashSet<String>> {
@@ -735,6 +814,42 @@ mod tests {
     }
 
     #[test]
+    fn classifies_cli_and_desktop_app() {
+        assert_eq!(
+            classify_agent_binary(
+                AgentKind::Claude,
+                Path::new(r"C:\Users\me\AppData\Roaming\npm\claude.cmd")
+            ),
+            AgentBinaryKind::Cli
+        );
+        assert_eq!(
+            classify_agent_binary(
+                AgentKind::Claude,
+                Path::new(r"C:\Users\me\AppData\Local\AnthropicClaude\Claude.exe")
+            ),
+            AgentBinaryKind::App
+        );
+        assert_eq!(
+            classify_agent_binary(
+                AgentKind::Cursor,
+                Path::new(r"C:\Users\me\AppData\Local\Programs\cursor\Cursor.exe")
+            ),
+            AgentBinaryKind::App
+        );
+        assert_eq!(
+            classify_agent_binary(
+                AgentKind::Cursor,
+                Path::new(r"C:\Users\me\AppData\Local\cursor-agent\cursor-agent.exe")
+            ),
+            AgentBinaryKind::Cli
+        );
+        assert_eq!(
+            classify_agent_binary(AgentKind::Codex, Path::new(r"C:\WinGet\Links\codex.exe")),
+            AgentBinaryKind::Cli
+        );
+    }
+
+    #[test]
     fn claude_managed_workspace_skips_permission_prompts() {
         let extra = managed_workspace_permission_args(AgentKind::Claude);
         let args = args_for_with_options(AgentKind::Claude, "안녕", None, &extra);
@@ -799,6 +914,22 @@ mod tests {
         assert_eq!(args.len(), 2);
         assert_eq!(args[0], "--plugin-dir");
         assert!(args[1].replace('\\', "/").ends_with(".claude/plugins"));
+    }
+
+    #[test]
+    fn plugin_dirs_detect_nested_manifest() {
+        let tmp = tempfile::tempdir().unwrap();
+        let plugin = tmp
+            .path()
+            .join(".claude")
+            .join("plugins")
+            .join("nested");
+        fs::create_dir_all(plugin.join(".claude-plugin")).unwrap();
+        fs::write(plugin.join(".claude-plugin").join("plugin.json"), r#"{"name":"nested"}"#).unwrap();
+        let args = claude_plugin_dir_args_with_home(tmp.path(), tmp.path(), None);
+        assert!(args.windows(2).any(|window| {
+            window[0] == "--plugin-dir" && window[1].replace('\\', "/").ends_with(".claude/plugins")
+        }));
     }
 
     #[test]

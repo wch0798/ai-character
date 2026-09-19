@@ -8,6 +8,10 @@ export default defineConfig(() => ({
   build: {
     // AI-Character Vite 8 chunking
         rolldownOptions: {
+          input: {
+            index: "index.html",
+            "work-log": "work-log.html",
+          },
           output: {
             strictExecutionOrder: true,
             codeSplitting: {
@@ -42,8 +46,13 @@ export default defineConfig(() => ({
         }
       : undefined,
     watch: {
-      // 3. tell Vite to ignore watching `src-tauri`
-      ignored: ["**/src-tauri/**"],
+      ignored: [
+        "**/src-tauri/**",
+        "**/.git/**",
+        "**/.ai-character/**",
+        "**/.ai-character-logs/**",
+        "**/dist/**",
+      ],
     },
   },
 }));

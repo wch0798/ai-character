@@ -51,9 +51,13 @@ mod isolated_browser;
 mod path_guard;
 mod window_stack;
 mod app_tray;
+mod work_log;
+mod click_through;
+mod claude_plugins;
+mod single_instance;
 
 use agent_commands::{
-    ask_claude, cancel_agent, detect_agent, get_project_dir, run_agent,
+    ask_claude, cancel_agent, detect_agent, detect_agent_runtime, get_project_dir, run_agent,
     set_agent_path, set_project_dir,
 };
 use usage_dashboard::{get_usage_snapshot, open_usage_dashboard};
@@ -318,6 +322,7 @@ mod process_stats_tests {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    crate::single_instance::claim();
     let _ = local_env::load_on_startup();
 
     tauri::Builder::default()
@@ -332,41 +337,55 @@ pub fn run() {
                 use tauri::Manager;
                 use tauri_plugin_global_shortcut::ShortcutState;
 
-                app.handle().plugin(
-                    tauri_plugin_global_shortcut::Builder::new()
-                        .with_shortcuts(["ctrl+shift+space"])?
-                        .with_handler(|app, _shortcut, event| {
-                            if event.state != ShortcutState::Pressed {
-                                return;
-                            }
+                let shortcut = tauri_plugin_global_shortcut::Builder::new()
+                    .with_shortcuts(["ctrl+shift+space"])
+                    .map(|builder| {
+                        builder
+                            .with_handler(|app, _shortcut, event| {
+                                if event.state != ShortcutState::Pressed {
+                                    return;
+                                }
 
-                            let Some(window) = app.get_webview_window("main") else {
-                                eprintln!("main window를 찾지 못했습니다.");
-                                return;
-                            };
+                                let Some(window) = app.get_webview_window("main") else {
+                                    eprintln!("main window를 찾지 못했습니다.");
+                                    return;
+                                };
 
-                            match window.is_visible() {
-                                Ok(is_visible) => {
-                                    if should_show_window(is_visible) {
-                                        if let Err(error) = window.show() {
-                                            eprintln!("창 표시 실패: {}", error);
+                                match window.is_visible() {
+                                    Ok(is_visible) => {
+                                        if should_show_window(is_visible) {
+                                            if let Err(error) = window.show() {
+                                                eprintln!("창 표시 실패: {}", error);
+                                            }
+                                        } else if let Err(error) = window.hide() {
+                                            eprintln!("창 숨김 실패: {}", error);
                                         }
-                                    } else if let Err(error) = window.hide() {
-                                        eprintln!("창 숨김 실패: {}", error);
+                                    }
+
+                                    Err(error) => {
+                                        eprintln!("창 상태 확인 실패: {}", error);
                                     }
                                 }
-
-                                Err(error) => {
-                                    eprintln!("창 상태 확인 실패: {}", error);
-                                }
-                            }
-                        })
-                        .build(),
-                )?;
+                            })
+                            .build()
+                    });
+                match shortcut {
+                    Ok(plugin) => {
+                        if let Err(error) = app.handle().plugin(plugin) {
+                            eprintln!("전역 단축키를 건너뜁니다: {error}");
+                        }
+                    }
+                    Err(error) => {
+                        eprintln!("전역 단축키를 건너뜁니다: {error}");
+                    }
+                }
             }
 
             crate::window_stack::bind_main_focus_restore(app.handle());
-            crate::app_tray::install(app)?;
+            crate::click_through::start(app.handle().clone());
+            if let Err(error) = crate::app_tray::install(app) {
+                eprintln!("트레이를 건너뜁니다: {error}");
+            }
 
             Ok(())
         })
@@ -383,6 +402,7 @@ pub fn run() {
             set_project_dir,
             set_agent_path,
             detect_agent,
+            detect_agent_runtime,
             load_ui_state,
             save_ui_state,
             get_state_db_path,
@@ -410,6 +430,13 @@ pub fn run() {
             open_keys_env_file,
             ensure_keys_env_file,
             open_usage_dashboard,
+            crate::work_log::open_work_log,
+            crate::work_log::get_work_log,
+            crate::work_log::set_work_log,
+            crate::work_log::close_work_log,
+            crate::click_through::get_screen_cursor,
+            crate::click_through::set_click_through_regions,
+            crate::click_through::set_click_through_capture,
             get_usage_snapshot,
             run_automatic_provider,
             get_cradle_environment_status,
@@ -420,6 +447,13 @@ pub fn run() {
             agent_install::install_agent_cli,
             agent_install::install_all_required_runtimes,
             agent_install::launch_agent_login,
+            agent_install::launch_github_login,
+            claude_plugins::get_claude_plugins,
+            claude_plugins::add_claude_plugin_marketplace,
+            claude_plugins::install_claude_plugin,
+            claude_plugins::set_claude_plugin_enabled,
+            claude_plugins::uninstall_claude_plugin,
+            claude_plugins::open_claude_plugin_catalog,
             live2d_resources::read_live2d_bytes,
             live2d_resources::read_live2d_text,
             live2d_user::resolve_live2d_abs_path,

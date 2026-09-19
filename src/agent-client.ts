@@ -1,6 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
+import { safeConfirm } from "./safe-confirm";
+import { setWorkLogStatus, setWorkLogTechnical } from "./work-log-store";
 
 export type AgentKind =
   | "claude"
@@ -16,6 +18,7 @@ export type RunAgentOptions = {
   timeoutSeconds?: number;
   sensitiveAcknowledged?: boolean;
   emitRuntimeEvents?: boolean;
+  kind?: "chat" | "file";
   onStream?: (event: AgentStreamEvent) => void;
 };
 
@@ -49,6 +52,7 @@ export type AgentTaskStartEvent = {
   taskId: string;
   agent: AgentKind;
   conversationId: string | null;
+  kind: "chat" | "file";
 };
 
 export type AgentTaskEndEvent = {
@@ -56,6 +60,7 @@ export type AgentTaskEndEvent = {
   agent: AgentKind;
   conversationId: string | null;
   status: "completed" | "cancelled" | "failed";
+  kind?: "chat" | "file";
   userMessage?: string;
   error?: string;
 };
@@ -200,6 +205,17 @@ export async function detectAgent(agent: AgentKind): Promise<string> {
   return invoke<string>("detect_agent", { agent });
 }
 
+export type AgentRuntimePaths = {
+  cli: string | null;
+  app: string | null;
+};
+
+export async function detectAgentRuntime(
+  agent: AgentKind
+): Promise<AgentRuntimePaths> {
+  return invoke<AgentRuntimePaths>("detect_agent_runtime", { agent });
+}
+
 export async function getAppPreferences(): Promise<AppPreferences> {
   return invoke<AppPreferences>("get_app_preferences");
 }
@@ -329,6 +345,64 @@ export async function launchAgentLogin(agent: AgentKind): Promise<string> {
   return invoke<string>("launch_agent_login", { agent });
 }
 
+export async function launchGithubLogin(): Promise<string> {
+  return invoke<string>("launch_github_login");
+}
+
+export type ClaudePlugin = {
+  id: string;
+  name: string;
+  marketplace: string;
+  version: string;
+  description: string;
+  installed: boolean;
+  enabled: boolean;
+  source: string;
+};
+
+export type ClaudePluginSnapshot = {
+  claudeReady: boolean;
+  marketplaceReady: boolean;
+  claudePath: string;
+  message: string;
+  marketplaces: string[];
+  installed: ClaudePlugin[];
+  available: ClaudePlugin[];
+};
+
+export async function getClaudePlugins(
+  live = false
+): Promise<ClaudePluginSnapshot> {
+  return invoke<ClaudePluginSnapshot>("get_claude_plugins", { live });
+}
+
+export async function addClaudePluginMarketplace(
+  source: string
+): Promise<string> {
+  return invoke<string>("add_claude_plugin_marketplace", { source });
+}
+
+export async function installClaudePlugin(spec: string): Promise<string> {
+  return invoke<string>("install_claude_plugin", { spec });
+}
+
+export async function setClaudePluginEnabled(
+  spec: string,
+  enabled: boolean
+): Promise<string> {
+  return invoke<string>("set_claude_plugin_enabled", { spec, enabled });
+}
+
+export async function uninstallClaudePlugin(spec: string): Promise<string> {
+  return invoke<string>("uninstall_claude_plugin", { spec });
+}
+
+export async function openClaudePluginCatalog(
+  kind: "catalog" | "repo" = "catalog"
+): Promise<string> {
+  return invoke<string>("open_claude_plugin_catalog", { kind });
+}
+
 export async function setAgentPath(
   agent: AgentKind,
   path: string
@@ -377,6 +451,7 @@ export function runAgentTask(options: RunAgentOptions): AgentTask {
         taskId,
         agent: options.agent,
         conversationId: options.conversationId ?? null,
+        kind: options.kind ?? "file",
       };
       if (options.emitRuntimeEvents !== false) {
         window.dispatchEvent(
@@ -399,6 +474,7 @@ export function runAgentTask(options: RunAgentOptions): AgentTask {
         agent: options.agent,
         conversationId: options.conversationId ?? null,
         status: "completed",
+        kind: options.kind ?? "file",
       };
       if (options.emitRuntimeEvents !== false) {
         window.dispatchEvent(
@@ -417,6 +493,7 @@ export function runAgentTask(options: RunAgentOptions): AgentTask {
         agent: options.agent,
         conversationId: options.conversationId ?? null,
         status: cancelled ? "cancelled" : "failed",
+        kind: options.kind ?? "file",
         userMessage: userFacingAgentError(message),
         error: message,
       };
@@ -482,7 +559,7 @@ export async function confirmSensitiveAgentAccess(
   const preview = sensitive.slice(0, 5).join(", ");
   const more =
     sensitive.length > 5 ? ` 외 ${sensitive.length - 5}개` : "";
-  return window.confirm(
+  return safeConfirm(
     `프로젝트에 민감해 보이는 파일이 있습니다:\n${preview}${more}\n\n` +
       `Agent 작업 복사본에는 keys.env 등 비밀 파일이 들어가지 않습니다.\n` +
       `계속 실행할까요?`
@@ -506,8 +583,13 @@ export async function askClaudeCompat(
       conversationId: conversationId ?? null,
       timeoutSeconds: preferences.timeoutSeconds,
       sensitiveAcknowledged,
+      kind: "chat",
     });
   } catch (error) {
-    throw new Error(userFacingAgentError(errorMessage(error)));
+    const raw = errorMessage(error);
+    const friendly = userFacingAgentError(raw);
+    setWorkLogTechnical(raw);
+    setWorkLogStatus(friendly);
+    throw new Error(friendly);
   }
 }

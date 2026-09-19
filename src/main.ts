@@ -1,7 +1,16 @@
+import { safeConfirm } from "./safe-confirm";
 import { initializeCradleOrchestrationUi } from "./orchestration-ui";
 import { askCradleCompat } from "./orchestration-engine";
 import { initializeSettingsUi } from "./settings-ui";
 import { initializeAgentRuntimeUi } from "./agent-runtime-ui";
+import { initializeChatProgressUi } from "./chat-progress";
+import { openWorkLogWindow } from "./work-log-window";
+import {
+  getScreenCursor,
+  setClickThroughCapture,
+  setClickThroughRegions,
+  toScreenRegion,
+} from "./native-click-through";
 import { initializeUsageDashboardUi } from "./usage-dashboard-ui";
 import { initializeSqliteStateMirror } from "./chat-state-client";
 import {
@@ -27,6 +36,8 @@ import {
   compactWindowSizeForCharacter,
   maxCharacterScaleBesideChat,
   maxCharacterScaleForMonitor,
+  stepCharacterScale,
+  visualSizePercent,
   occupancyFromModelBounds,
   pickVisualModelBox,
   readStoredWindowPosition,
@@ -48,16 +59,15 @@ import {
 } from "@laplace.live/pixijs-live2d";
 
 import {
-  cursorPosition,
   currentMonitor,
   getCurrentWindow,
   LogicalSize,
   PhysicalPosition,
 } from "@tauri-apps/api/window";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { listen } from "@tauri-apps/api/event";
 
 import {
-  clampWindowForCharacter,
   windowPositionForGrab,
 } from "./character-window-drag";
 
@@ -74,7 +84,6 @@ import {
 
 import {
   characterHitLayerBox,
-  pointInRect,
 } from "./click-through";
 
 import {
@@ -132,7 +141,6 @@ quietConsoleInProduction();
 
 const CHARACTER_DRAG_POLL_MS = 32;
 const CHAT_RESIZE_POLL_MS = 32;
-const CLICK_THROUGH_POLL_MS = 40;
 
 try {
   extensions.add(Live2DPlugin);
@@ -145,9 +153,13 @@ async function startLive2D() {
   if (!ready) {
     throw new Error("앱 창이 아직 준비되지 않았습니다. 잠시 후 다시 실행해 주세요.");
   }
+  void getCurrentWebview()
+    .setBackgroundColor({ red: 0, green: 0, blue: 0, alpha: 0 })
+    .catch(() => undefined);
   // 외장 디스크 TCC 권한 대화에 막히지 않도록 UI 상태 복원은 백그라운드에서 처리
   void initializeSqliteStateMirror();
   initializeAgentRuntimeUi();
+  initializeChatProgressUi();
   initializeSettingsUi();
   initializeCradleOrchestrationUi();
   const canvas =
@@ -240,11 +252,10 @@ async function startLive2D() {
     }
     chatPanel.classList.toggle("open", open);
     if (open) {
-      void getCurrentWindow()
-        .setIgnoreCursorEvents(false)
-        .catch(() => undefined);
+      void setClickThroughCapture(true).catch(() => undefined);
       window.setTimeout(() => {
         chatInput?.focus();
+        pushNativeClickThrough(true);
       }, 40);
       return;
     }
@@ -461,7 +472,7 @@ async function startLive2D() {
       localStorage.getItem(
         "selected-character-size"
       ) as SizePreset | null
-    ) ?? "tiny";
+    ) ?? "small";
 
   if (!(selectedSize in sizePresets)) {
     selectedSize = "tiny";
@@ -527,7 +538,7 @@ async function startLive2D() {
         }
       ).__aiCharacterRefreshClickThrough;
       hook?.(pos, factor);
-      await win.setIgnoreCursorEvents(false);
+      await setClickThroughCapture(true);
     } catch {
       // ignore
     }
@@ -996,7 +1007,7 @@ async function startLive2D() {
                 body.appendChild(
                   makeUserModelMenuRow(selectLabel, selectCharacter, () => {
                     if (
-                      !window.confirm(
+                      !safeConfirm(
                         `"${character.name}" 모델을 삭제할까요?`
                       )
                     ) {
@@ -1093,7 +1104,7 @@ async function startLive2D() {
           body.appendChild(
             makeMenuButton("중복 정리", () => {
               if (
-                !window.confirm(
+                !safeConfirm(
                   "내용이 같은 내 모델을 찾아 하나만 남기고 나머지를 삭제할까요?"
                 )
               ) {
@@ -1310,7 +1321,7 @@ async function startLive2D() {
       event.stopImmediatePropagation();
 
       try {
-        await getCurrentWindow().setIgnoreCursorEvents(false);
+        await setClickThroughCapture(true);
       } catch {
         // ignore
       }
@@ -1336,10 +1347,15 @@ async function startLive2D() {
   await app.init({
     canvas,
     resizeTo: window,
+    background: 0x000000,
     backgroundAlpha: 0,
     antialias: true,
     preference: "webgl",
+    clearBeforeRender: true,
+    premultipliedAlpha: true,
   });
+  app.renderer.background.alpha = 0;
+  app.canvas.style.background = "transparent";
 
   // WKWebView에서 createImageBitmap/워커 디코드가 실패해 텍스처가 검게 나오는 문제 방지
   if (loadTextures?.config) {
@@ -1461,6 +1477,7 @@ async function startLive2D() {
         "selected-character-size",
         preset
       );
+      localStorage.setItem("character-scale", String(characterScale));
 
       onCharacterScaleChanged?.();
     };
@@ -1501,9 +1518,18 @@ async function startLive2D() {
     characterBaselineY();
 
   model.anchor.set(0.5, 1);
-  applyCharacterSize(
-    selectedSize
+  const minStartupScale = characterScaleForPreset(
+    modelBaseWidth,
+    modelBaseHeight,
+    sizePresets.tiny
   );
+  const storedScale = Number(localStorage.getItem("character-scale"));
+  if (Number.isFinite(storedScale) && storedScale >= minStartupScale) {
+    characterScale = storedScale;
+    model.scale.set(characterScale);
+  } else {
+    applyCharacterSize(selectedSize === "tiny" ? "small" : selectedSize);
+  }
 
   model.position.set(
     characterX,
@@ -1537,38 +1563,13 @@ async function startLive2D() {
 
     try {
       const win = getCurrentWindow();
-      const [cursor, scale, monitor] = await Promise.all([
-        cursorPosition(),
-        win.scaleFactor(),
-        currentMonitor(),
-      ]);
-
-      let next = windowPositionForGrab(
+      const cursor = await getScreenCursor();
+      const next = windowPositionForGrab(
         cursor.x,
         cursor.y,
         dragGrabOffsetX,
         dragGrabOffsetY
       );
-
-      if (monitor) {
-        const bounds = model.getBounds().rectangle;
-        next = clampWindowForCharacter(
-          next.x,
-          next.y,
-          {
-            x: bounds.x * scale,
-            y: bounds.y * scale,
-            width: bounds.width * scale,
-            height: bounds.height * scale,
-          },
-          {
-            x: monitor.position.x,
-            y: monitor.position.y,
-            width: monitor.size.width,
-            height: monitor.size.height,
-          }
-        );
-      }
 
       await win.setPosition(
         new PhysicalPosition(Math.round(next.x), Math.round(next.y))
@@ -1599,30 +1600,25 @@ async function startLive2D() {
     }
 
     // 드래그 중 마우스가 캐릭터 밖으로 나가도 이벤트를 잃지 않게 함
-    void getCurrentWindow()
-      .setIgnoreCursorEvents(false)
-      .catch(() => undefined);
+    void setClickThroughCapture(true).catch(() => undefined);
 
     const dragToken = ++characterDragToken;
     void (async () => {
       try {
-        const [startCursor, factor] = await Promise.all([
-          cursorPosition(),
-          getCurrentWindow().scaleFactor(),
-        ]);
+        const startCursor = await getScreenCursor();
         if (dragToken !== characterDragToken || !pointerDown) {
           return;
         }
         const originX = startCursor.x;
         const originY = startCursor.y;
-        const threshold = 6 * factor;
+        const threshold = 6 * (window.devicePixelRatio || 1);
 
         const poll = async () => {
           if (dragToken !== characterDragToken || !pointerDown) {
             return;
           }
           try {
-            const cursor = await cursorPosition();
+            const cursor = await getScreenCursor();
             if (dragToken !== characterDragToken || !pointerDown) {
               return;
             }
@@ -1664,6 +1660,7 @@ async function startLive2D() {
     holdCursorEvents = false;
     characterHitLayer.style.cursor = "grab";
     characterHitLayer.classList.remove("is-dragging");
+    pushNativeClickThrough(true);
     if (wasMoving) {
       void saveWindowPosition();
     }
@@ -1923,10 +1920,9 @@ async function startLive2D() {
       tauriWindow.outerPosition(),
       tauriWindow.scaleFactor(),
     ]);
-    const bounds = model.getBounds().rectangle;
     return {
-      x: outer.x + bounds.x * scale,
-      y: outer.y + bounds.y * scale,
+      x: outer.x + model.x * scale,
+      y: outer.y + model.y * scale,
       scale,
     };
   };
@@ -1940,8 +1936,8 @@ async function startLive2D() {
     const monitor = await currentMonitor();
     const scaleFactor = await tauriWindow.scaleFactor();
     const maxWidth = monitor
-      ? (monitor.size.width / scaleFactor) * 0.55
-      : 700;
+      ? (monitor.size.width / scaleFactor) * 0.82
+      : 1100;
     const maxHeight = monitor
       ? (monitor.size.height / scaleFactor) * 0.9
       : 900;
@@ -2017,12 +2013,11 @@ async function startLive2D() {
         applyChatPanelSize();
       }
 
-      const newBounds = model.getBounds().rectangle;
       let next = windowPositionKeepingCharacter(
         screenPos.x,
         screenPos.y,
-        newBounds.x,
-        newBounds.y,
+        model.x,
+        model.y,
         screenPos.scale
       );
       const [monitor, outerSize] = await Promise.all([
@@ -2190,30 +2185,46 @@ async function startLive2D() {
     (event) => {
       event.preventDefault();
 
-      if (event.deltaY < 0) {
-        characterScale += 0.01;
-      } else {
-        characterScale -= 0.01;
-      }
-
-      characterScale =
-        Math.max(
-          0.05,
-          Math.min(
-            0.55,
-            characterScale
-          )
-        );
-
-      model.scale.set(
-        characterScale
+      const largeScale = characterScaleForPreset(
+        modelBaseWidth,
+        modelBaseHeight,
+        sizePresets.large
       );
+      const minScale = characterScaleForPreset(
+        modelBaseWidth,
+        modelBaseHeight,
+        sizePresets.tiny
+      );
+      const maxScale = isChatOpen()
+        ? maxCharacterScaleBesideChat(
+            modelBaseWidth,
+            modelBaseHeight,
+            Math.max(window.screen.availWidth, 1200),
+            Math.max(window.screen.availHeight, 800),
+            chatPanelWidth
+          )
+        : maxCharacterScaleForMonitor(
+            modelBaseWidth,
+            modelBaseHeight,
+            Math.max(240, window.screen.availWidth * 0.82),
+            Math.max(240, window.screen.availHeight * 0.9)
+          );
+      characterScale = stepCharacterScale(
+        characterScale,
+        event.deltaY < 0 ? "up" : "down",
+        largeScale,
+        Math.max(maxScale, largeScale),
+        minScale
+      );
+
+      model.scale.set(characterScale);
+      localStorage.setItem("character-scale", String(characterScale));
 
       onCharacterScaleChanged?.();
 
       if (status) {
         flashStatus(
-          `크기 ${Math.round(characterScale * 100)}%`,
+          `크기 ${visualSizePercent(characterScale, largeScale)}%`,
           "info",
           700
         );
@@ -2293,6 +2304,21 @@ async function startLive2D() {
       copyButton
     );
 
+    if (
+      type === "assistant" &&
+      (text.includes("기술 로그") || text.startsWith("연결 오류:"))
+    ) {
+      const logButton = document.createElement("button");
+      logButton.type = "button";
+      logButton.className = "message-copy message-open-log";
+      logButton.textContent = "기술 로그 열기";
+      logButton.addEventListener("click", (event) => {
+        event.stopPropagation();
+        void openWorkLogWindow();
+      });
+      bubble.append(logButton);
+    }
+
     messages.appendChild(bubble);
 
     messages.scrollTop =
@@ -2363,8 +2389,9 @@ async function startLive2D() {
     await clickThroughWindow
       .scaleFactor();
 
-  let cursorEventsIgnored = false;
-  let cursorCheckRunning = false;
+  let lastClickThroughPayload = "";
+  let clickThroughPushTimer = 0;
+  let pushNativeClickThrough = (_immediate = false): void => {};
 
   (
     window as unknown as {
@@ -2376,13 +2403,14 @@ async function startLive2D() {
   ).__aiCharacterRefreshClickThrough = (pos, factor) => {
     clickThroughWindowPosition = pos;
     clickThroughScaleFactor = factor;
-    cursorEventsIgnored = false;
+    pushNativeClickThrough(true);
   };
 
   await clickThroughWindow.onMoved(
     ({ payload }) => {
       clickThroughWindowPosition =
         payload;
+      pushNativeClickThrough(false);
     }
   );
 
@@ -2391,96 +2419,9 @@ async function startLive2D() {
       ({ payload }) => {
         clickThroughScaleFactor =
           payload.scaleFactor;
+        pushNativeClickThrough(false);
       }
     );
-
-  const isOverlayInteractive = (
-    x: number,
-    y: number
-  ): boolean => {
-    const settingsPanel =
-      document.querySelector<HTMLElement>(
-        "#ai-settings-panel"
-      );
-    if (settingsPanel && !settingsPanel.hidden) {
-      const rect = settingsPanel.getBoundingClientRect();
-      if (
-        pointInRect(x, y, {
-          x: rect.left,
-          y: rect.top,
-          width: rect.width,
-          height: rect.height,
-        })
-      ) {
-        return true;
-      }
-    }
-    const usagePanel =
-      document.querySelector<HTMLElement>(
-        "#usage-dashboard-panel"
-      );
-    if (usagePanel && !usagePanel.hidden) {
-      const rect = usagePanel.getBoundingClientRect();
-      if (
-        pointInRect(x, y, {
-          x: rect.left,
-          y: rect.top,
-          width: rect.width,
-          height: rect.height,
-        })
-      ) {
-        return true;
-      }
-    }
-
-    if (isChatOpen() && chatPanel) {
-      const rect = chatPanel.getBoundingClientRect();
-      if (
-        pointInRect(x, y, {
-          x: rect.left,
-          y: rect.top,
-          width: rect.width,
-          height: rect.height,
-        })
-      ) {
-        return true;
-      }
-    }
-
-    const target =
-      document.elementFromPoint(
-        x,
-        y
-      );
-
-    if (!(target instanceof Element)) {
-      return false;
-    }
-
-    return Boolean(
-      target.closest(
-        [
-          "#chat-panel",
-          "#ai-settings-panel",
-          "#usage-dashboard-panel",
-          "#chat-history-toolbar",
-          "#chat-history-drawer",
-          "#rightclick-test-menu",
-          "button",
-          "input",
-          "textarea",
-          "select",
-          "form",
-          "a",
-          "label",
-          "summary",
-          "[role='menu']",
-          "[role='menuitem']",
-          "[role='dialog']",
-        ].join(",")
-      )
-    );
-  };
 
   const getCharacterHitBox = () => {
     const display = characterDisplaySize(
@@ -2501,22 +2442,6 @@ async function startLive2D() {
     );
   };
 
-  const isCharacterInteractive = (
-    x: number,
-    y: number
-  ): boolean => {
-    if (
-      x < 0 ||
-      y < 0 ||
-      x > window.innerWidth ||
-      y > window.innerHeight
-    ) {
-      return false;
-    }
-
-    return pointInRect(x, y, getCharacterHitBox());
-  };
-
   const syncCharacterHitArea = (): void => {
     if (chatPanelResizing) {
       return;
@@ -2529,157 +2454,102 @@ async function startLive2D() {
     characterHitLayer.style.right = "auto";
     characterHitLayer.style.bottom = "auto";
   };
-  syncCharacterHitArea();
-  app.ticker.add(syncCharacterHitArea);
+  const collectClickThroughRegions = () => {
+    const regions = [
+      toScreenRegion(
+        clickThroughWindowPosition.x,
+        clickThroughWindowPosition.y,
+        clickThroughScaleFactor,
+        getCharacterHitBox()
+      ),
+    ];
+    const overlaySelectors = [
+      "#chat-panel.open",
+      "#ai-settings-panel",
+      "#usage-dashboard-panel",
+      "#work-log-overlay",
+      "#rightclick-test-menu",
+      "#chat-history-drawer",
+    ];
+    for (const selector of overlaySelectors) {
+      const el = document.querySelector<HTMLElement>(selector);
+      if (!el || el.hidden) {
+        continue;
+      }
+      const rect = el.getBoundingClientRect();
+      if (rect.width < 2 || rect.height < 2) {
+        continue;
+      }
+      regions.push(
+        toScreenRegion(
+          clickThroughWindowPosition.x,
+          clickThroughWindowPosition.y,
+          clickThroughScaleFactor,
+          {
+            x: rect.left,
+            y: rect.top,
+            width: rect.width,
+            height: rect.height,
+          }
+        )
+      );
+    }
+    return regions;
+  };
 
-  const updateClickThrough =
-    async () => {
-      if (cursorCheckRunning) {
+  pushNativeClickThrough = (immediate = false): void => {
+    const run = () => {
+      const capture =
+        holdCursorEvents ||
+        chatPanelResizing ||
+        contextMenuOpen ||
+        menuCursorLock ||
+        characterDragActive;
+      const regions = capture ? [] : collectClickThroughRegions();
+      const payload = JSON.stringify({ regions, capture });
+      if (payload === lastClickThroughPayload) {
         return;
       }
-
-      cursorCheckRunning = true;
-
-      try {
-        const cursor =
-          await cursorPosition();
-
-        /*
-         * Tauri 위치는 physical pixel,
-         * DOM 좌표는 logical pixel이므로
-         * scaleFactor로 변환한다.
-         */
-        const localX =
-          (
-            cursor.x -
-            clickThroughWindowPosition.x
-          ) /
-          clickThroughScaleFactor;
-
-        const localY =
-          (
-            cursor.y -
-            clickThroughWindowPosition.y
-          ) /
-          clickThroughScaleFactor;
-
-        const settingsOpen = (() => {
-          const panel =
-            document.querySelector<HTMLElement>(
-              "#ai-settings-panel"
-            );
-          return Boolean(panel && !panel.hidden);
-        })();
-        const usageOpen = (() => {
-          const panel =
-            document.querySelector<HTMLElement>(
-              "#usage-dashboard-panel"
-            );
-          return Boolean(panel && !panel.hidden);
-        })();
-
-        /*
-         * 캐릭터 몸 / 채팅·설정 같은 UI만 마우스를 받는다.
-         * 창 전체 사각형은 클릭 통과.
-         */
-        const interactive =
-          holdCursorEvents ||
-          chatPanelResizing ||
-          contextMenuOpen ||
-          menuCursorLock ||
-          characterDragActive ||
-          settingsOpen ||
-          usageOpen ||
-          isCharacterInteractive(
-            localX,
-            localY
-          ) ||
-          isOverlayInteractive(
-            localX,
-            localY
-          );
-
-        const shouldIgnore =
-          !interactive;
-
-        /*
-         * 상태가 실제로 바뀔 때만
-         * Tauri IPC 호출
-         */
-        if (
-          shouldIgnore !==
-          cursorEventsIgnored
-        ) {
-          await clickThroughWindow
-            .setIgnoreCursorEvents(
-              shouldIgnore
-            );
-
-          cursorEventsIgnored =
-            shouldIgnore;
-        }
-
-        const overCharacter = isCharacterInteractive(localX, localY);
-        const overChatUi =
-          isOverlayInteractive(localX, localY) && !overCharacter;
-        canvas.style.pointerEvents =
-          holdCursorEvents ||
-          characterDragActive ||
-          !overChatUi
-            ? "auto"
-            : "none";
-      } catch (error) {
-        console.warn(
-          "click-through update 실패:",
-          error
-        );
-      } finally {
-        cursorCheckRunning = false;
-      }
+      lastClickThroughPayload = payload;
+      void setClickThroughRegions(regions, capture).catch(() => undefined);
     };
-
-  window.setInterval(
-    () => {
-      if (holdCursorEvents || characterDragActive || chatPanelResizing) {
-        return;
+    if (immediate) {
+      if (clickThroughPushTimer) {
+        window.clearTimeout(clickThroughPushTimer);
+        clickThroughPushTimer = 0;
       }
-      void updateClickThrough();
-    },
-    CLICK_THROUGH_POLL_MS
-  );
-
-  window.addEventListener("pointermove", () => {
-    if (
-      cursorEventsIgnored ||
-      holdCursorEvents ||
-      characterDragActive ||
-      chatPanelResizing
-    ) {
+      run();
       return;
     }
-    void updateClickThrough();
+    if (clickThroughPushTimer) {
+      return;
+    }
+    clickThroughPushTimer = window.setTimeout(() => {
+      clickThroughPushTimer = 0;
+      run();
+    }, 120);
+  };
+
+  syncCharacterHitArea();
+  app.ticker.add(() => {
+    syncCharacterHitArea();
+    pushNativeClickThrough(false);
   });
 
   window.addEventListener("ai-character:settings-opened", () => {
-    cursorEventsIgnored = false;
-    void getCurrentWindow()
-      .setIgnoreCursorEvents(false)
-      .catch(() => undefined);
+    pushNativeClickThrough(true);
   });
 
   window.addEventListener("ai-character:usage-opened", () => {
-    cursorEventsIgnored = false;
-    void getCurrentWindow()
-      .setIgnoreCursorEvents(false)
-      .catch(() => undefined);
+    pushNativeClickThrough(true);
   });
 
   window.addEventListener("ai-character:settings-closed", () => {
     canvas.style.pointerEvents = "auto";
-    void updateClickThrough();
+    pushNativeClickThrough(true);
   });
 
-  void updateClickThrough();
+  pushNativeClickThrough(true);
 
 
   /*
@@ -2757,12 +2627,11 @@ async function startLive2D() {
     void (async () => {
       const screenPos = await captureCharacterScreenPos();
       await fitCharacterModeWindow();
-      const newBounds = model.getBounds().rectangle;
       let next = windowPositionKeepingCharacter(
         screenPos.x,
         screenPos.y,
-        newBounds.x,
-        newBounds.y,
+        model.x,
+        model.y,
         screenPos.scale
       );
       const [monitor, outerSize] = await Promise.all([
@@ -2882,18 +2751,20 @@ async function startLive2D() {
               ? startHeight
               : startHeight + dy;
           applyChatPanelSize(nextWidth, nextHeight, false);
-          const neededHeight = chatPanelHeight + CHAT_WINDOW_MARGIN * 2;
-          const neededWidth =
-            readChatLeft() + chatPanelWidth + CHAT_WINDOW_MARGIN;
-          if (
-            neededHeight > window.innerHeight + 1 ||
-            neededWidth > window.innerWidth + 1
-          ) {
-            void applyNativeChatWindowSize(
-              Math.max(window.innerWidth, neededWidth),
-              Math.max(window.innerHeight, neededHeight)
-            );
-          }
+          const display = characterDisplaySize(
+            modelBaseWidth,
+            modelBaseHeight,
+            characterScale
+          );
+          const hudLift = hudStripPx();
+          const needed = chatAppWindowSize(
+            readChatLeft(),
+            chatPanelWidth,
+            chatPanelHeight,
+            display.height + hudLift,
+            hudLift
+          );
+          void applyNativeChatWindowSize(needed.width, needed.height);
         };
 
         const pollCursor = async () => {
@@ -2902,7 +2773,7 @@ async function startLive2D() {
           }
           pollQueued = true;
           try {
-            const cursor = await cursorPosition();
+            const cursor = await getScreenCursor();
             if (resizingActive && originReady) {
               applyFromScreen(cursor.x, cursor.y);
             }
@@ -2926,9 +2797,9 @@ async function startLive2D() {
 
         void (async () => {
           try {
-            void getCurrentWindow().setIgnoreCursorEvents(false);
+            void setClickThroughCapture(true);
             const [cursor, factor] = await Promise.all([
-              cursorPosition(),
+              getScreenCursor(),
               tauriWindow.scaleFactor(),
             ]);
             if (!resizingActive) {
@@ -2961,6 +2832,7 @@ async function startLive2D() {
           chatPanelResizing = false;
           chatPanel.classList.remove("is-resizing");
           resizeCapture?.classList.remove("active");
+          pushNativeClickThrough(true);
           void fitChatModeWindow();
         };
 
@@ -3409,6 +3281,7 @@ async function startLive2D() {
       }
 
       characterActivity?.setActivity("working");
+      window.dispatchEvent(new Event("ai-character:chat-progress-start"));
 
       try {
         const answer =
@@ -3423,6 +3296,7 @@ async function startLive2D() {
         );
 
         characterActivity?.setActivity("done");
+        window.dispatchEvent(new Event("ai-character:chat-progress-hide"));
 
         const completedAttachments =
           [...pendingAttachments];
@@ -3464,10 +3338,13 @@ async function startLive2D() {
             : String(error);
 
         addMessage(
-          `Claude 연결 오류: ${message}`,
+          `연결 오류: ${message}`,
           "assistant"
         );
         characterActivity?.setActivity("error");
+        window.setTimeout(() => {
+          characterActivity?.setActivity("idle");
+        }, 2400);
       } finally {
         if (chatInput) {
           chatInput.disabled = false;

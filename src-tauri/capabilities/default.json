@@ -4,7 +4,8 @@
   "description": "Capability for the main window and isolated web account windows",
   "windows": [
     "main",
-    "webacct-*"
+    "webacct-*",
+    "work-log"
   ],
   "permissions": [
     "core:default",
@@ -15,6 +16,7 @@
     "core:window:allow-set-min-size",
     "core:menu:default",
     "core:tray:default",
+    "core:event:default",
     "core:window:allow-set-ignore-cursor-events",
     "core:webview:allow-create-webview-window",
     "core:webview:allow-webview-position",
@@ -26,6 +28,8 @@
     "core:window:allow-set-always-on-top",
     "core:window:allow-close",
     "dialog:default",
+    "dialog:allow-confirm",
+    "dialog:allow-ask",
     "clipboard-manager:default",
     "clipboard-manager:allow-write-text"
   ]

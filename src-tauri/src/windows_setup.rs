@@ -377,46 +377,62 @@ Copy-Item -Path (Join-Path $extract '*') -Destination $target -Recurse -Force
 }
 
 pub fn install_claude() -> Result<String, String> {
-    if let Ok(message) = run_winget("Anthropic.ClaudeCode") {
-        refresh_process_path();
-        return Ok(message);
+    let mut notes = Vec::new();
+    match run_winget("Anthropic.ClaudeCode") {
+        Ok(message) => notes.push(format!("CLI: {message}")),
+        Err(error) => notes.push(format!("CLI winget: {error}")),
     }
     match run_powershell("irm https://claude.ai/install.ps1 | iex") {
-        Ok(_) => {
-            refresh_process_path();
-            Ok("Claude Code 설치 완료".into())
-        }
+        Ok(_) => notes.push("CLI 스크립트 설치".into()),
         Err(script_error) => {
             if node_binary().is_none() {
                 let _ = install_node();
             }
-            run_npm_global("@anthropic-ai/claude-code").map_err(|npm_error| {
-                let _ = open_url("https://docs.anthropic.com/en/docs/claude-code/overview");
-                format!("{script_error} / {npm_error} — 문서를 열었습니다.")
-            })
+            match run_npm_global("@anthropic-ai/claude-code") {
+                Ok(message) => notes.push(format!("CLI npm: {message}")),
+                Err(npm_error) => notes.push(format!("CLI: {script_error} / {npm_error}")),
+            }
         }
+    }
+    match run_winget("Anthropic.Claude") {
+        Ok(message) => notes.push(format!("앱: {message}")),
+        Err(error) => notes.push(format!("앱: {error}")),
+    }
+    refresh_process_path();
+    let runtime = crate::agent_core::inspect_agent_runtime(crate::agent_core::AgentKind::Claude, None);
+    if runtime.cli.is_some() || runtime.app.is_some() {
+        Ok(notes.join(" / "))
+    } else {
+        let _ = open_url("https://docs.anthropic.com/en/docs/claude-code/overview");
+        Err(format!("{} — 문서를 열었습니다.", notes.join(" / ")))
     }
 }
 
 pub fn install_codex() -> Result<String, String> {
-    if let Ok(message) = run_winget("OpenAI.Codex") {
-        refresh_process_path();
-        return Ok(message);
+    let mut notes = Vec::new();
+    match run_winget("OpenAI.Codex") {
+        Ok(message) => notes.push(format!("exe: {message}")),
+        Err(error) => notes.push(format!("exe winget: {error}")),
     }
     match run_powershell("irm https://chatgpt.com/codex/install.ps1 | iex") {
-        Ok(_) => {
-            refresh_process_path();
-            Ok("Codex 설치 완료".into())
-        }
+        Ok(_) => notes.push("CLI 스크립트 설치".into()),
         Err(script_error) => {
             if node_binary().is_none() {
                 let _ = install_node();
             }
-            run_npm_global("@openai/codex").map_err(|npm_error| {
-                let _ = open_url("https://github.com/openai/codex");
-                format!("{script_error} / {npm_error} — 문서를 열었습니다.")
-            })
+            match run_npm_global("@openai/codex") {
+                Ok(message) => notes.push(format!("CLI npm: {message}")),
+                Err(npm_error) => notes.push(format!("CLI: {script_error} / {npm_error}")),
+            }
         }
+    }
+    refresh_process_path();
+    let runtime = crate::agent_core::inspect_agent_runtime(crate::agent_core::AgentKind::Codex, None);
+    if runtime.cli.is_some() || runtime.app.is_some() {
+        Ok(notes.join(" / "))
+    } else {
+        let _ = open_url("https://github.com/openai/codex");
+        Err(format!("{} — 문서를 열었습니다.", notes.join(" / ")))
     }
 }
 
@@ -454,22 +470,27 @@ pub fn install_cursor_agent() -> Result<String, String> {
 }
 
 pub fn install_antigravity() -> Result<String, String> {
+    let mut notes = Vec::new();
     for package in ["Google.AntigravityCLI", "Google.Antigravity"] {
-        if let Ok(message) = run_winget(package) {
-            refresh_process_path();
-            return Ok(message);
+        match run_winget(package) {
+            Ok(message) => notes.push(message),
+            Err(error) => notes.push(error),
         }
     }
     match run_powershell("irm https://antigravity.google/cli/install.ps1 | iex") {
-        Ok(_) => {
-            refresh_process_path();
-            Ok("Antigravity 설치 완료".into())
-        }
-        Err(error) => {
-            let _ = open_url("https://antigravity.google/");
-            Err(format!(
-                "{error} — Antigravity 공식 설치 페이지를 열었습니다. 설치 후 앱을 다시 실행하세요."
-            ))
-        }
+        Ok(_) => notes.push("CLI 스크립트 설치".into()),
+        Err(error) => notes.push(error),
+    }
+    refresh_process_path();
+    let runtime =
+        crate::agent_core::inspect_agent_runtime(crate::agent_core::AgentKind::Antigravity, None);
+    if runtime.cli.is_some() || runtime.app.is_some() {
+        Ok(notes.join(" / "))
+    } else {
+        let _ = open_url("https://antigravity.google/");
+        Err(format!(
+            "{} — Antigravity 공식 설치 페이지를 열었습니다.",
+            notes.join(" / ")
+        ))
     }
 }

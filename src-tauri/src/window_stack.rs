@@ -10,6 +10,9 @@ pub fn restore_main_always_on_top(app: &tauri::AppHandle) {
     if app.get_webview_window("usage-dashboard").is_some() {
         return;
     }
+    if app.get_webview_window("work-log").is_some() {
+        return;
+    }
     if let Some(main) = app.get_webview_window("main") {
         let _ = main.set_always_on_top(true);
     }

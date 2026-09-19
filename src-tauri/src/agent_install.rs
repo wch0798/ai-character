@@ -1,6 +1,4 @@
-use crate::agent_core::{
-    is_preferred_windows_binary, resolve_agent_binary, AgentKind,
-};
+use crate::agent_core::{inspect_agent_runtime, resolve_agent_binary, AgentKind};
 use crate::environment_preflight::git_binary;
 use crate::settings::load_settings;
 use serde::Serialize;
@@ -78,21 +76,30 @@ fn agent_status(agent: AgentKind) -> RuntimeComponentStatus {
     let saved = settings
         .as_ref()
         .and_then(|s| s.agent_path(agent).map(PathBuf::as_path));
-    match resolve_agent_binary(agent, saved) {
-        Ok(path) => RuntimeComponentStatus {
-            id: agent.as_str().to_string(),
-            label: agent.display_name().to_string(),
-            ready: true,
-            detail: path.display().to_string(),
-            can_auto_install: cfg!(windows),
-        },
-        Err(error) => RuntimeComponentStatus {
+    let runtime = inspect_agent_runtime(agent, saved);
+    let mut parts = Vec::new();
+    if let Some(path) = runtime.cli.as_ref() {
+        parts.push(format!("CLI {}", path.display()));
+    }
+    if let Some(path) = runtime.app.as_ref() {
+        parts.push(format!("앱 {}", path.display()));
+    }
+    if parts.is_empty() {
+        RuntimeComponentStatus {
             id: agent.as_str().to_string(),
             label: agent.display_name().to_string(),
             ready: false,
-            detail: error,
+            detail: format!("{} CLI/앱 없음 — 둘 다 설치할 수 있습니다.", agent.display_name()),
             can_auto_install: cfg!(windows),
-        },
+        }
+    } else {
+        RuntimeComponentStatus {
+            id: agent.as_str().to_string(),
+            label: agent.display_name().to_string(),
+            ready: runtime.cli.is_some(),
+            detail: parts.join(" · "),
+            can_auto_install: cfg!(windows),
+        }
     }
 }
 
@@ -224,18 +231,22 @@ fn install_agent_cli_impl(agent: String) -> Result<InstallStepResult, String> {
     #[cfg(windows)]
     {
         crate::windows_setup::refresh_process_path();
-        if let Ok(path) = resolve_agent_binary(agent, None) {
-            if is_preferred_windows_binary(agent, &path) {
-                return Ok(InstallStepResult {
-                    id: agent.as_str().to_string(),
-                    ok: true,
-                    message: format!(
-                        "{} 이미 설치됨 ({})",
-                        agent.display_name(),
-                        path.display()
-                    ),
-                });
-            }
+        let runtime = crate::agent_core::inspect_agent_runtime(agent, None);
+        if runtime.cli.is_some() && runtime.app.is_some() {
+            return Ok(InstallStepResult {
+                id: agent.as_str().to_string(),
+                ok: true,
+                message: format!(
+                    "{} CLI와 앱이 이미 있습니다. ({})",
+                    agent.display_name(),
+                    runtime
+                        .cli
+                        .as_ref()
+                        .or(runtime.app.as_ref())
+                        .map(|path| path.display().to_string())
+                        .unwrap_or_default()
+                ),
+            });
         }
 
         let result = match agent {
@@ -413,5 +424,45 @@ pub fn launch_agent_login(app: tauri::AppHandle, agent: String) -> Result<String
             }
             Ok("Antigravity 페이지를 분리된 브라우저 창에서 열었습니다. 기본 구글 계정과 섞이지 않습니다.".to_string())
         }
+    }
+}
+
+/// GitHub는 Gmail(Google) 로그인을 쓰므로 분리 프로필이 아니라 기본 브라우저를 엽니다.
+#[tauri::command]
+pub fn launch_github_login(app: tauri::AppHandle) -> Result<String, String> {
+    crate::window_stack::suppress_main_always_on_top(&app);
+    #[cfg(windows)]
+    {
+        crate::windows_setup::open_url("https://github.com/login")
+            .map_err(|error| format!("GitHub 로그인 페이지 열기 실패: {error}"))?;
+        let gcm = PathBuf::from(
+            r"C:\Program Files\Git\mingw64\libexec\git-core\git-credential-manager.exe",
+        );
+        let gcm_core = PathBuf::from(
+            r"C:\Program Files\Git\mingw64\libexec\git-core\git-credential-manager-core.exe",
+        );
+        let helper = if gcm.is_file() {
+            Some(gcm)
+        } else if gcm_core.is_file() {
+            Some(gcm_core)
+        } else {
+            None
+        };
+        if let Some(binary) = helper {
+            let _ = crate::windows_process::launch_visible_cli_with_env(
+                &binary,
+                &["github", "login"],
+                &[],
+            );
+        }
+        Ok("GitHub 로그인을 기본 브라우저에서 열었습니다. Gmail(Google)로 로그인하세요. 토큰을 쓰려면 키 파일에 GITHUB_TOKEN= 을 넣으면 됩니다.".to_string())
+    }
+    #[cfg(not(windows))]
+    {
+        Command::new("open")
+            .arg("https://github.com/login")
+            .spawn()
+            .map_err(|error| format!("GitHub 로그인 페이지 열기 실패: {error}"))?;
+        Ok("GitHub 로그인을 기본 브라우저에서 열었습니다. Gmail(Google)로 로그인하세요.".to_string())
     }
 }

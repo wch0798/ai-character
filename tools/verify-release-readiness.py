@@ -175,6 +175,17 @@ def main() -> int:
         if missing:
             info("missing icons", ", ".join(missing))
 
+    resources = bundle.get("resources") if isinstance(bundle.get("resources"), list) else []
+    check(any("live2d" in str(item) for item in resources), "Live2D resources are bundled", local_blockers)
+    windows = bundle.get("windows") if isinstance(bundle.get("windows"), dict) else {}
+    webview_mode = windows.get("webviewInstallMode") if isinstance(windows.get("webviewInstallMode"), dict) else {}
+    check(webview_mode.get("type") == "offlineInstaller", "WebView2 offline installer is bundled", local_blockers)
+    nsis = windows.get("nsis") if isinstance(windows.get("nsis"), dict) else {}
+    check(nsis.get("installMode") in {"currentUser", "perMachine", "both"}, "NSIS install mode is set", local_blockers)
+    hooks = nsis.get("installerHooks") if isinstance(nsis.get("installerHooks"), str) else ""
+    hooks_path = config_dir / hooks.lstrip("./") if hooks else None
+    check(bool(hooks_path) and hooks_path.is_file(), "NSIS installer hooks exist", local_blockers)
+
     macos = bundle.get("macOS") if isinstance(bundle.get("macOS"), dict) else {}
     config_identity = macos.get("signingIdentity") if isinstance(macos.get("signingIdentity"), str) else ""
     env_identity = os.environ.get("APPLE_SIGNING_IDENTITY", "").strip()

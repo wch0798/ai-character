@@ -17,9 +17,41 @@ export function characterScaleForPreset(
   referenceWidth = CHAT_WINDOW_WIDTH,
   referenceHeight = CHAT_WINDOW_HEIGHT
 ): number {
-  const maxWidth = referenceWidth * 0.65;
-  const maxHeight = referenceHeight * presetRatio;
-  return Math.min(maxWidth / modelWidth, maxHeight / modelHeight);
+  if (modelWidth <= 0 || modelHeight <= 0) {
+    return 0.2;
+  }
+  // 높이가 기준. 가로는 창을 넘지 않게만 자른다.
+  const byHeight = (referenceHeight * presetRatio) / modelHeight;
+  const byWidth = (referenceWidth * 0.72) / modelWidth;
+  return Math.min(byHeight, byWidth);
+}
+
+/** 100% = ‘크게’ 프리셋. Live2D 원본 배율(4% 같은 값)을 보여 주지 않는다. */
+export function visualSizePercent(
+  scale: number,
+  largeScale: number
+): number {
+  if (!(largeScale > 0) || !(scale > 0)) {
+    return 0;
+  }
+  return Math.max(1, Math.round((scale / largeScale) * 100));
+}
+
+export function stepCharacterScale(
+  current: number,
+  direction: "up" | "down",
+  largeScale: number,
+  maxScale: number,
+  minScale?: number,
+  stepPercent = 10
+): number {
+  const large = largeScale > 0 ? largeScale : 0.2;
+  const min = minScale && minScale > 0 ? minScale : large * 0.4;
+  const unit = large * (stepPercent / 100);
+  const safeCurrent = Number.isFinite(current) && current > 0 ? current : min;
+  const next = direction === "up" ? safeCurrent + unit : safeCurrent - unit;
+  const cap = Number.isFinite(maxScale) && maxScale > 0 ? maxScale : next;
+  return Math.min(cap, Math.max(min, next));
 }
 
 export function characterDisplaySize(

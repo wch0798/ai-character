@@ -1,5 +1,4 @@
 import { getUsageSnapshot, openUsageDashboard } from "./agent-client";
-import { getCurrentWindow } from "@tauri-apps/api/window";
 
 type UsageAccount = {
   connected?: boolean;
@@ -440,9 +439,6 @@ export function initializeUsageDashboardUi(options: {
     if (panel) {
       panel.hidden = false;
     }
-    void getCurrentWindow()
-      .setIgnoreCursorEvents(false)
-      .catch(() => undefined);
     window.dispatchEvent(new CustomEvent("ai-character:usage-opened"));
     tab = "overview";
     await load();

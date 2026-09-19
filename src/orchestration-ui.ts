@@ -1,4 +1,6 @@
 import { getAppPreferences } from "./agent-client";
+import { safeConfirm } from "./safe-confirm";
+import { setWorkLogStatus, setWorkLogTechnical } from "./work-log-store";
 import {
   cancelCradleOrchestration,
   fallbackManagerWebToCli,
@@ -170,8 +172,7 @@ export function initializeCradleOrchestrationUi(): void {
   const stopButton = button("CRADLE 중지", "ai-cradle-action ai-cradle-secondary");
   stopButton.hidden = true;
   const hideButton = button("닫기", "ai-cradle-action ai-cradle-secondary");
-  hideButton.hidden = true;
-  hideButton.title = "작업 패널 닫기";
+  hideButton.title = "작업 패널 닫기. 로그에서 다시 볼 수 있습니다.";
   headerActions.append(retryButton, stopButton, hideButton);
   header.append(title, headerActions);
 
@@ -268,7 +269,7 @@ export function initializeCradleOrchestrationUi(): void {
     if (!lastSession) {
       return;
     }
-    if (!window.confirm("현재 CRADLE 작업을 중지할까요? 실행 중인 CLI 작업에도 중지 요청을 보냅니다.")) {
+    if (!safeConfirm("현재 CRADLE 작업을 중지할까요? 실행 중인 CLI 작업에도 중지 요청을 보냅니다.")) {
       return;
     }
     stopButton.disabled = true;
@@ -283,6 +284,20 @@ export function initializeCradleOrchestrationUi(): void {
 
   hideButton.addEventListener("click", () => {
     panel.hidden = true;
+  });
+  window.addEventListener("ai-character:work-ui-hide", () => {
+    panel.hidden = true;
+  });
+  window.addEventListener("ai-character:stop-active-work", () => {
+    if (!lastSession) {
+      return;
+    }
+    if (!["planning", "running", "waiting_web", "synthesizing"].includes(lastSession.status)) {
+      return;
+    }
+    void cancelCradleOrchestration(lastSession.id).catch((error) => {
+      setMessage(`CRADLE 중지 실패: ${errorText(error)}`);
+    });
   });
 
   retryButton.addEventListener("click", async () => {
@@ -456,7 +471,7 @@ export function initializeCradleOrchestrationUi(): void {
     });
 
     cliButton.addEventListener("click", () => {
-      if (!window.confirm("Claude Web이 한도 초과/사용 불가 상태인가요? 이 앱 세션에서는 Claude CLI를 대신 사용합니다.")) {
+      if (!safeConfirm("Claude Web이 한도 초과/사용 불가 상태인가요? 이 앱 세션에서는 Claude CLI를 대신 사용합니다.")) {
         return;
       }
       try {
@@ -524,7 +539,7 @@ export function initializeCradleOrchestrationUi(): void {
     });
 
     fallbackButton.addEventListener("click", () => {
-      if (!window.confirm(`${WEB_AGENT_LABELS[target]}이 한도 초과/사용 불가 상태인가요? 사용 가능한 CLI로 전환합니다.`)) {
+      if (!safeConfirm(`${WEB_AGENT_LABELS[target]}이 한도 초과/사용 불가 상태인가요? 사용 가능한 CLI로 전환합니다.`)) {
         return;
       }
       try {
@@ -536,7 +551,7 @@ export function initializeCradleOrchestrationUi(): void {
     });
 
     skipButton.addEventListener("click", () => {
-      if (!window.confirm(`${TARGET_LABELS[task.target]} 작업을 건너뛸까요?`)) {
+      if (!safeConfirm(`${TARGET_LABELS[task.target]} 작업을 건너뛸까요?`)) {
         return;
       }
       void (async () => {
@@ -627,10 +642,13 @@ export function initializeCradleOrchestrationUi(): void {
       void closeSessionWebWindows();
     }
     lastSession = session;
-    panel.hidden = false;
     const compact = ["completed", "failed", "cancelled"].includes(session.status);
     panel.classList.toggle("is-compact", compact);
-    hideButton.hidden = !compact;
+    if (compact) {
+      panel.hidden = true;
+    } else {
+      panel.hidden = false;
+    }
     const finished = session.tasks.filter((task) =>
       ["completed", "failed", "cancelled"].includes(task.status)
     ).length;
@@ -645,6 +663,10 @@ export function initializeCradleOrchestrationUi(): void {
         : "작업을 준비하고 있습니다.";
     status.textContent = friendlySessionStatus(session);
     technicalBody.textContent = session.statusMessage;
+    setWorkLogStatus(status.textContent);
+    if (session.error) {
+      setWorkLogTechnical(session.error);
+    }
     manager.textContent = session.revisionRound > 0 ? "한 번 더 보완 중" : "채팅만 하면 됩니다";
     managerHandoffHost.replaceChildren(
       ...(session.managerHandoff ? [renderManagerHandoff(session, session.managerHandoff)] : [])

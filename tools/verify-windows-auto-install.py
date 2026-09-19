@@ -37,6 +37,7 @@ check("Git silent user-dir fallback", "git-for-windows" in setup and "/VERYSILEN
 check("Node portable zip fallback", "nodejs.org/dist" in setup and "win-x64.zip" in setup)
 check("first-run auto install on Windows", "installAllRequiredRuntimes" in ui and "없는 프로그램을 자동 설치합니다" in ui)
 check("Windows launch scripts exist", (root / "tools/launch-ai-character.ps1").is_file() and (root / "tools/setup-windows.ps1").is_file())
+check("Windows launcher starts release exe without Vite", "ai-character.exe" in text("tools/launch-ai-character.ps1") and "tauri dev" in text("tools/launch-ai-character.ps1") and "AI_CHARACTER_DEV" in text("tools/launch-ai-character.ps1"))
 check("system tray menu exists", "mod app_tray" in lib and (root / "src-tauri/src/app_tray.rs").is_file() and "재시작" in (root / "src-tauri/src/app_tray.rs").read_text(encoding="utf-8"))
 check("taskbar hidden for overlay window", '"skipTaskbar": true' in text("src-tauri/tauri.conf.json"))
 check("GitHub auto-save hook exists", (root / ".cursor/hooks.json").is_file() and (root / ".cursor/hooks/save-to-github.ps1").is_file())

@@ -4,7 +4,7 @@ export const CHARACTER_ACTIVITY_LABELS: Record<CharacterActivity, string> = {
   idle: "쉬는 중",
   working: "일하는 중",
   done: "끝났다",
-  error: "문제",
+  error: "실패",
 };
 
 const WORKING_STATUSES = new Set([

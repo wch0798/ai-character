@@ -8,6 +8,8 @@ import {
   compactWindowSizeForCharacter,
   maxCharacterScaleBesideChat,
   maxCharacterScaleForMonitor,
+  stepCharacterScale,
+  visualSizePercent,
   occupancyFromModelBounds,
   pickVisualModelBox,
 } from "../window-layout";
@@ -47,7 +49,7 @@ describe("character / chat layout", () => {
     const occupancy = occupancyFromModelBounds(200, 110, { x: 20, width: 280 });
     expect(occupancy.occupancyWidth).toBe(280);
     expect(occupancy.centerX).toBe(160);
-    expect(chatLeftForCharacterLayout(occupancy.centerX, occupancy.occupancyWidth, 12)).toBe(312);
+    expect(chatLeftForCharacterLayout(occupancy.centerX, occupancy.occupancyWidth, 12, 980)).toBe(312);
   });
 
   it("ignores Cubism local boxes that are many times larger than the on-screen character", () => {
@@ -79,5 +81,16 @@ describe("character / chat layout", () => {
 
   it("limits scale so enlarged character still fits", () => {
     expect(maxCharacterScaleForMonitor(2000, 3000, 400, 600)).toBeCloseTo(0.2);
+  });
+
+  it("reports size against the large preset, not raw Live2D scale", () => {
+    expect(visualSizePercent(0.045, 0.113)).toBe(40);
+    expect(visualSizePercent(0.113, 0.113)).toBe(100);
+  });
+
+  it("steps wheel size by a slice of the large preset", () => {
+    expect(stepCharacterScale(0.08, "up", 0.1, 1)).toBeCloseTo(0.09, 3);
+    expect(stepCharacterScale(0.08, "down", 0.1, 1, 0.04)).toBeCloseTo(0.07, 3);
+    expect(stepCharacterScale(0.5, "up", 0.1, 0.505)).toBeCloseTo(0.505, 3);
   });
 });

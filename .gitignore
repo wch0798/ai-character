@@ -27,6 +27,7 @@
 .DS_Store
 .ai-character-backup/
 .ai-character-logs/
+release/
 .ai-character/
 .env
 .env.*

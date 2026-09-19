@@ -1,3 +1,4 @@
+import { safeConfirm } from "./safe-confirm";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
@@ -74,7 +75,7 @@ async function importFromPath(
   });
 
   if (outcome.status === "conflict") {
-    const overwrite = window.confirm(
+    const overwrite = safeConfirm(
       `"${outcome.existing.name}" 모델이 이미 있습니다.\n\n확인: 덮어쓰기\n취소: 추가하지 않음`
     );
     if (!overwrite) {

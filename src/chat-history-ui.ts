@@ -1,3 +1,4 @@
+import { safeConfirm } from "./safe-confirm";
 import {
   createBrowserHistoryStore,
   type ChatConversation,
@@ -148,7 +149,7 @@ export function setupChatHistory(options: SetupOptions): ChatHistoryManager {
       deleteButton.textContent = "삭제";
       deleteButton.addEventListener("click", () => {
         if (
-          !window.confirm(
+          !safeConfirm(
             `"${conversation.title}" 대화를 삭제할까요?`
           )
         ) {
@@ -201,7 +202,7 @@ export function setupChatHistory(options: SetupOptions): ChatHistoryManager {
 
   deleteAllButton?.addEventListener("click", () => {
     if (
-      !window.confirm(
+      !safeConfirm(
         "모든 채팅 기록을 삭제할까요? 이 작업은 되돌릴 수 없습니다."
       )
     ) {

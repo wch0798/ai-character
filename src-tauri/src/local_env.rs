@@ -12,12 +12,14 @@ const TEMPLATE: &str = "# AI-Character local API keys
 GEMINI_API_KEY=
 JINA_API_KEY=
 # OPENAI_API_KEY=
+# GITHUB_TOKEN=
 ";
 
 const ALLOWED_KEYS: &[&str] = &[
     "GEMINI_API_KEY",
     "JINA_API_KEY",
     "OPENAI_API_KEY",
+    "GITHUB_TOKEN",
     "GEMINI_MODEL",
     "OPENAI_MODEL",
 ];

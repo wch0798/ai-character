@@ -1,3 +1,23 @@
+function Get-GithubToken([string] $Root) {
+    if ($env:GITHUB_TOKEN) {
+        return $env:GITHUB_TOKEN
+    }
+    $paths = @(
+        (Join-Path $env:APPDATA "AI-Character\keys.env"),
+        (Join-Path $Root ".ai-character\keys.env")
+    )
+    foreach ($p in $paths) {
+        if (-not $p -or -not (Test-Path $p)) { continue }
+        foreach ($line in Get-Content -LiteralPath $p -ErrorAction SilentlyContinue) {
+            if ($line -match '^\s*GITHUB_TOKEN\s*=\s*(.+)\s*$') {
+                $value = $Matches[1].Trim().Trim('"').Trim("'")
+                if ($value) { return $value }
+            }
+        }
+    }
+    return $null
+}
+
 # 현재 변경을 GitHub에 커밋하고 올립니다.
 $ErrorActionPreference = "Stop"
 $env:GIT_TERMINAL_PROMPT = "1"
@@ -37,5 +57,13 @@ if ($staged) {
     Write-Host "새로 커밋할 변경이 없습니다. 원격만 올립니다."
 }
 
-& $git -c credential.helper=manager-core push origin HEAD
+$token = Get-GithubToken $Root
+if ($token) {
+    Write-Host "GITHUB_TOKEN으로 올립니다."
+    $helper = "!f() { echo username=x-access-token; echo password=$token; }; f"
+    & $git -c credential.helper= -c "credential.helper=$helper" push origin HEAD
+} else {
+    Write-Host "기본 브라우저 GitHub 로그인을 사용합니다. Gmail(Google) 계정이면 브라우저에서 로그인하세요."
+    & $git -c credential.helper=manager-core push origin HEAD
+}
 Write-Host "GitHub 저장 완료."

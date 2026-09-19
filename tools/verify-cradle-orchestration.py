@@ -54,7 +54,7 @@ def main() -> int:
     check("한 번에 열기+복사" in ui and "웹 열기" in ui and "프롬프트 복사" in ui and "결과 전달" in ui and "한도 초과/사용 불가" in ui, "human-in-the-loop Web fallback controls", failures)
     check("prepareWebAgentHandoff" in handoff and "prepareWebAgentHandoff" in ui, "one-click web handoff prepare", failures)
     check("normalizePlanForWebFirst" in engine and "fallbackWebTaskToCli" in engine and "isQuotaOrLimitError" in engine, "Web-first routing and bounded fallback", failures)
-    check("CRADLE 중지" in ui and "합성 다시 시도" in ui, "CRADLE stop and synthesis retry controls", failures)
+    check("CRADLE 중지" in ui and "합성 다시 시도" in ui and "닫기" in ui, "CRADLE stop, retry, and close controls", failures)
     check("cradleEnabled: boolean" in client and "emitRuntimeEvents?: boolean" in client, "frontend CRADLE preference and silent workers", failures)
     check("pub cradle_enabled: bool" in settings and "cradle_enabled: true" in settings, "CRADLE preference persisted and enabled by default", failures)
     check("pub fn open_web_agent" in commands and "open_preferred_for_target" in read(root, "src-tauri/src/web_accounts.rs"), "backend opens isolated preferred account windows", failures)

@@ -53,9 +53,35 @@ def main() -> int:
         and "export function initializeAgentRuntimeUi" in runtime,
     )
     check(
-        "stop button wired",
+        "stop and close buttons wired",
         '"agent-stop-button"' in runtime
+        and '"agent-close-button"' in runtime
         and "cancelAgent(activeTaskId)" in runtime,
+    )
+    check(
+        "technical log opens in its own window",
+        (root / "work-log.html").is_file()
+        and "open_work_log" in read("src-tauri/src/work_log.rs")
+        and "close_work_log" in read("src-tauri/src/work_log.rs")
+        and "get_work_log" in read("src-tauri/src/work_log.rs")
+        and "openWorkLogWindow" in runtime
+        and "renderOverlay" in read("src/work-log-window.ts")
+        and "기술 로그 열기" in main_ts
+        and "다른 창을 클릭하면 닫힙니다" in read("work-log.html"),
+    )
+    check(
+        "click-through does not SendMessage from a background thread",
+        "mod click_through" in read("src-tauri/src/lib.rs")
+        and "GetCursorPos" in read("src-tauri/src/click_through.rs")
+        and "SetWindowSubclass" in read("src-tauri/src/click_through.rs")
+        and "SetTimer" in read("src-tauri/src/click_through.rs")
+        and "PostMessageW" in read("src-tauri/src/click_through.rs")
+        and "setClickThroughRegions" in main_ts
+        and "CLICK_THROUGH_POLL_MS" not in main_ts
+        and "withTimeout(cursorPosition()" not in main_ts
+        and "setIgnoreCursorEvents" not in main_ts
+        and "setIgnoreCursorEvents" not in read("src/settings-ui.ts")
+        and "setIgnoreCursorEvents" not in read("src/usage-dashboard-ui.ts"),
     )
     check(
         "runtime CSS present",

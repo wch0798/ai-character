@@ -4,15 +4,25 @@ Tauri + Vanilla TypeScript 데스크톱 캐릭터 앱.
 
 ## 실행 (터미널 없이)
 
-### Windows
+### Windows 설치 (배포판)
+
+실행 파일(`.exe`)만 복사하면 Live2D 모델이 빠져 캐릭터가 안 나옵니다. **설치 파일**을 쓰세요.
+
+1. [Releases](https://github.com/wch0798/ai-character/releases) 에서 `AI Character_*_x64-setup.exe` 를 받아 실행합니다.
+2. 설치 프로그램이 앱, Live2D 리소스, WebView2를 한 번에 넣습니다.
+3. 바탕화면 또는 시작 메뉴의 **AI Character** 로 실행합니다.
+
+압축판(`*_windows-portable.zip`)을 쓸 때는 **폴더 전체를** 풀고 `ai-character.exe` 를 실행하세요.
+
+개발용으로 소스에서 돌릴 때:
 
 1. 처음 한 번: `npm run setup:windows`  
    Git, Node.js, WebView2, Rust, C++ Build Tools를 자동 설치합니다.
 2. `AI Character.bat` 을 더블클릭하거나 `npm start` 로 실행합니다.
-3. 앱이 뜨면 Windows에서는 **없는 필수 프로그램(Git/Node/Claude/Cursor Agent/Codex/Antigravity)을 자동 설치**합니다.  
-   실패 항목은 설정 → **필수 프로그램 설치**로 다시 시도하세요.
 
-설치 파일(NSIS) 만들기:
+에이전트 CLI(Claude/Codex/Cursor/Antigravity)는 앱 설정에서 설치합니다.
+
+설치 파일 다시 만들기:
 
 ```powershell
 npm run build:app:windows

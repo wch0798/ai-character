@@ -1,6 +1,7 @@
 use crate::agent_core::{
-    canonical_existing_dir, claude_plugin_dir_args, managed_workspace_permission_args,
-    merge_extra_args, merge_plugin_dir_args, request_cancel, resolve_agent_binary,
+    canonical_existing_dir, claude_plugin_dir_args, inspect_agent_runtime,
+    managed_workspace_permission_args, merge_extra_args, merge_plugin_dir_args, request_cancel,
+    resolve_agent_binary,
     run_request_streaming, sanitize_claude_extra_args, seed_claude_project_settings, AgentKind,
     AgentRequest, AgentStreamChunk,
 };
@@ -243,6 +244,25 @@ pub fn detect_agent(agent: String) -> Result<String, String> {
     let saved = settings.agent_path(agent).map(PathBuf::as_path);
     let path = resolve_agent_binary(agent, saved)?;
     Ok(path.to_string_lossy().into_owned())
+}
+
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentRuntimePaths {
+    pub cli: Option<String>,
+    pub app: Option<String>,
+}
+
+#[tauri::command]
+pub fn detect_agent_runtime(agent: String) -> Result<AgentRuntimePaths, String> {
+    let agent = AgentKind::parse(&agent)?;
+    let settings = load_settings()?;
+    let saved = settings.agent_path(agent).map(PathBuf::as_path);
+    let runtime = inspect_agent_runtime(agent, saved);
+    Ok(AgentRuntimePaths {
+        cli: runtime.cli.map(|path| path.to_string_lossy().into_owned()),
+        app: runtime.app.map(|path| path.to_string_lossy().into_owned()),
+    })
 }
 
 #[tauri::command]

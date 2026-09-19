@@ -11,6 +11,13 @@ import {
   type AgentTaskStartEvent,
   type WorkspaceChange,
 } from "./agent-client";
+import {
+  appendWorkLogOutput,
+  resetWorkLog,
+  setWorkLogStatus,
+  setWorkLogTechnical,
+} from "./work-log-store";
+import { openWorkLogWindow } from "./work-log-window";
 
 export const MAX_OUTPUT_CHARS = 12_000;
 
@@ -112,6 +119,12 @@ export function initializeAgentRuntimeUi(): void {
   stopButton.textContent = "중지";
   stopButton.disabled = true;
 
+  const closeButton = document.createElement("button");
+  closeButton.id = "agent-close-button";
+  closeButton.type = "button";
+  closeButton.textContent = "닫기";
+  closeButton.title = "이 패널을 숨깁니다. 나중에 로그에서 다시 볼 수 있습니다.";
+
   const output = document.createElement("pre");
   output.id = "agent-runtime-output";
   output.setAttribute("aria-label", "Agent 실시간 출력");
@@ -125,7 +138,10 @@ export function initializeAgentRuntimeUi(): void {
   technicalOutput.id = "agent-runtime-technical-output";
   technicalDetails.append(technicalSummary, technicalOutput);
 
-  header.append(status, stopButton);
+  const headerActions = document.createElement("div");
+  headerActions.id = "agent-runtime-header-actions";
+  headerActions.append(stopButton, closeButton);
+  header.append(status, headerActions);
 
   const logDetails = document.createElement("details");
   logDetails.id = "agent-runtime-log";
@@ -170,6 +186,32 @@ export function initializeAgentRuntimeUi(): void {
   let activeTaskId: string | null = null;
   let reviewConversationId: string | null = null;
   let reviewLoadSequence = 0;
+  let hideTimer: number | null = null;
+
+  function hidePanel(): void {
+    panel.hidden = true;
+    if (hideTimer != null) {
+      window.clearTimeout(hideTimer);
+      hideTimer = null;
+    }
+  }
+
+  function showPanel(): void {
+    if (hideTimer != null) {
+      window.clearTimeout(hideTimer);
+      hideTimer = null;
+    }
+    panel.hidden = false;
+  }
+
+  function scheduleHide(ms = 1800): void {
+    if (hideTimer != null) {
+      window.clearTimeout(hideTimer);
+    }
+    hideTimer = window.setTimeout(() => {
+      hidePanel();
+    }, ms);
+  }
 
   function setReviewBusy(busy: boolean): void {
     applyButton.disabled = busy;
@@ -226,6 +268,7 @@ export function initializeAgentRuntimeUi(): void {
       const hasConflicts = changes.some((change) => change.conflict);
       reviewConversationId = conversationId;
       changePanel.hidden = false;
+      showPanel();
       changeTitle.textContent = hasConflicts
         ? `적용할 파일 ${changes.length}개 · 충돌 — 원본이 밖에서 바뀌어 적용할 수 없습니다.`
         : `적용할 파일 ${changes.length}개`;
@@ -275,13 +318,21 @@ export function initializeAgentRuntimeUi(): void {
       activeTaskId = detail.taskId;
       reviewLoadSequence += 1;
       clearChangeReview();
-      panel.hidden = false;
       output.textContent = "";
       technicalOutput.textContent = "";
       technicalDetails.hidden = true;
       agentBadge.textContent = `Agent: ${agentLabel(detail.agent)}`;
-      status.textContent = "파일 작업 중…";
+      status.textContent =
+        detail.kind === "chat"
+          ? "답변 중…"
+          : `${agentLabel(detail.agent)}가 파일을 수정하는 중…`;
+      resetWorkLog(status.textContent);
       stopButton.disabled = false;
+      if (detail.kind === "file") {
+        showPanel();
+      } else {
+        hidePanel();
+      }
     }
   );
 
@@ -297,6 +348,7 @@ export function initializeAgentRuntimeUi(): void {
           ? `[stderr] ${detail.text}`
           : detail.text;
       appendOutput(output, text);
+      appendWorkLogOutput(text);
     }
   );
 
@@ -309,15 +361,29 @@ export function initializeAgentRuntimeUi(): void {
       }
 
       if (detail.status === "completed") {
-        status.textContent = "파일 작업 끝. 답을 정리하고 있습니다.";
+        status.textContent =
+          detail.kind === "chat" || status.textContent.startsWith("답변")
+            ? "답변 정리 중…"
+            : "파일 수정 끝. 답을 정리하고 있습니다.";
+        setWorkLogStatus(status.textContent);
+        if (!changePanel.hidden) {
+          showPanel();
+        } else {
+          scheduleHide();
+        }
       } else if (detail.status === "cancelled") {
         status.textContent = "중지됨";
+        setWorkLogStatus("중지됨");
+        scheduleHide();
       } else {
         status.textContent = detail.userMessage ?? "다시 시도해 주세요";
+        setWorkLogStatus(status.textContent);
         if (detail.error) {
           technicalDetails.hidden = false;
           technicalOutput.textContent = detail.error;
+          setWorkLogTechnical(detail.error);
         }
+        hidePanel();
       }
 
       activeTaskId = null;
@@ -330,7 +396,7 @@ export function initializeAgentRuntimeUi(): void {
     }
   );
 
-  stopButton.addEventListener("click", async () => {
+  async function requestStop(): Promise<void> {
     if (!activeTaskId) {
       return;
     }
@@ -351,6 +417,22 @@ export function initializeAgentRuntimeUi(): void {
         `\n[error] ${error instanceof Error ? error.message : String(error)}\n`
       );
     }
+  }
+
+  stopButton.addEventListener("click", () => {
+    void requestStop();
+  });
+  closeButton.addEventListener("click", () => {
+    hidePanel();
+  });
+  window.addEventListener("ai-character:stop-active-work", () => {
+    void requestStop();
+  });
+  window.addEventListener("ai-character:work-log-toggle", () => {
+    void openWorkLogWindow();
+  });
+  window.addEventListener("ai-character:work-ui-hide", () => {
+    hidePanel();
   });
 
   applyButton.addEventListener("click", async () => {
