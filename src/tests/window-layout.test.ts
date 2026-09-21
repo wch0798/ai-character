@@ -12,6 +12,9 @@ import {
   visualSizePercent,
   occupancyFromModelBounds,
   pickVisualModelBox,
+  characterScaleForPreset,
+  logicalWorkArea,
+  scaleFromVisualPercent,
 } from "../window-layout";
 
 describe("character / chat layout", () => {
@@ -46,10 +49,23 @@ describe("character / chat layout", () => {
   });
 
   it("uses Live2D mesh bounds when they belong to the character", () => {
-    const occupancy = occupancyFromModelBounds(200, 110, { x: 20, width: 280 });
-    expect(occupancy.occupancyWidth).toBe(280);
-    expect(occupancy.centerX).toBe(160);
-    expect(chatLeftForCharacterLayout(occupancy.centerX, occupancy.occupancyWidth, 12, 980)).toBe(312);
+    const occupancy = occupancyFromModelBounds(200, 110, { x: 20, width: 240 });
+    expect(occupancy.occupancyWidth).toBe(240);
+    expect(occupancy.centerX).toBe(140);
+    expect(chatLeftForCharacterLayout(occupancy.centerX, occupancy.occupancyWidth, 12, 980)).toBe(272);
+  });
+
+  it("ignores high-DPI bounds that look like physical pixels", () => {
+    const occupancy = occupancyFromModelBounds(
+      200,
+      110,
+      { x: 0, width: 300 },
+      10,
+      1.28,
+      1.5
+    );
+    expect(occupancy.occupancyWidth).toBe(200);
+    expect(occupancy.centerX).toBe(110);
   });
 
   it("ignores Cubism local boxes that are many times larger than the on-screen character", () => {
@@ -92,5 +108,23 @@ describe("character / chat layout", () => {
     expect(stepCharacterScale(0.08, "up", 0.1, 1)).toBeCloseTo(0.09, 3);
     expect(stepCharacterScale(0.08, "down", 0.1, 1, 0.04)).toBeCloseTo(0.07, 3);
     expect(stepCharacterScale(0.5, "up", 0.1, 0.505)).toBeCloseTo(0.505, 3);
+  });
+
+  it("sizes presets from the monitor work area, not a fixed 980 window", () => {
+    const laptop = characterScaleForPreset(2000, 3000, 0.28, 1280, 720);
+    const fourK = characterScaleForPreset(2000, 3000, 0.28, 3840, 2160);
+    expect(fourK).toBeGreaterThan(laptop * 2);
+    expect(3000 * laptop).toBeLessThan(720 * 0.4);
+  });
+
+  it("maps visual percent onto this monitor's large preset", () => {
+    expect(scaleFromVisualPercent(100, 0.2, 0.08, 0.3)).toBeCloseTo(0.2);
+    expect(scaleFromVisualPercent(200, 0.2, 0.08, 0.22)).toBeCloseTo(0.22);
+  });
+
+  it("converts physical monitor pixels to CSS work area", () => {
+    expect(
+      logicalWorkArea({ size: { width: 1920, height: 1080 } }, 1.5)
+    ).toEqual({ width: 1280, height: 720 });
   });
 });

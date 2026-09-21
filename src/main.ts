@@ -34,8 +34,10 @@ import {
   chatLeftForCharacterLayout,
   clampWindowPositionToMonitor,
   compactWindowSizeForCharacter,
+  logicalWorkArea,
   maxCharacterScaleBesideChat,
   maxCharacterScaleForMonitor,
+  scaleFromVisualPercent,
   stepCharacterScale,
   visualSizePercent,
   occupancyFromModelBounds,
@@ -116,9 +118,11 @@ import {
   MAX_CHAT_WIDTH,
   MIN_CHAT_HEIGHT,
   MIN_CHAT_WIDTH,
+  ABSOLUTE_MIN_CHAT_WIDTH,
   chatAppWindowSize,
   clampChatSize,
   minChatAppWindowSize,
+  minChatWidthForWorkArea,
   readChatHeight,
   readChatWidth,
   shouldApplyChatWindowSize,
@@ -370,10 +374,12 @@ async function startLive2D() {
     );
     const strip =
       Number.isFinite(stripRaw) && stripRaw >= 0 ? stripRaw : 40;
+    const minChat = minChatWidthForWorkArea(layoutWorkArea.width);
+    const remainingWidth = window.innerWidth - chatLeft - CHAT_WINDOW_MARGIN;
     const maxWidth = maxToWindow
       ? Math.min(
           MAX_CHAT_WIDTH,
-          Math.max(MIN_CHAT_WIDTH, window.innerWidth - chatLeft - CHAT_WINDOW_MARGIN)
+          Math.max(ABSOLUTE_MIN_CHAT_WIDTH, remainingWidth)
         )
       : MAX_CHAT_WIDTH;
     const maxHeight = maxToWindow
@@ -385,7 +391,13 @@ async function startLive2D() {
           )
         )
       : MAX_CHAT_HEIGHT;
-    const next = clampChatSize(width, height, maxWidth, maxHeight);
+    const next = clampChatSize(
+      width,
+      height,
+      maxWidth,
+      maxHeight,
+      Math.min(minChat, maxWidth)
+    );
     chatPanelWidth = next.width;
     chatPanelHeight = next.height;
     document.documentElement.style.setProperty(
@@ -479,6 +491,23 @@ async function startLive2D() {
   }
 
   let characterScale = 1;
+  let layoutWorkArea = { width: 1280, height: 720 };
+
+  const refreshLayoutWorkArea = async () => {
+    try {
+      const [monitor, scale] = await Promise.all([
+        currentMonitor(),
+        getCurrentWindow().scaleFactor(),
+      ]);
+      layoutWorkArea = logicalWorkArea(monitor, scale, layoutWorkArea);
+    } catch {
+      layoutWorkArea = {
+        width: Math.max(320, window.innerWidth || layoutWorkArea.width),
+        height: Math.max(240, window.innerHeight || layoutWorkArea.height),
+      };
+    }
+    return layoutWorkArea;
+  };
 
   let onCharacterScaleChanged:
     (() => void) | null = null;
@@ -1353,6 +1382,8 @@ async function startLive2D() {
     preference: "webgl",
     clearBeforeRender: true,
     premultipliedAlpha: true,
+    autoDensity: true,
+    resolution: Math.min(2, Math.max(1, window.devicePixelRatio || 1)),
   });
   app.renderer.background.alpha = 0;
   app.canvas.style.background = "transparent";
@@ -1461,13 +1492,26 @@ async function startLive2D() {
   const modelBaseHeight =
     model.height;
 
+  const presetScaleOnWorkArea = (preset: SizePreset) =>
+    characterScaleForPreset(
+      modelBaseWidth,
+      modelBaseHeight,
+      sizePresets[preset],
+      layoutWorkArea.width,
+      layoutWorkArea.height
+    );
+
+  const persistCharacterScale = () => {
+    localStorage.setItem("character-scale", String(characterScale));
+    localStorage.setItem(
+      "character-visual-percent",
+      String(visualSizePercent(characterScale, presetScaleOnWorkArea("large")))
+    );
+  };
+
   applyCharacterSize =
     (preset: SizePreset) => {
-      characterScale = characterScaleForPreset(
-        modelBaseWidth,
-        modelBaseHeight,
-        sizePresets[preset]
-      );
+      characterScale = presetScaleOnWorkArea(preset);
 
       model.scale.set(characterScale);
 
@@ -1477,7 +1521,7 @@ async function startLive2D() {
         "selected-character-size",
         preset
       );
-      localStorage.setItem("character-scale", String(characterScale));
+      persistCharacterScale();
 
       onCharacterScaleChanged?.();
     };
@@ -1518,14 +1562,23 @@ async function startLive2D() {
     characterBaselineY();
 
   model.anchor.set(0.5, 1);
-  const minStartupScale = characterScaleForPreset(
+  await refreshLayoutWorkArea();
+  const minStartupScale = presetScaleOnWorkArea("tiny");
+  const largeStartupScale = presetScaleOnWorkArea("large");
+  const maxStartupScale = maxCharacterScaleForMonitor(
     modelBaseWidth,
     modelBaseHeight,
-    sizePresets.tiny
+    Math.max(120, layoutWorkArea.width * 0.82),
+    Math.max(120, layoutWorkArea.height * 0.9)
   );
-  const storedScale = Number(localStorage.getItem("character-scale"));
-  if (Number.isFinite(storedScale) && storedScale >= minStartupScale) {
-    characterScale = storedScale;
+  const storedPercent = Number(localStorage.getItem("character-visual-percent"));
+  if (Number.isFinite(storedPercent) && storedPercent >= 35 && storedPercent <= 160) {
+    characterScale = scaleFromVisualPercent(
+      storedPercent,
+      largeStartupScale,
+      minStartupScale,
+      maxStartupScale
+    );
     model.scale.set(characterScale);
   } else {
     applyCharacterSize(selectedSize === "tiny" ? "small" : selectedSize);
@@ -1835,7 +1888,10 @@ async function startLive2D() {
     const occupancy = occupancyFromModelBounds(
       display.width,
       model.x,
-      readVisibleModelBox()
+      readVisibleModelBox(),
+      10,
+      1.28,
+      window.devicePixelRatio || 1
     );
     const occupancyWidth = occupancy.occupancyWidth + 8;
     const chatLeft = chatLeftForCharacterLayout(
@@ -1867,6 +1923,16 @@ async function startLive2D() {
   };
 
   const fitChatModeWindow = async () => {
+    await refreshLayoutWorkArea();
+    const minChat = minChatWidthForWorkArea(layoutWorkArea.width);
+    const maxChat = Math.min(
+      MAX_CHAT_WIDTH,
+      Math.max(minChat, Math.floor(layoutWorkArea.width - 220))
+    );
+    if (chatPanelWidth > maxChat) {
+      chatPanelWidth = maxChat;
+      persistChatPanelSize();
+    }
     const layout = applyCharacterChatLane();
     const hudLift = hudStripPx();
     const needed = chatAppWindowSize(
@@ -1874,7 +1940,8 @@ async function startLive2D() {
       chatPanelWidth,
       chatPanelHeight,
       layout.display.height + hudLift,
-      hudLift
+      hudLift,
+      minChat
     );
     try {
       const [monitor, scale] = await Promise.all([
@@ -1884,7 +1951,8 @@ async function startLive2D() {
       const min = minChatAppWindowSize(
         layout.chatLeft,
         layout.display.height + hudLift,
-        hudLift
+        hudLift,
+        minChat
       );
       await tauriWindow.setMinSize(new LogicalSize(min.width, min.height));
       let width = needed.width;
@@ -1935,12 +2003,9 @@ async function startLive2D() {
   const fitCharacterModeWindow = async () => {
     const monitor = await currentMonitor();
     const scaleFactor = await tauriWindow.scaleFactor();
-    const maxWidth = monitor
-      ? (monitor.size.width / scaleFactor) * 0.82
-      : 1100;
-    const maxHeight = monitor
-      ? (monitor.size.height / scaleFactor) * 0.9
-      : 900;
+    layoutWorkArea = logicalWorkArea(monitor, scaleFactor, layoutWorkArea);
+    const maxWidth = layoutWorkArea.width * 0.82;
+    const maxHeight = layoutWorkArea.height * 0.9;
 
     // 창보다 캐릭터가 크면 스케일을 줄여 항상 보이게 한다
     const maxScale = maxCharacterScaleForMonitor(
@@ -2185,29 +2250,21 @@ async function startLive2D() {
     (event) => {
       event.preventDefault();
 
-      const largeScale = characterScaleForPreset(
-        modelBaseWidth,
-        modelBaseHeight,
-        sizePresets.large
-      );
-      const minScale = characterScaleForPreset(
-        modelBaseWidth,
-        modelBaseHeight,
-        sizePresets.tiny
-      );
+      const largeScale = presetScaleOnWorkArea("large");
+      const minScale = presetScaleOnWorkArea("tiny");
       const maxScale = isChatOpen()
         ? maxCharacterScaleBesideChat(
             modelBaseWidth,
             modelBaseHeight,
-            Math.max(window.screen.availWidth, 1200),
-            Math.max(window.screen.availHeight, 800),
+            layoutWorkArea.width,
+            layoutWorkArea.height,
             chatPanelWidth
           )
         : maxCharacterScaleForMonitor(
             modelBaseWidth,
             modelBaseHeight,
-            Math.max(240, window.screen.availWidth * 0.82),
-            Math.max(240, window.screen.availHeight * 0.9)
+            Math.max(240, layoutWorkArea.width * 0.82),
+            Math.max(240, layoutWorkArea.height * 0.9)
           );
       characterScale = stepCharacterScale(
         characterScale,
@@ -2218,7 +2275,7 @@ async function startLive2D() {
       );
 
       model.scale.set(characterScale);
-      localStorage.setItem("character-scale", String(characterScale));
+      persistCharacterScale();
 
       onCharacterScaleChanged?.();
 
@@ -2762,7 +2819,8 @@ async function startLive2D() {
             chatPanelWidth,
             chatPanelHeight,
             display.height + hudLift,
-            hudLift
+            hudLift,
+            minChatWidthForWorkArea(layoutWorkArea.width)
           );
           void applyNativeChatWindowSize(needed.width, needed.height);
         };

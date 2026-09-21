@@ -1,6 +1,16 @@
 export const MIN_CHAT_WIDTH = 480;
 export const MAX_CHAT_WIDTH = 1200;
 export const DEFAULT_CHAT_WIDTH = 560;
+export const ABSOLUTE_MIN_CHAT_WIDTH = 300;
+
+export function minChatWidthForWorkArea(workWidth: number): number {
+  if (!(workWidth > 0)) {
+    return MIN_CHAT_WIDTH;
+  }
+  return Math.round(
+    Math.min(MIN_CHAT_WIDTH, Math.max(ABSOLUTE_MIN_CHAT_WIDTH, workWidth * 0.42))
+  );
+}
 
 export const MIN_CHAT_HEIGHT = 280;
 export const MAX_CHAT_HEIGHT = 900;
@@ -41,10 +51,11 @@ export function clampChatSize(
   width: number,
   height: number,
   maxWidth = MAX_CHAT_WIDTH,
-  maxHeight = MAX_CHAT_HEIGHT
+  maxHeight = MAX_CHAT_HEIGHT,
+  minWidth = MIN_CHAT_WIDTH
 ): SizeLike {
   return {
-    width: clampChatWidth(width, MIN_CHAT_WIDTH, maxWidth),
+    width: clampChatWidth(width, minWidth, maxWidth),
     height: clampChatHeight(height, MIN_CHAT_HEIGHT, maxHeight),
   };
 }
@@ -67,12 +78,14 @@ export function readChatHeight(stored: string | null): number {
 export function minChatAppWindowSize(
   characterPaneWidth: number,
   characterHeight = 0,
-  bottomInset = 0
+  bottomInset = 0,
+  minChatWidth = MIN_CHAT_WIDTH
 ): SizeLike {
   const pane = Math.max(0, characterPaneWidth);
   const inset = Math.max(0, bottomInset);
+  const chatMin = Math.max(ABSOLUTE_MIN_CHAT_WIDTH, minChatWidth);
   return {
-    width: Math.ceil(pane + MIN_CHAT_WIDTH + CHAT_WINDOW_MARGIN),
+    width: Math.ceil(pane + chatMin + CHAT_WINDOW_MARGIN),
     height: Math.ceil(
       Math.max(
         MIN_CHAT_HEIGHT + CHAT_WINDOW_MARGIN * 2 + inset,
@@ -101,13 +114,15 @@ export function chatAppWindowSize(
   chatWidth: number,
   chatHeight: number,
   characterHeight = 0,
-  bottomInset = 0
+  bottomInset = 0,
+  minChatWidth = MIN_CHAT_WIDTH
 ): SizeLike {
   const inset = Math.max(0, bottomInset);
   const min = minChatAppWindowSize(
     characterPaneWidth,
     characterHeight,
-    inset
+    inset,
+    minChatWidth
   );
   return {
     width: Math.max(

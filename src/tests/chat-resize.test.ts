@@ -10,6 +10,7 @@ import {
   clampChatSize,
   clampChatWidth,
   minChatAppWindowSize,
+  minChatWidthForWorkArea,
   readChatHeight,
   readChatWidth,
   shouldApplyChatWindowSize,
@@ -79,5 +80,10 @@ describe("chat resize", () => {
         { width: 760, height: 444 }
       )
     ).toBe(false);
+  });
+
+  it("shrinks the chat minimum on a small work area", () => {
+    expect(minChatWidthForWorkArea(1920)).toBe(480);
+    expect(minChatWidthForWorkArea(900)).toBe(378);
   });
 });

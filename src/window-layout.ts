@@ -10,6 +10,23 @@ export const LIVE2D_BODY_WIDTH_RATIO = 0.72;
 export type Point = { x: number; y: number };
 export type Size = { width: number; height: number };
 
+export function logicalWorkArea(
+  monitor: {
+    size: { width: number; height: number };
+  } | null,
+  scaleFactor: number,
+  fallback: Size = { width: 1280, height: 720 }
+): Size {
+  const scale = scaleFactor > 0 ? scaleFactor : 1;
+  if (!monitor) {
+    return fallback;
+  }
+  return {
+    width: Math.max(320, monitor.size.width / scale),
+    height: Math.max(240, monitor.size.height / scale),
+  };
+}
+
 export function characterScaleForPreset(
   modelWidth: number,
   modelHeight: number,
@@ -20,10 +37,23 @@ export function characterScaleForPreset(
   if (modelWidth <= 0 || modelHeight <= 0) {
     return 0.2;
   }
-  // 높이가 기준. 가로는 창을 넘지 않게만 자른다.
+  // 모니터 작업 영역 비율. 980x680 고정창이 아님.
   const byHeight = (referenceHeight * presetRatio) / modelHeight;
-  const byWidth = (referenceWidth * 0.72) / modelWidth;
+  const byWidth = (referenceWidth * 0.5) / modelWidth;
   return Math.min(byHeight, byWidth);
+}
+
+export function scaleFromVisualPercent(
+  percent: number,
+  largeScale: number,
+  minScale: number,
+  maxScale: number
+): number {
+  const large = largeScale > 0 ? largeScale : 0.2;
+  const min = minScale > 0 ? minScale : large * 0.4;
+  const cap = maxScale > 0 ? maxScale : large;
+  const ratio = Number.isFinite(percent) ? percent / 100 : 0.56;
+  return Math.min(cap, Math.max(min, large * ratio));
 }
 
 /** 100% = ‘크게’ 프리셋. Live2D 원본 배율(4% 같은 값)을 보여 주지 않는다. */
@@ -161,7 +191,8 @@ export function occupancyFromModelBounds(
   modelX: number,
   bounds: { x: number; width: number } | null,
   leftPadding = 10,
-  maxOverscanRatio = 2.2
+  maxOverscanRatio = 1.28,
+  devicePixelRatio = 1
 ): { centerX: number; occupancyWidth: number } {
   const occupancyWidth = Math.max(1, displayWidth);
   const fallbackCenter =
@@ -182,7 +213,16 @@ export function occupancyFromModelBounds(
     return fallback;
   }
 
-  if (bounds.width > occupancyWidth * maxOverscanRatio) {
+  const overscan = bounds.width / occupancyWidth;
+  const dpr = devicePixelRatio > 0 ? devicePixelRatio : 1;
+  // WebView2 고DPI에서 getBounds가 물리 픽셀이면 1.25~2배로 부풀어 창이 화면을 덮는다.
+  if (
+    dpr > 1.08 &&
+    Math.abs(overscan - dpr) / dpr < 0.22
+  ) {
+    return fallback;
+  }
+  if (overscan > maxOverscanRatio) {
     return fallback;
   }
 
