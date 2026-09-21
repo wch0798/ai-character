@@ -144,8 +144,67 @@ pub fn screen_cursor() -> Option<(i32, i32)> {
         }
         return Some((point.x, point.y));
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        return macos_screen_cursor();
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
     None
+}
+
+#[cfg(target_os = "macos")]
+#[repr(C)]
+struct CGPoint {
+    x: f64,
+    y: f64,
+}
+
+#[cfg(target_os = "macos")]
+#[repr(C)]
+struct CGSize {
+    width: f64,
+    height: f64,
+}
+
+#[cfg(target_os = "macos")]
+#[repr(C)]
+struct CGRect {
+    origin: CGPoint,
+    size: CGSize,
+}
+
+#[cfg(target_os = "macos")]
+#[link(name = "CoreGraphics", kind = "framework")]
+#[link(name = "CoreFoundation", kind = "framework")]
+extern "C" {
+    fn CGEventCreate(source: *const std::ffi::c_void) -> *mut std::ffi::c_void;
+    fn CGEventGetLocation(event: *mut std::ffi::c_void) -> CGPoint;
+    fn CGMainDisplayID() -> u32;
+    fn CGDisplayBounds(display: u32) -> CGRect;
+    fn CFRelease(cf: *const std::ffi::c_void);
+}
+
+#[cfg(target_os = "macos")]
+fn macos_screen_cursor() -> Option<(i32, i32)> {
+    unsafe {
+        let event = CGEventCreate(std::ptr::null());
+        if event.is_null() {
+            return None;
+        }
+        let point = CGEventGetLocation(event);
+        CFRelease(event);
+        let bounds = CGDisplayBounds(CGMainDisplayID());
+        Some(quartz_point_to_top_left(
+            point.x,
+            point.y,
+            bounds.size.height,
+        ))
+    }
+}
+
+#[cfg(any(test, target_os = "macos"))]
+fn quartz_point_to_top_left(x: f64, y: f64, primary_height: f64) -> (i32, i32) {
+    (x.round() as i32, (primary_height - y).round() as i32)
 }
 
 #[tauri::command]
@@ -186,7 +245,11 @@ pub fn start(app: AppHandle) {
     {
         install_window_hook();
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        start_macos_click_through(app);
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         std::thread::Builder::new()
             .name("click-through".into())
@@ -212,6 +275,32 @@ pub fn start(app: AppHandle) {
             })
             .ok();
     }
+}
+
+#[cfg(target_os = "macos")]
+fn start_macos_click_through(app: AppHandle) {
+    std::thread::Builder::new()
+        .name("click-through".into())
+        .spawn(move || {
+            let mut last: Option<bool> = None;
+            loop {
+                std::thread::sleep(std::time::Duration::from_millis(16));
+                let Some(ignore) = desired_ignore() else {
+                    continue;
+                };
+                if last == Some(ignore) {
+                    continue;
+                }
+                last = Some(ignore);
+                let handle = app.clone();
+                let _ = app.run_on_main_thread(move || {
+                    if let Some(window) = handle.get_webview_window("main") {
+                        let _ = window.set_ignore_cursor_events(ignore);
+                    }
+                });
+            }
+        })
+        .ok();
 }
 
 fn refresh_hwnd(app: &AppHandle) {
@@ -355,5 +444,11 @@ mod tests {
         assert!(region.contains(100, 200));
         assert!(region.contains(150, 280));
         assert!(!region.contains(151, 230));
+    }
+
+    #[test]
+    fn quartz_bottom_left_maps_to_tauri_top_left() {
+        assert_eq!(quartz_point_to_top_left(100.0, 80.0, 1080.0), (100, 1000));
+        assert_eq!(quartz_point_to_top_left(0.0, 1080.0, 1080.0), (0, 0));
     }
 }

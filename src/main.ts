@@ -358,6 +358,8 @@ async function startLive2D() {
     return Number.isFinite(chatLeft) && chatLeft > 40 ? chatLeft : 168;
   };
 
+  let layoutWorkArea = { width: 1280, height: 720 };
+
   const applyChatPanelSize = (
     width = chatPanelWidth,
     height = chatPanelHeight,
@@ -491,7 +493,6 @@ async function startLive2D() {
   }
 
   let characterScale = 1;
-  let layoutWorkArea = { width: 1280, height: 720 };
 
   const refreshLayoutWorkArea = async () => {
     try {
@@ -2477,6 +2478,40 @@ async function startLive2D() {
         clickThroughScaleFactor =
           payload.scaleFactor;
         pushNativeClickThrough(false);
+        void (async () => {
+          await refreshLayoutWorkArea();
+          const large = presetScaleOnWorkArea("large");
+          const min = presetScaleOnWorkArea("tiny");
+          const max = isChatOpen()
+            ? maxCharacterScaleBesideChat(
+                modelBaseWidth,
+                modelBaseHeight,
+                layoutWorkArea.width,
+                layoutWorkArea.height,
+                chatPanelWidth
+              )
+            : maxCharacterScaleForMonitor(
+                modelBaseWidth,
+                modelBaseHeight,
+                Math.max(240, layoutWorkArea.width * 0.82),
+                Math.max(240, layoutWorkArea.height * 0.9)
+              );
+          const storedPercent = Number(
+            localStorage.getItem("character-visual-percent")
+          );
+          characterScale = scaleFromVisualPercent(
+            Number.isFinite(storedPercent) && storedPercent >= 35
+              ? storedPercent
+              : 56,
+            large,
+            min,
+            max
+          );
+          model.scale.set(characterScale);
+          persistCharacterScale();
+          lastWindowMode = null;
+          await syncWindowMode(true);
+        })();
       }
     );
 

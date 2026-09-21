@@ -29,10 +29,18 @@ npm run build:app:windows
 npm run install:local:windows
 ```
 
-### macOS
+### macOS 설치 (배포판)
 
-프로젝트 폴더의 **`AI Character.app`** 을 더블클릭하세요.  
-터미널 창은 뜨지 않고, 캐릭터 앱만 실행됩니다.
+1. [Releases](https://github.com/wch0798/ai-character/releases) 에서 `.dmg` 또는 `*_macos.app.zip` 을 받습니다.
+2. Applications로 복사한 뒤 **AI Character** 를 실행합니다.
+3. 처음 실행이 막히면 앱을 **우클릭 → 열기**, 또는:
+
+```bash
+xattr -cr "/Applications/AI Character.app"
+open "/Applications/AI Character.app"
+```
+
+개발용으로 소스에서 돌릴 때 프로젝트 폴더의 **`AI Character.app`** 을 더블클릭하세요.
 
 - 시작 전 포트 `1420` / `1421` / `4318` 과 기존 프로세스를 정리합니다.
 - 로그: `.ai-character-logs/` (gitignore)
