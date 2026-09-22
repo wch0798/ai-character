@@ -13,6 +13,8 @@ body,
   color-scheme: only light;
   background: transparent !important;
   background-color: transparent !important;
+  /* 창 사각형 전체가 클릭을 먹지 않게. 몸통/패널만 auto */
+  pointer-events: none;
 }
 
 body {
@@ -43,6 +45,8 @@ body {
   background: transparent;
 
   z-index: 1;
+  /* 창 전체 캔버스는 그리지 클릭하지 않음. 클릭은 몸통 히트 레이어만 */
+  pointer-events: none;
 }
 
 #character-hit-layer {
@@ -74,6 +78,7 @@ body {
 
 #chat-resize-capture.active {
   display: block;
+  pointer-events: auto;
 }
 
 
@@ -600,7 +605,7 @@ body {
     tabular-nums;
 
   white-space: nowrap;
-  overflow: hidden;
+  overflow: visible;
   text-overflow: clip;
   max-height: none;
   line-height: 1.2;
@@ -1364,6 +1369,7 @@ body {
   background: rgb(14, 16, 22);
   color: rgb(236, 238, 244);
   box-shadow: 0 16px 42px rgba(0, 0, 0, 0.42);
+  pointer-events: auto;
 }
 
 #ai-settings-panel[hidden] {
@@ -3052,6 +3058,7 @@ body:has(#ai-settings-panel:not([hidden])) #performance-hud {
   place-items: center;
   padding: 18px;
   background: rgba(8, 10, 14, 0.45);
+  pointer-events: auto;
 }
 
 #work-log-overlay[hidden] {

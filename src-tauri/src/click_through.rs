@@ -1,5 +1,7 @@
 use serde::Deserialize;
 use std::sync::atomic::{AtomicIsize, Ordering};
+#[cfg(windows)]
+use std::sync::atomic::AtomicBool;
 use std::sync::Mutex;
 use tauri::{AppHandle, Manager};
 
@@ -43,6 +45,12 @@ static STATE: Mutex<ClickThroughState> = Mutex::new(ClickThroughState {
 });
 
 static MAIN_HWND: AtomicIsize = AtomicIsize::new(0);
+#[cfg(windows)]
+static HOOK_INSTALLED: AtomicBool = AtomicBool::new(false);
+#[cfg(windows)]
+static LAST_IGNORE: Mutex<Option<bool>> = Mutex::new(None);
+#[cfg(windows)]
+static PAINT_RESTORED: AtomicBool = AtomicBool::new(false);
 
 #[cfg(windows)]
 const GWL_EXSTYLE: i32 = -20;
@@ -96,6 +104,8 @@ extern "system" {
     fn PostMessageW(hwnd: *mut std::ffi::c_void, msg: u32, wparam: usize, lparam: isize) -> i32;
     fn SetTimer(hwnd: *mut std::ffi::c_void, id: usize, elapse: u32, timer_fn: *mut std::ffi::c_void) -> usize;
     fn KillTimer(hwnd: *mut std::ffi::c_void, id: usize) -> i32;
+    fn IsWindow(hwnd: *mut std::ffi::c_void) -> i32;
+    fn SetWindowRgn(hwnd: *mut std::ffi::c_void, hrgn: *mut std::ffi::c_void, redraw: i32) -> i32;
 }
 
 #[cfg(windows)]
@@ -144,8 +154,67 @@ pub fn screen_cursor() -> Option<(i32, i32)> {
         }
         return Some((point.x, point.y));
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        return macos_screen_cursor();
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
     None
+}
+
+#[cfg(target_os = "macos")]
+#[repr(C)]
+struct CGPoint {
+    x: f64,
+    y: f64,
+}
+
+#[cfg(target_os = "macos")]
+#[repr(C)]
+struct CGSize {
+    width: f64,
+    height: f64,
+}
+
+#[cfg(target_os = "macos")]
+#[repr(C)]
+struct CGRect {
+    origin: CGPoint,
+    size: CGSize,
+}
+
+#[cfg(target_os = "macos")]
+#[link(name = "CoreGraphics", kind = "framework")]
+#[link(name = "CoreFoundation", kind = "framework")]
+extern "C" {
+    fn CGEventCreate(source: *const std::ffi::c_void) -> *mut std::ffi::c_void;
+    fn CGEventGetLocation(event: *mut std::ffi::c_void) -> CGPoint;
+    fn CGMainDisplayID() -> u32;
+    fn CGDisplayBounds(display: u32) -> CGRect;
+    fn CFRelease(cf: *const std::ffi::c_void);
+}
+
+#[cfg(target_os = "macos")]
+fn macos_screen_cursor() -> Option<(i32, i32)> {
+    unsafe {
+        let event = CGEventCreate(std::ptr::null());
+        if event.is_null() {
+            return None;
+        }
+        let point = CGEventGetLocation(event);
+        CFRelease(event);
+        let bounds = CGDisplayBounds(CGMainDisplayID());
+        Some(quartz_point_to_top_left(
+            point.x,
+            point.y,
+            bounds.size.height,
+        ))
+    }
+}
+
+#[cfg(any(test, target_os = "macos"))]
+fn quartz_point_to_top_left(x: f64, y: f64, primary_height: f64) -> (i32, i32) {
+    (x.round() as i32, (primary_height - y).round() as i32)
 }
 
 #[tauri::command]
@@ -185,8 +254,29 @@ pub fn start(app: AppHandle) {
     #[cfg(windows)]
     {
         install_window_hook();
+        if MAIN_HWND.load(Ordering::Relaxed) == 0 {
+            let retry = app.clone();
+            std::thread::Builder::new()
+                .name("click-through-hwnd".into())
+                .spawn(move || {
+                    for _ in 0..80 {
+                        std::thread::sleep(std::time::Duration::from_millis(50));
+                        refresh_hwnd(&retry);
+                        if MAIN_HWND.load(Ordering::Relaxed) != 0 {
+                            install_window_hook();
+                            apply_from_state();
+                            return;
+                        }
+                    }
+                })
+                .ok();
+        }
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        start_macos_click_through(app);
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         std::thread::Builder::new()
             .name("click-through".into())
@@ -214,10 +304,37 @@ pub fn start(app: AppHandle) {
     }
 }
 
+#[cfg(target_os = "macos")]
+fn start_macos_click_through(app: AppHandle) {
+    std::thread::Builder::new()
+        .name("click-through".into())
+        .spawn(move || {
+            let mut last: Option<bool> = None;
+            loop {
+                std::thread::sleep(std::time::Duration::from_millis(16));
+                let Some(ignore) = desired_ignore() else {
+                    continue;
+                };
+                if last == Some(ignore) {
+                    continue;
+                }
+                last = Some(ignore);
+                let handle = app.clone();
+                let _ = app.run_on_main_thread(move || {
+                    if let Some(window) = handle.get_webview_window("main") {
+                        let _ = window.set_ignore_cursor_events(ignore);
+                    }
+                });
+            }
+        })
+        .ok();
+}
+
 fn refresh_hwnd(app: &AppHandle) {
     #[cfg(windows)]
     {
-        if MAIN_HWND.load(Ordering::Relaxed) != 0 {
+        let current = MAIN_HWND.load(Ordering::Relaxed);
+        if current != 0 && unsafe { IsWindow(current as *mut std::ffi::c_void) } != 0 {
             return;
         }
         let Some(window) = app.get_webview_window("main") else {
@@ -250,6 +367,9 @@ fn request_apply() {
 fn install_window_hook() {
     let hwnd = MAIN_HWND.load(Ordering::Relaxed);
     if hwnd == 0 {
+        return;
+    }
+    if HOOK_INSTALLED.swap(true, Ordering::Relaxed) {
         return;
     }
     let handle = hwnd as *mut std::ffi::c_void;
@@ -285,6 +405,15 @@ unsafe extern "system" fn subclass_proc(
     DefSubclassProc(hwnd, msg, wparam, lparam)
 }
 
+#[cfg(test)]
+fn region_to_client(region: HitRegion, origin_x: i32, origin_y: i32) -> (i32, i32, i32, i32) {
+    let left = (region.x - f64::from(origin_x)).round() as i32;
+    let top = (region.y - f64::from(origin_y)).round() as i32;
+    let right = left + region.width.round().max(1.0) as i32;
+    let bottom = top + region.height.round().max(1.0) as i32;
+    (left, top, right, bottom)
+}
+
 fn desired_ignore() -> Option<bool> {
     let Ok(state) = STATE.try_lock() else {
         return None;
@@ -302,7 +431,7 @@ fn apply_from_state() {
     };
     #[cfg(windows)]
     unsafe {
-        set_hwnd_transparent(MAIN_HWND.load(Ordering::Relaxed), ignore);
+        apply_parent_click_through(MAIN_HWND.load(Ordering::Relaxed), ignore);
     }
     #[cfg(not(windows))]
     {
@@ -311,11 +440,21 @@ fn apply_from_state() {
 }
 
 #[cfg(windows)]
-unsafe fn set_hwnd_transparent(hwnd: isize, ignore: bool) {
+unsafe fn apply_parent_click_through(hwnd: isize, ignore: bool) {
     if hwnd == 0 {
         return;
     }
     let handle = hwnd as *mut std::ffi::c_void;
+    // 창을 몸통 모양으로 자르면 캐릭터 투명도와 HUD(MB)가 잘린다.
+    if !PAINT_RESTORED.swap(true, Ordering::Relaxed) {
+        SetWindowRgn(handle, std::ptr::null_mut(), 1);
+    }
+    if LAST_IGNORE.lock().ok().and_then(|last| *last) == Some(ignore) {
+        return;
+    }
+    if let Ok(mut last) = LAST_IGNORE.lock() {
+        *last = Some(ignore);
+    }
     let current = GetWindowLongPtrW(handle, GWL_EXSTYLE);
     let mut next = current;
     if ignore {
@@ -355,5 +494,22 @@ mod tests {
         assert!(region.contains(100, 200));
         assert!(region.contains(150, 280));
         assert!(!region.contains(151, 230));
+    }
+
+    #[test]
+    fn quartz_bottom_left_maps_to_tauri_top_left() {
+        assert_eq!(quartz_point_to_top_left(100.0, 80.0, 1080.0), (100, 1000));
+        assert_eq!(quartz_point_to_top_left(0.0, 1080.0, 1080.0), (0, 0));
+    }
+
+    #[test]
+    fn region_to_client_uses_window_origin() {
+        let region = HitRegion {
+            x: 140.0,
+            y: 260.0,
+            width: 80.0,
+            height: 120.0,
+        };
+        assert_eq!(region_to_client(region, 100, 200), (40, 60, 120, 180));
     }
 }

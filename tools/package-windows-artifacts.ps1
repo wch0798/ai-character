@@ -13,16 +13,16 @@ $Installer = Get-ChildItem $NsisDir -Filter "*.exe" -ErrorAction SilentlyContinu
     Sort-Object LastWriteTime -Descending |
     Select-Object -First 1
 if (-not $Installer) {
-    throw "NSIS 설치 파일이 없습니다: $NsisDir"
+    throw "NSIS installer not found: $NsisDir"
 }
 
 $Exe = Join-Path $ReleaseDir "ai-character.exe"
 if (-not (Test-Path $Exe)) {
-    throw "실행 파일이 없습니다: $Exe"
+    throw "Release exe not found: $Exe"
 }
 $exeSize = (Get-Item $Exe).Length
 if ($exeSize -lt 20MB) {
-    throw "실행 파일이 배포용이 아닙니다 ($([int]($exeSize/1MB))MB). localhost 개발 서버용입니다."
+    throw "Exe is not a production build ($([int]($exeSize/1MB))MB). Do not ship a localhost/devUrl binary."
 }
 
 $ResourceCandidates = @(
@@ -31,7 +31,7 @@ $ResourceCandidates = @(
 )
 $Live2D = $ResourceCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
 if (-not $Live2D) {
-    throw "Live2D 리소스가 실행 파일 옆에 없습니다. 설치 파일이 불완전합니다."
+    throw "Live2D resources missing next to the exe. Installer would be incomplete."
 }
 
 Copy-Item -Force $Installer.FullName (Join-Path $OutDir $Installer.Name)
@@ -52,15 +52,16 @@ Remove-Item -Recurse -Force $PortableDir
 $readme = @"
 AI Character Windows $version
 
-1) 권장: $($Installer.Name) 를 실행하세요.
-   앱, Live2D 모델, WebView2가 한 번에 설치되고 바탕화면 바로가기가 생깁니다.
+1) Install: run $($Installer.Name)
+   This installs the app, Live2D models, and WebView2, and creates a desktop shortcut.
 
-2) 압축판: AI-Character_${version}_windows-portable.zip
-   폴더 전체를 풀어서 ai-character.exe 를 실행하세요. exe만 따로 복사하면 캐릭터가 안 나옵니다.
+2) Portable: unzip AI-Character_${version}_windows-portable.zip
+   Keep the whole folder and run ai-character.exe. Copying only the exe hides the character.
 
-에이전트 CLI(Claude/Codex/Cursor/Antigravity)는 앱 설정에서 설치합니다.
+Agent CLIs (Claude/Codex/Cursor/Antigravity) are installed from app settings.
 "@
-Set-Content -Path (Join-Path $OutDir "README.txt") -Value $readme -Encoding UTF8
+$utf8 = New-Object System.Text.UTF8Encoding $true
+[System.IO.File]::WriteAllText((Join-Path $OutDir "README.txt"), $readme, $utf8)
 
 Write-Host "배포 폴더: $OutDir"
 Get-ChildItem $OutDir | ForEach-Object {
