@@ -26,7 +26,6 @@ import {
   CHARACTER_WINDOW_HUD_EXTRA,
   CHARACTER_WINDOW_PADDING,
   WINDOW_POSITION_KEY,
-  characterBodyWidth,
   characterCenterXForChat,
   characterDisplaySize,
   characterPaneWidthForChat,
@@ -85,7 +84,7 @@ import {
 } from "./character-activity";
 
 import {
-  characterHitLayerBox,
+  pickCharacterDragBox,
 } from "./click-through";
 
 import {
@@ -270,9 +269,6 @@ async function startLive2D() {
     const usage = document.querySelector<HTMLElement>("#usage-dashboard-panel");
     if (usage) {
       usage.hidden = true;
-    }
-    if (canvas) {
-      canvas.style.pointerEvents = "auto";
     }
     window.dispatchEvent(new CustomEvent("ai-character:settings-closed"));
   };
@@ -556,7 +552,7 @@ async function startLive2D() {
     try {
       const win = getCurrentWindow();
       const [pos, factor] = await Promise.all([
-        win.innerPosition(),
+        win.outerPosition(),
         win.scaleFactor(),
       ]);
       const hook = (
@@ -567,8 +563,11 @@ async function startLive2D() {
           ) => void;
         }
       ).__aiCharacterRefreshClickThrough;
-      hook?.(pos, factor);
-      await setClickThroughCapture(true);
+      if (hook) {
+        hook(pos, factor);
+        return;
+      }
+      await setClickThroughCapture(contextMenuOpen || menuCursorLock);
     } catch {
       // ignore
     }
@@ -2441,7 +2440,7 @@ async function startLive2D() {
 
   let clickThroughWindowPosition =
     await clickThroughWindow
-      .innerPosition();
+      .outerPosition();
 
   let clickThroughScaleFactor =
     await clickThroughWindow
@@ -2521,17 +2520,17 @@ async function startLive2D() {
       modelBaseHeight,
       characterScale
     );
-    return characterHitLayerBox(
-      model.x,
-      model.y,
-      characterBodyWidth(display.width),
-      display.height,
-      {
-        padding: 4,
-        windowWidth: window.innerWidth,
-        windowHeight: window.innerHeight,
-      }
-    );
+    return pickCharacterDragBox({
+      centerX: model.x,
+      footY: model.y,
+      displayWidth: display.width,
+      displayHeight: display.height,
+      visible: readVisibleModelBox(),
+      windowWidth: window.innerWidth,
+      windowHeight: window.innerHeight,
+      devicePixelRatio: window.devicePixelRatio || 1,
+      padding: 3,
+    });
   };
 
   const syncCharacterHitArea = (): void => {
@@ -2562,6 +2561,7 @@ async function startLive2D() {
       "#work-log-overlay",
       "#rightclick-test-menu",
       "#chat-history-drawer",
+      "#performance-hud:not([hidden])",
     ];
     for (const selector of overlaySelectors) {
       const el = document.querySelector<HTMLElement>(selector);
@@ -2637,7 +2637,6 @@ async function startLive2D() {
   });
 
   window.addEventListener("ai-character:settings-closed", () => {
-    canvas.style.pointerEvents = "auto";
     pushNativeClickThrough(true);
   });
 
@@ -3519,7 +3518,7 @@ async function startLive2D() {
           // 바운드를 못 읽으면 화면 하단 중앙에 둔다
         }
 
-        const hudWidth = Math.max(120, performanceHud.offsetWidth || 180);
+        const hudWidth = Math.max(248, performanceHud.offsetWidth || 248);
         const hudHeight = Math.max(18, performanceHud.offsetHeight || 22);
 
         const chatRect =
@@ -3572,7 +3571,7 @@ async function startLive2D() {
             position.top
           )}px`;
         performanceHud.style.bottom = "auto";
-        performanceHud.style.maxWidth = `${Math.round(position.maxWidth)}px`;
+        performanceHud.style.maxWidth = `${Math.max(248, Math.round(position.maxWidth))}px`;
         performanceHud.dataset.placed = "true";
       };
 

@@ -6,6 +6,7 @@ import {
 
 import {
   characterHitLayerBox,
+  pickCharacterDragBox,
   pointInRect,
 } from "../click-through";
 
@@ -72,5 +73,51 @@ describe("characterHitLayerBox", () => {
       width: 50,
       height: 70,
     });
+  });
+});
+
+describe("pickCharacterDragBox", () => {
+  it("캔버스나 창이 아니라 보이는 몸 박스만 쓴다", () => {
+    const box = pickCharacterDragBox({
+      centerX: 140,
+      footY: 400,
+      displayWidth: 240,
+      displayHeight: 380,
+      visible: { x: 96, y: 90, width: 88, height: 300 },
+      windowWidth: 272,
+      windowHeight: 420,
+    });
+    expect(box.width).toBeLessThan(120);
+    expect(box.height).toBeLessThan(320);
+    expect(box.width).toBeGreaterThan(80);
+    expect(box.x).toBeGreaterThan(80);
+  });
+
+  it("창을 거의 채운 박스는 버리고 몸통 비율로 줄인다", () => {
+    const box = pickCharacterDragBox({
+      centerX: 136,
+      footY: 412,
+      displayWidth: 240,
+      displayHeight: 380,
+      visible: { x: 0, y: 0, width: 260, height: 400 },
+      windowWidth: 272,
+      windowHeight: 420,
+    });
+    expect(box.width).toBeLessThan(272 * 0.62);
+    expect(box.height).toBeLessThan(420 * 0.92);
+  });
+
+  it("고DPI로 부푼 박스는 쓰지 않는다", () => {
+    const box = pickCharacterDragBox({
+      centerX: 120,
+      footY: 360,
+      displayWidth: 200,
+      displayHeight: 320,
+      visible: { x: 0, y: 0, width: 300, height: 480 },
+      windowWidth: 232,
+      windowHeight: 360,
+      devicePixelRatio: 1.5,
+    });
+    expect(box.width).toBeLessThan(130);
   });
 });

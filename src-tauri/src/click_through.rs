@@ -1,5 +1,7 @@
 use serde::Deserialize;
 use std::sync::atomic::{AtomicIsize, Ordering};
+#[cfg(windows)]
+use std::sync::atomic::AtomicBool;
 use std::sync::Mutex;
 use tauri::{AppHandle, Manager};
 
@@ -43,6 +45,12 @@ static STATE: Mutex<ClickThroughState> = Mutex::new(ClickThroughState {
 });
 
 static MAIN_HWND: AtomicIsize = AtomicIsize::new(0);
+#[cfg(windows)]
+static HOOK_INSTALLED: AtomicBool = AtomicBool::new(false);
+#[cfg(windows)]
+static LAST_IGNORE: Mutex<Option<bool>> = Mutex::new(None);
+#[cfg(windows)]
+static PAINT_RESTORED: AtomicBool = AtomicBool::new(false);
 
 #[cfg(windows)]
 const GWL_EXSTYLE: i32 = -20;
@@ -96,6 +104,8 @@ extern "system" {
     fn PostMessageW(hwnd: *mut std::ffi::c_void, msg: u32, wparam: usize, lparam: isize) -> i32;
     fn SetTimer(hwnd: *mut std::ffi::c_void, id: usize, elapse: u32, timer_fn: *mut std::ffi::c_void) -> usize;
     fn KillTimer(hwnd: *mut std::ffi::c_void, id: usize) -> i32;
+    fn IsWindow(hwnd: *mut std::ffi::c_void) -> i32;
+    fn SetWindowRgn(hwnd: *mut std::ffi::c_void, hrgn: *mut std::ffi::c_void, redraw: i32) -> i32;
 }
 
 #[cfg(windows)]
@@ -244,6 +254,23 @@ pub fn start(app: AppHandle) {
     #[cfg(windows)]
     {
         install_window_hook();
+        if MAIN_HWND.load(Ordering::Relaxed) == 0 {
+            let retry = app.clone();
+            std::thread::Builder::new()
+                .name("click-through-hwnd".into())
+                .spawn(move || {
+                    for _ in 0..80 {
+                        std::thread::sleep(std::time::Duration::from_millis(50));
+                        refresh_hwnd(&retry);
+                        if MAIN_HWND.load(Ordering::Relaxed) != 0 {
+                            install_window_hook();
+                            apply_from_state();
+                            return;
+                        }
+                    }
+                })
+                .ok();
+        }
     }
     #[cfg(target_os = "macos")]
     {
@@ -306,7 +333,8 @@ fn start_macos_click_through(app: AppHandle) {
 fn refresh_hwnd(app: &AppHandle) {
     #[cfg(windows)]
     {
-        if MAIN_HWND.load(Ordering::Relaxed) != 0 {
+        let current = MAIN_HWND.load(Ordering::Relaxed);
+        if current != 0 && unsafe { IsWindow(current as *mut std::ffi::c_void) } != 0 {
             return;
         }
         let Some(window) = app.get_webview_window("main") else {
@@ -339,6 +367,9 @@ fn request_apply() {
 fn install_window_hook() {
     let hwnd = MAIN_HWND.load(Ordering::Relaxed);
     if hwnd == 0 {
+        return;
+    }
+    if HOOK_INSTALLED.swap(true, Ordering::Relaxed) {
         return;
     }
     let handle = hwnd as *mut std::ffi::c_void;
@@ -374,6 +405,15 @@ unsafe extern "system" fn subclass_proc(
     DefSubclassProc(hwnd, msg, wparam, lparam)
 }
 
+#[cfg(test)]
+fn region_to_client(region: HitRegion, origin_x: i32, origin_y: i32) -> (i32, i32, i32, i32) {
+    let left = (region.x - f64::from(origin_x)).round() as i32;
+    let top = (region.y - f64::from(origin_y)).round() as i32;
+    let right = left + region.width.round().max(1.0) as i32;
+    let bottom = top + region.height.round().max(1.0) as i32;
+    (left, top, right, bottom)
+}
+
 fn desired_ignore() -> Option<bool> {
     let Ok(state) = STATE.try_lock() else {
         return None;
@@ -391,7 +431,7 @@ fn apply_from_state() {
     };
     #[cfg(windows)]
     unsafe {
-        set_hwnd_transparent(MAIN_HWND.load(Ordering::Relaxed), ignore);
+        apply_parent_click_through(MAIN_HWND.load(Ordering::Relaxed), ignore);
     }
     #[cfg(not(windows))]
     {
@@ -400,11 +440,21 @@ fn apply_from_state() {
 }
 
 #[cfg(windows)]
-unsafe fn set_hwnd_transparent(hwnd: isize, ignore: bool) {
+unsafe fn apply_parent_click_through(hwnd: isize, ignore: bool) {
     if hwnd == 0 {
         return;
     }
     let handle = hwnd as *mut std::ffi::c_void;
+    // 창을 몸통 모양으로 자르면 캐릭터 투명도와 HUD(MB)가 잘린다.
+    if !PAINT_RESTORED.swap(true, Ordering::Relaxed) {
+        SetWindowRgn(handle, std::ptr::null_mut(), 1);
+    }
+    if LAST_IGNORE.lock().ok().and_then(|last| *last) == Some(ignore) {
+        return;
+    }
+    if let Ok(mut last) = LAST_IGNORE.lock() {
+        *last = Some(ignore);
+    }
     let current = GetWindowLongPtrW(handle, GWL_EXSTYLE);
     let mut next = current;
     if ignore {
@@ -450,5 +500,16 @@ mod tests {
     fn quartz_bottom_left_maps_to_tauri_top_left() {
         assert_eq!(quartz_point_to_top_left(100.0, 80.0, 1080.0), (100, 1000));
         assert_eq!(quartz_point_to_top_left(0.0, 1080.0, 1080.0), (0, 0));
+    }
+
+    #[test]
+    fn region_to_client_uses_window_origin() {
+        let region = HitRegion {
+            x: 140.0,
+            y: 260.0,
+            width: 80.0,
+            height: 120.0,
+        };
+        assert_eq!(region_to_client(region, 100, 200), (40, 60, 120, 180));
     }
 }
