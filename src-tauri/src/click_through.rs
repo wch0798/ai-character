@@ -1,5 +1,9 @@
+#![cfg_attr(not(windows), allow(dead_code))]
+
 use serde::Deserialize;
-use std::sync::atomic::{AtomicIsize, Ordering};
+use std::sync::atomic::AtomicIsize;
+#[cfg(windows)]
+use std::sync::atomic::Ordering;
 use std::sync::Mutex;
 use tauri::{AppHandle, Manager};
 
@@ -148,9 +152,18 @@ pub fn screen_cursor() -> Option<(i32, i32)> {
     None
 }
 
+fn app_cursor(app: &AppHandle) -> Option<(i32, i32)> {
+    if let Some(point) = screen_cursor() {
+        return Some(point);
+    }
+    app.cursor_position()
+        .ok()
+        .map(|pos| (pos.x.round() as i32, pos.y.round() as i32))
+}
+
 #[tauri::command]
-pub fn get_screen_cursor() -> Result<Vec<i32>, String> {
-    screen_cursor()
+pub async fn get_screen_cursor(app: AppHandle) -> Result<Vec<i32>, String> {
+    app_cursor(&app)
         .map(|(x, y)| vec![x, y])
         .ok_or_else(|| "커서 위치를 읽지 못했습니다.".into())
 }

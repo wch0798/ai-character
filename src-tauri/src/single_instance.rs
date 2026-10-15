@@ -1,5 +1,7 @@
 //! 두 번째 실행이 전역 단축키/WebView 잠금에서 abort 나지 않게 한 개만 유지합니다.
+#![cfg_attr(not(windows), allow(dead_code))]
 
+#[cfg(windows)]
 use std::sync::atomic::{AtomicPtr, Ordering};
 
 #[cfg(windows)]

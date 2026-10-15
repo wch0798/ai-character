@@ -32,7 +32,13 @@ const CODEX_HOME = process.env.CODEX_HOME || join(HOME, '.codex');
 const CODEX_DIR = join(CODEX_HOME, 'sessions');
 const CURSOR_HOME = process.env.CURSOR_HOME || join(HOME, '.cursor');
 const ANTIGRAVITY_HOME = process.env.ANTIGRAVITY_HOME || join(HOME, '.antigravity');
+const STATE_DB = process.env.AI_CHARACTER_STATE_DB || join(APP_DIR, 'state.db');
 const PORT = Number(process.env.PORT || 4318);
+const DAY_MS = 24 * 60 * 60 * 1000;
+let DatabaseSync = null;
+try {
+  ({ DatabaseSync } = await import('node:sqlite'));
+} catch { /* Node 22.5 미만이면 앱 기록 없이 동작 */ }
 const USAGE_TOKEN = String(process.env.AI_CHARACTER_USAGE_TOKEN || '').trim() || randomBytes(32).toString('hex');
 
 async function walkJsonl(dir) {
@@ -274,7 +280,7 @@ async function collectCodex(ctx) {
 }
 
 function openSqliteReadonly(path) {
-  if (!existsSync(path)) return null;
+  if (!DatabaseSync || !existsSync(path)) return null;
   try {
     return new DatabaseSync(path, { readOnly: true });
   } catch {
@@ -451,18 +457,10 @@ const PROVIDERS = [
 ];
 
 async function appData() {
-  const dbPath = join(APP_DIR, 'state.db');
+  const dbPath = STATE_DB;
   if (!existsSync(dbPath)) return { available: false, runs: [], conversations: [] };
-  let DatabaseSync;
-  try {
-    ({ DatabaseSync } = await import('node:sqlite'));
-  } catch (err) {
-    return {
-      available: false,
-      runs: [],
-      conversations: [],
-      error: `앱 기록은 Node 22.5+ 가 필요합니다 (${String(err?.message ?? err)})`,
-    };
+  if (!DatabaseSync) {
+    return { available: false, runs: [], conversations: [], error: '앱 기록은 Node 22.5+ 가 필요합니다' };
   }
   let db;
   try {
@@ -495,9 +493,106 @@ async function appData() {
   }
 }
 
+function maskSecrets(text) {
+  return String(text ?? '')
+    .replace(/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(-----END [A-Z ]*PRIVATE KEY-----|$)/g, '[PRIVATE KEY]')
+    .replace(/\b([A-Za-z0-9_]*(?:api[_-]?key|token|secret|password)[A-Za-z0-9_]*)(\s*[=:]\s*)["']?[^\s"']{6,}/gi, '$1$2***')
+    .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]{8,}/gi, 'Bearer ***')
+    .replace(/sk-[A-Za-z0-9_-]{16,}/g, 'sk-***')
+    .replace(/AIza[0-9A-Za-z_-]{20,}/g, 'AIza***')
+    .replace(/github_pat_[A-Za-z0-9_]{20,}/g, 'github_pat_***')
+    .replace(/gh[pousr]_[A-Za-z0-9]{20,}/g, 'gh*_***')
+    .replace(/xox[abprs]-[A-Za-z0-9-]{10,}/g, 'xox*-***')
+    .replace(/jina_[A-Za-z0-9]{20,}/g, 'jina_***')
+    .replace(/eyJ[A-Za-z0-9_-]{20,}/g, 'eyJ***');
+}
+
+const rate = (ok, total) => (total > 0 ? Math.round((ok / total) * 1000) / 10 : null);
+
+/** CRADLE 사용량 장부: 실제 청구 비용과 가정 기반 절감 추정치를 따로 계산합니다. */
+async function ledgerData(days = 30) {
+  const empty = { available: false, days };
+  if (!DatabaseSync || !existsSync(STATE_DB)) return empty;
+  let db;
+  try {
+    db = new DatabaseSync(STATE_DB, { readOnly: true });
+  } catch (err) {
+    return { ...empty, error: String(err?.message ?? err) };
+  }
+  try {
+    const has = (name) => !!db.prepare(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?`).get(name);
+    if (!has('api_usage')) return empty;
+    const since = Date.now() - days * DAY_MS;
+    const providers = db.prepare(`SELECT provider, cost_class AS costClass, COUNT(*) AS calls,
+        SUM(CASE WHEN status = 'ok' THEN 1 ELSE 0 END) AS ok, SUM(retries) AS retries, SUM(cache_hit) AS cacheHits,
+        SUM(input_tokens) AS inputTokens, SUM(output_tokens) AS outputTokens,
+        SUM(cost_usd) AS costUsd, SUM(estimated_paid_usd) AS estimatedPaidUsd
+      FROM api_usage WHERE created_at >= ? GROUP BY provider, cost_class ORDER BY calls DESC`).all(since)
+      .map((row) => ({ ...row, successRate: rate(row.ok, row.calls) }));
+    const models = db.prepare(`SELECT provider, model, COUNT(*) AS calls,
+        SUM(CASE WHEN status = 'ok' THEN 1 ELSE 0 END) AS ok, CAST(AVG(latency_ms) AS INTEGER) AS avgLatencyMs
+      FROM api_usage WHERE created_at >= ? GROUP BY provider, model ORDER BY calls DESC LIMIT 40`).all(since)
+      .map((row) => ({ ...row, successRate: rate(row.ok, row.calls) }));
+    const billedUsd = providers.reduce((sum, row) => sum + (row.costUsd || 0), 0);
+    const estimatedPaidUsd = providers.reduce((sum, row) => sum + (row.estimatedPaidUsd || 0), 0);
+    const calls = providers.reduce((sum, row) => sum + row.calls, 0);
+    const tests = has('test_results')
+      ? db.prepare(`SELECT COALESCE(agent, 'unknown') AS agent, COUNT(*) AS runs, SUM(passed) AS passed
+          FROM test_results WHERE created_at >= ? GROUP BY 1 ORDER BY runs DESC`).all(since)
+        .map((row) => ({ ...row, passRate: rate(row.passed, row.runs) }))
+      : [];
+    const testRuns = tests.reduce((sum, row) => sum + row.runs, 0);
+    const testPassed = tests.reduce((sum, row) => sum + (row.passed || 0), 0);
+    const approvals = has('paid_approvals')
+      ? db.prepare(`SELECT provider, reason, approved, max_calls AS maxCalls, used_calls AS usedCalls, created_at AS createdAt
+          FROM paid_approvals ORDER BY id DESC LIMIT 30`).all()
+        .map((row) => ({ ...row, approved: !!row.approved, reason: maskSecrets(row.reason).slice(0, 200) }))
+      : [];
+    const updates = has('update_history')
+      ? db.prepare(`SELECT category, target, from_version AS fromVersion, to_version AS toVersion, status, message, created_at AS createdAt
+          FROM update_history ORDER BY id DESC LIMIT 30`).all()
+        .map((row) => ({ ...row, message: row.message ? maskSecrets(row.message).slice(0, 200) : null }))
+      : [];
+    const jobs = has('scheduled_jobs')
+      ? db.prepare(`SELECT id, title, kind, interval_minutes AS intervalMinutes, enabled, last_run_at AS lastRunAt, last_status AS lastStatus
+          FROM scheduled_jobs ORDER BY id`).all().map((row) => ({ ...row, enabled: !!row.enabled }))
+      : [];
+    return {
+      available: true,
+      days,
+      totals: {
+        calls,
+        billedUsd,
+        estimatedPaidUsd,
+        estimatedSavingsUsd: Math.max(0, estimatedPaidUsd - billedUsd),
+        testRuns,
+        testPassed,
+        testPassRate: rate(testPassed, testRuns),
+      },
+      providers,
+      models,
+      tests,
+      approvals,
+      updates,
+      jobs,
+    };
+  } catch (err) {
+    return { ...empty, error: String(err?.message ?? err) };
+  } finally {
+    try { db.close(); } catch { /* ignore */ }
+  }
+}
+
 async function keyStatus() {
-  const names = { GEMINI_API_KEY: 'Gemini API', OPENAI_API_KEY: 'OpenAI API', JINA_API_KEY: 'Jina 검색' };
-  const file = join(APP_DIR, 'keys.env');
+  const names = {
+    GEMINI_API_KEY: 'Gemini API',
+    OPENROUTER_API_KEY: 'OpenRouter',
+    JINA_API_KEY: 'Jina 검색',
+    GITHUB_TOKEN: 'GitHub',
+    OPENAI_API_KEY: 'OpenAI API',
+    ANTHROPIC_API_KEY: 'Anthropic API',
+  };
+  const file = process.env.AI_CHARACTER_KEYS_FILE || join(APP_DIR, 'keys.env');
   const configured = {};
   if (existsSync(file)) {
     for (const line of (await readFile(file, 'utf8')).split('\n')) {
@@ -566,7 +661,7 @@ async function accountInfo() {
 }
 
 async function snapshot() {
-  const [keys, accounts, app] = await Promise.all([keyStatus(), accountInfo(), appData()]);
+  const [keys, accounts, app, ledger] = await Promise.all([keyStatus(), accountInfo(), appData(), ledgerData()]);
   const ctx = { app, accounts, keys };
   const providers = [];
   for (const def of PROVIDERS) {
@@ -589,6 +684,7 @@ async function snapshot() {
   return publicSnapshot({
     generatedAt: Date.now(),
     app,
+    ledger,
     keys,
     accounts,
     providers,
@@ -631,6 +727,7 @@ function publicSnapshot(raw) {
       conversations: raw.app?.conversations ?? [],
       runs: raw.app?.runs ?? [],
     },
+    ledger: raw.ledger ?? { available: false },
     keys: raw.keys,
     accounts,
     providers,

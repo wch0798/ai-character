@@ -1,5 +1,6 @@
 //! 기본 브라우저/구글 계정과 섞이지 않는 로그인용 브라우저 프로필.
 //! GitHub·Gmail(Google) OAuth는 구글이 분리 프로필을 막는 경우가 많아 시스템 브라우저로 엽니다.
+#![cfg_attr(not(windows), allow(dead_code))]
 
 use std::fs;
 use std::path::{Path, PathBuf};

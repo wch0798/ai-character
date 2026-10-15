@@ -1,5 +1,5 @@
 use crate::agent_core::AgentKind;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -20,6 +20,8 @@ pub struct AppSettings {
     pub close_web_account_when_cradle_done: bool,
     pub timeout_seconds: u64,
     pub warn_sensitive_files: bool,
+    /// Feature options persisted as `x.<name>` lines (policy, Claude integration, updates).
+    pub extras: BTreeMap<String, String>,
 }
 
 impl Default for AppSettings {
@@ -39,6 +41,7 @@ impl Default for AppSettings {
             close_web_account_when_cradle_done: true,
             timeout_seconds: 180,
             warn_sensitive_files: true,
+            extras: BTreeMap::new(),
         }
     }
 }
@@ -95,6 +98,42 @@ impl AppSettings {
             .get(&agent)
             .map(Vec::as_slice)
             .unwrap_or(&[])
+    }
+
+    pub fn extra(&self, name: &str) -> Option<&str> {
+        self.extras.get(name).map(String::as_str)
+    }
+
+    pub fn extra_bool(&self, name: &str, default: bool) -> bool {
+        match self.extra(name) {
+            Some("true") | Some("1") => true,
+            Some("false") | Some("0") => false,
+            _ => default,
+        }
+    }
+
+    pub fn extra_u64(&self, name: &str, default: u64) -> u64 {
+        self.extra(name)
+            .and_then(|value| value.trim().parse::<u64>().ok())
+            .unwrap_or(default)
+    }
+
+    pub fn extra_f64(&self, name: &str, default: f64) -> f64 {
+        self.extra(name)
+            .and_then(|value| value.trim().parse::<f64>().ok())
+            .filter(|value| value.is_finite())
+            .unwrap_or(default)
+    }
+
+    pub fn set_extra(&mut self, name: &str, value: Option<String>) {
+        match value.map(|value| value.trim().to_string()).filter(|value| !value.is_empty()) {
+            Some(value) => {
+                self.extras.insert(name.to_string(), value);
+            }
+            None => {
+                self.extras.remove(name);
+            }
+        }
     }
 }
 
@@ -244,7 +283,11 @@ pub fn load_settings_from(path: &Path) -> Result<AppSettings, String> {
                 };
             }
             _ => {
-                if let Some(agent_name) = key.strip_prefix("agent_model_presets.") {
+                if let Some(name) = key.strip_prefix("x.") {
+                    if !name.is_empty() {
+                        settings.extras.insert(name.to_string(), decoded);
+                    }
+                } else if let Some(agent_name) = key.strip_prefix("agent_model_presets.") {
                     if let Ok(agent) = AgentKind::parse(agent_name) {
                         let presets = decoded
                             .lines()
@@ -377,6 +420,10 @@ pub fn save_settings_to(path: &Path, settings: &AppSettings) -> Result<(), Strin
                 hex_encode(&presets.join("\n"))
             ));
         }
+    }
+
+    for (name, value) in &settings.extras {
+        lines.push(format!("x.{}={}", name, hex_encode(value)));
     }
 
     let content = format!("{}\n", lines.join("\n"));

@@ -1,5 +1,4 @@
 use serde::Serialize;
-use std::env;
 use std::time::Duration;
 
 const SEARCH_ENDPOINT: &str = "https://s.jina.ai/";
@@ -54,11 +53,8 @@ pub async fn search_web_background(
         return Err("웹 검색어는 800자 이하여야 합니다.".to_string());
     }
 
-    let api_key = env::var("JINA_API_KEY")
-        .map_err(|_| "JINA_API_KEY가 없습니다. 무료 Jina Search 키를 환경변수에 설정하면 백그라운드 자동검색을 사용할 수 있습니다.".to_string())?;
-    if api_key.trim().is_empty() {
-        return Err("JINA_API_KEY가 비어 있습니다.".to_string());
-    }
+    let api_key = crate::process_util::secret_value("JINA_API_KEY")
+        .ok_or_else(|| "JINA_API_KEY가 없습니다. 설정 → 시작 → API 키에서 무료 Jina 키를 저장하면 자동 검색을 쓸 수 있습니다.".to_string())?;
 
     let max_chars = max_chars.unwrap_or(DEFAULT_MAX_CHARS).clamp(4_000, 32_000);
     let client = reqwest::Client::builder()

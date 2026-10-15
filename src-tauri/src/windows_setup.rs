@@ -83,7 +83,7 @@ pub fn refresh_process_path() {
     if let Some(combined) = powershell_path_value() {
         parts.extend(env::split_paths(&combined));
     }
-    if let Some(current) = env::var_os("PATH") {
+    if let Some(current) = crate::process_util::process_path() {
         parts.extend(env::split_paths(&current));
     }
     parts.extend(extra_bin_dirs());
@@ -100,7 +100,7 @@ pub fn refresh_process_path() {
         }
     }
     if let Ok(joined) = env::join_paths(unique) {
-        env::set_var("PATH", joined);
+        crate::process_util::set_process_path(joined);
     }
 }
 
@@ -122,6 +122,7 @@ fn looks_installed(text: &str) -> bool {
 fn run_hidden(program: &str, args: &[&str]) -> Result<Output, String> {
     let mut command = Command::new(program);
     hide_console(&mut command);
+    crate::process_util::apply_process_env(&mut command);
     command
         .args(args)
         .stdin(Stdio::null())
@@ -229,7 +230,7 @@ fn executable_exists(dir: &Path, names: &[&str]) -> bool {
 
 pub fn node_binary() -> Option<PathBuf> {
     refresh_process_path();
-    if let Some(value) = env::var_os("PATH") {
+    if let Some(value) = crate::process_util::process_path() {
         for dir in env::split_paths(&value) {
             for name in ["node.exe", "node"] {
                 let candidate = dir.join(name);
@@ -250,7 +251,7 @@ pub fn node_binary() -> Option<PathBuf> {
 
 fn npm_command() -> Option<PathBuf> {
     refresh_process_path();
-    if let Some(value) = env::var_os("PATH") {
+    if let Some(value) = crate::process_util::process_path() {
         for dir in env::split_paths(&value) {
             for name in ["npm.cmd", "npm.exe", "npm"] {
                 let candidate = dir.join(name);

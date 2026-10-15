@@ -1,10 +1,16 @@
-import { safeConfirm } from "./safe-confirm";
+import { confirmOnSecondClick } from "./settings-controls";
 import { initializeCradleOrchestrationUi } from "./orchestration-ui";
 import { askCradleCompat } from "./orchestration-engine";
 import { initializeSettingsUi } from "./settings-ui";
 import { initializeAgentRuntimeUi } from "./agent-runtime-ui";
 import { initializeChatProgressUi } from "./chat-progress";
 import { openWorkLogWindow } from "./work-log-window";
+import { renderMarkdown } from "./chat-markdown";
+import { renderWelcome, setupComposer, setupScrollFollow, type Composer, type ScrollFollower } from "./chat-composer";
+import { initializeAutomationPanel } from "./automation-panel-ui";
+import { notificationPreview, notifyDesktop, shouldNotifyCompletion } from "./alerts-client";
+import { startLiveReply, type LiveReply } from "./chat-stream";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   getScreenCursor,
   setClickThroughCapture,
@@ -12,6 +18,7 @@ import {
   toScreenRegion,
 } from "./native-click-through";
 import { initializeUsageDashboardUi } from "./usage-dashboard-ui";
+import { initializeUpdateNotices } from "./update-ui";
 import { initializeSqliteStateMirror } from "./chat-state-client";
 import {
   getPerformanceHudPosition,
@@ -152,6 +159,15 @@ try {
   // 이미 등록된 경우
 }
 
+/** A broken panel must never keep the character itself from loading. */
+function initializeOptionalUi(name: string, init: () => void): void {
+  try {
+    init();
+  } catch (error) {
+    console.error(`${name} UI 초기화 실패:`, error);
+  }
+}
+
 async function startLive2D() {
   const ready = await waitForTauri();
   if (!ready) {
@@ -162,10 +178,10 @@ async function startLive2D() {
     .catch(() => undefined);
   // 외장 디스크 TCC 권한 대화에 막히지 않도록 UI 상태 복원은 백그라운드에서 처리
   void initializeSqliteStateMirror();
-  initializeAgentRuntimeUi();
-  initializeChatProgressUi();
-  initializeSettingsUi();
-  initializeCradleOrchestrationUi();
+  initializeOptionalUi("Agent 상태", () => { initializeAgentRuntimeUi(); });
+  initializeOptionalUi("진행 표시", () => { initializeChatProgressUi(); });
+  initializeOptionalUi("설정", () => { initializeSettingsUi(); });
+  initializeOptionalUi("CRADLE", () => { initializeCradleOrchestrationUi(); });
   const canvas =
     document.querySelector<HTMLCanvasElement>(
       "#live2d-canvas"
@@ -204,7 +220,7 @@ async function startLive2D() {
     );
 
   const chatInput =
-    document.querySelector<HTMLInputElement>(
+    document.querySelector<HTMLTextAreaElement>(
       "#chat-input"
     );
 
@@ -217,6 +233,7 @@ async function startLive2D() {
     "#chat-panel",
     "#ai-settings-panel",
     "#usage-dashboard-panel",
+    "#automation-panel",
     "#chat-history-toolbar",
     "#chat-history-drawer",
     "#rightclick-test-menu",
@@ -277,7 +294,15 @@ async function startLive2D() {
     window.dispatchEvent(new CustomEvent("ai-character:settings-closed"));
   };
 
+  const notifyIfAway = (startedAt: number, title: string, body: string): void => {
+    if (shouldNotifyCompletion(Date.now() - startedAt, document.hasFocus(), Boolean(chatPanel?.classList.contains("open")))) {
+      notifyDesktop(title, notificationPreview(body));
+    }
+  };
+
   const usageDashboardUi = initializeUsageDashboardUi({ setChatOpen });
+  initializeOptionalUi("업데이트 알림", () => { initializeUpdateNotices(); });
+  initializeOptionalUi("자동화 현황", () => { initializeAutomationPanel({ setChatOpen }); });
 
   void listen<string>("tray-action", (event) => {
     const action = event.payload;
@@ -292,6 +317,10 @@ async function startLive2D() {
     }
     if (action === "usage") {
       void usageDashboardUi.openDetailed().catch(() => undefined);
+      return;
+    }
+    if (action === "automation") {
+      window.dispatchEvent(new Event("ai-character:open-automation"));
     }
   }).catch(() => undefined);
 
@@ -348,6 +377,8 @@ async function startLive2D() {
     readChatHeight(
       localStorage.getItem(CHAT_HEIGHT_KEY)
     );
+
+  let layoutWorkArea = { width: 1280, height: 720 };
 
   const readChatLeft = (): number => {
     const chatLeft = Number.parseFloat(
@@ -491,7 +522,6 @@ async function startLive2D() {
   }
 
   let characterScale = 1;
-  let layoutWorkArea = { width: 1280, height: 720 };
 
   const refreshLayoutWorkArea = async () => {
     try {
@@ -758,11 +788,12 @@ async function startLive2D() {
     deleteBtn.setAttribute("aria-label", "삭제");
     deleteBtn.title = "삭제";
     deleteBtn.textContent = "×";
-    deleteBtn.style.flex = "0 0 28px";
-    deleteBtn.style.width = "28px";
+    deleteBtn.style.flex = "0 0 auto";
+    deleteBtn.style.minWidth = "28px";
+    deleteBtn.style.whiteSpace = "nowrap";
     deleteBtn.style.height = "28px";
     deleteBtn.style.margin = "0 4px 0 0";
-    deleteBtn.style.padding = "0";
+    deleteBtn.style.padding = "0 6px";
     deleteBtn.style.border = "0";
     deleteBtn.style.borderRadius = "6px";
     deleteBtn.style.background = "transparent";
@@ -796,10 +827,9 @@ async function startLive2D() {
       event.stopPropagation();
       onSelect();
     });
-    deleteBtn.addEventListener("click", (event) => {
-      event.stopPropagation();
-      onDelete();
-    });
+    deleteBtn.title = "한 번 더 누르면 삭제합니다";
+    deleteBtn.addEventListener("click", (event) => event.stopPropagation());
+    confirmOnSecondClick(deleteBtn, "삭제?", onDelete);
 
     row.append(selectBtn, deleteBtn);
     return row;
@@ -909,6 +939,12 @@ async function startLive2D() {
           closeContextMenu();
         }
       )
+    );
+    menu.appendChild(
+      makeMenuButton("자동화 현황", () => {
+        closeContextMenu();
+        window.dispatchEvent(new Event("ai-character:open-automation"));
+      })
     );
     menu.appendChild(
       makeMenuButton("사용량", () => {
@@ -1035,13 +1071,6 @@ async function startLive2D() {
               if (folder) {
                 body.appendChild(
                   makeUserModelMenuRow(selectLabel, selectCharacter, () => {
-                    if (
-                      !safeConfirm(
-                        `"${character.name}" 모델을 삭제할까요?`
-                      )
-                    ) {
-                      return;
-                    }
                     void (async () => {
                       try {
                         const { removeUserLive2DModel } = await import(
@@ -1130,15 +1159,10 @@ async function startLive2D() {
               })();
             })
           );
-          body.appendChild(
-            makeMenuButton("중복 정리", () => {
-              if (
-                !safeConfirm(
-                  "내용이 같은 내 모델을 찾아 하나만 남기고 나머지를 삭제할까요?"
-                )
-              ) {
-                return;
-              }
+          const dedupeButton = makeMenuButton("중복 정리", () => undefined, { muted: true });
+          dedupeButton.title = "내용이 같은 내 모델을 하나만 남기고 지웁니다. 한 번 더 누르면 실행합니다.";
+          body.appendChild(dedupeButton);
+          confirmOnSecondClick(dedupeButton, "한 번 더 누르면 중복 삭제", () => {
               void (async () => {
                 try {
                   const { dedupeUserLive2DModels } = await import(
@@ -1163,8 +1187,7 @@ async function startLive2D() {
                   );
                 }
               })();
-            }, { muted: true })
-          );
+          });
         }
       );
     } catch (error) {
@@ -2295,91 +2318,112 @@ async function startLive2D() {
   /*
    * 채팅
    */
+  const composer: Composer | null =
+    chatForm && chatInput
+      ? setupComposer(chatForm, chatInput, () => {
+          window.dispatchEvent(new Event("ai-character:stop-active-work"));
+        })
+      : null;
+
+  const scrollFollower: ScrollFollower | null =
+    messages && chatForm ? setupScrollFollow(messages, chatForm) : null;
+
+  const copyText = async (text: string): Promise<void> => {
+    try {
+      await writeText(text);
+    } catch (error) {
+      console.error("클립보드 복사 실패:", error);
+      throw error;
+    }
+  };
+
+  const markdownHandlers = {
+    openLink: (href: string) => {
+      void openUrl(href).catch((error) => console.warn("링크 열기 실패:", error));
+    },
+    copy: copyText,
+  };
+
+  const messageTime = (createdAt: number): string =>
+    new Date(createdAt).toLocaleString([], {
+      month: "numeric",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+
+  let retryLastRequest: (() => void) | null = null;
+
+  function messageAction(label: string, title: string, onClick: (button: HTMLButtonElement) => void): HTMLButtonElement {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "message-copy";
+    button.textContent = label;
+    button.title = title;
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      onClick(button);
+    });
+    return button;
+  }
+
   function addMessage(
     text: string,
-    type: "user" | "assistant"
+    type: "user" | "assistant",
+    createdAt: number = Date.now()
   ) {
     if (!messages) return;
+    messages.querySelector(".chat-welcome")?.remove();
 
-    const bubble =
-      document.createElement("div");
+    const bubble = document.createElement("div");
+    bubble.className = `message ${type}`;
+    bubble.title = messageTime(createdAt);
 
-    bubble.className =
-      `message ${type}`;
-
-    const content =
-      document.createElement("div");
-
-    content.className =
-      "message-text";
-
-    content.textContent = text;
-
-    const copyButton =
-      document.createElement("button");
-
-    copyButton.type = "button";
-
-    copyButton.className =
-      "message-copy";
-
-    copyButton.textContent =
-      "복사";
-
-    copyButton.title =
-      "메시지 복사";
-
-    copyButton.addEventListener(
-      "click",
-      async (event) => {
-        event.stopPropagation();
-
-        try {
-          await writeText(text);
-
-          copyButton.textContent =
-            "복사됨";
-
-          window.setTimeout(
-            () => {
-              copyButton.textContent =
-                "복사";
-            },
-            900
-          );
-        } catch (error) {
-          console.error(
-            "클립보드 복사 실패:",
-            error
-          );
-        }
-      }
-    );
-
-    bubble.append(
-      content,
-      copyButton
-    );
-
-    if (
-      type === "assistant" &&
-      (text.includes("기술 로그") || text.startsWith("연결 오류:"))
-    ) {
-      const logButton = document.createElement("button");
-      logButton.type = "button";
-      logButton.className = "message-copy message-open-log";
-      logButton.textContent = "기술 로그 열기";
-      logButton.addEventListener("click", (event) => {
-        event.stopPropagation();
-        void openWorkLogWindow();
-      });
-      bubble.append(logButton);
+    const content = document.createElement("div");
+    content.className = type === "assistant" ? "message-text message-md" : "message-text";
+    if (type === "assistant") {
+      content.append(renderMarkdown(text, markdownHandlers));
+    } else {
+      content.textContent = text;
     }
 
-    messages.appendChild(bubble);
+    const actions = document.createElement("div");
+    actions.className = "message-actions";
+    actions.append(
+      messageAction("복사", "메시지 전체 복사", (button) => {
+        void copyText(text).then(() => {
+          button.textContent = "복사됨";
+          window.setTimeout(() => {
+            button.textContent = "복사";
+          }, 900);
+        });
+      })
+    );
+    if (type === "user") {
+      actions.append(
+        messageAction("수정", "이 질문을 입력창으로 가져와 고쳐 보냅니다", () => {
+          composer?.fill(text);
+        })
+      );
+    }
 
-    messages.scrollTop =
-      messages.scrollHeight;
+    const isError = type === "assistant" && (text.includes("기술 로그") || text.startsWith("연결 오류:"));
+    if (isError) {
+      bubble.classList.add("is-error");
+      const retry = retryLastRequest;
+      if (retry) {
+        actions.append(messageAction("다시 시도", "같은 질문을 다시 보냅니다", () => retry()));
+      }
+      actions.append(
+        messageAction("기술 로그 열기", "기술 로그를 새 창에서 봅니다", () => {
+          void openWorkLogWindow();
+        })
+      );
+    }
+
+    bubble.append(content, actions);
+    messages.appendChild(bubble);
+    scrollFollower?.follow(type === "user");
   }
 
   let lastAssistantReply = "";
@@ -2392,10 +2436,6 @@ async function startLive2D() {
     lastAssistantReply = clean;
     addMessage(clean, "assistant");
     chatHistory?.append("assistant", clean);
-    messages?.scrollTo({
-      top: messages.scrollHeight,
-      behavior: "smooth",
-    });
   }
 
   if (messages) {
@@ -2403,6 +2443,9 @@ async function startLive2D() {
       setupChatHistory({
         messages,
         addMessage,
+        showWelcome: () => {
+          renderWelcome(messages, (suggestion) => composer?.fill(suggestion));
+        },
       });
   }
 
@@ -2524,6 +2567,7 @@ async function startLive2D() {
       "#chat-panel.open",
       "#ai-settings-panel",
       "#usage-dashboard-panel",
+      "#automation-panel",
       "#work-log-overlay",
       "#rightclick-test-menu",
       "#chat-history-drawer",
@@ -3253,10 +3297,31 @@ async function startLive2D() {
     );
 
 
+  let activeRequestId = 0;
+  let stoppedRequestId = 0;
+  let liveReply: LiveReply | null = null;
+
+  window.addEventListener("ai-character:stop-active-work", () => {
+    if (!composer?.isBusy()) {
+      return;
+    }
+    stoppedRequestId = activeRequestId;
+    liveReply?.dispose();
+    composer.setBusy(false);
+    characterActivity?.setActivity("idle");
+    window.dispatchEvent(new Event("ai-character:chat-progress-hide"));
+    addMessage("답변을 중지했습니다. 질문은 입력창에서 ↑ 키로 다시 불러올 수 있어요.", "assistant");
+    chatInput?.focus();
+  });
+
   chatForm?.addEventListener(
     "submit",
     async (event) => {
       event.preventDefault();
+
+      if (composer?.isBusy()) {
+        return;
+      }
 
       const text =
         chatInput?.value.trim();
@@ -3333,25 +3398,44 @@ async function startLive2D() {
           pendingAttachments
         );
 
-      if (chatInput) {
-        chatInput.value = "";
-        chatInput.disabled = true;
-      }
+      composer?.takeText();
+      composer?.remember(text ?? "");
+      composer?.setBusy(true);
+      const requestId = ++activeRequestId;
+      const isStopped = () => stoppedRequestId === requestId;
+      const startedAt = Date.now();
 
       characterActivity?.setActivity("working");
       window.dispatchEvent(new Event("ai-character:chat-progress-start"));
+
+      const live = messages
+        ? startLiveReply(`chat-${requestId}-${startedAt}`, {
+            messages,
+            render: (target, partial) => target.append(renderMarkdown(partial, markdownHandlers)),
+            onFirstText: () => window.dispatchEvent(new Event("ai-character:chat-progress-hide")),
+            onUpdate: () => scrollFollower?.follow(false),
+          })
+        : null;
+      liveReply = live;
 
       try {
         const answer =
           await askCradleCompat(
             requestPrompt,
             chatHistory?.getActiveId() ?? null,
-            previousConversationContext
+            previousConversationContext,
+            `chat-${requestId}-${startedAt}`
           );
+
+        live?.dispose();
+        if (isStopped()) {
+          return;
+        }
 
         postAssistantReply(
           answer || "작업을 마쳤지만 채팅에 넣을 답이 비어 있습니다."
         );
+        notifyIfAway(startedAt, "답변이 도착했습니다", answer || "작업을 마쳤습니다.");
 
         characterActivity?.setActivity("done");
         window.dispatchEvent(new Event("ai-character:chat-progress-hide"));
@@ -3390,23 +3474,38 @@ async function startLive2D() {
           }
         }
       } catch (error) {
+        if (isStopped()) {
+          return;
+        }
         const message =
           error instanceof Error
             ? error.message
             : String(error);
 
+        const failedText = text ?? "";
+        composer?.restoreText(failedText);
+        retryLastRequest = () => {
+          composer?.fill(failedText);
+          chatForm?.requestSubmit();
+        };
         addMessage(
           `연결 오류: ${message}`,
           "assistant"
         );
+        notifyIfAway(startedAt, "작업이 실패했습니다", message);
+        retryLastRequest = null;
         characterActivity?.setActivity("error");
         window.setTimeout(() => {
           characterActivity?.setActivity("idle");
         }, 2400);
       } finally {
-        if (chatInput) {
-          chatInput.disabled = false;
-          chatInput.focus();
+        live?.dispose();
+        if (liveReply === live) {
+          liveReply = null;
+        }
+        if (!isStopped()) {
+          composer?.setBusy(false);
+          chatInput?.focus();
         }
       }
     }

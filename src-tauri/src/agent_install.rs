@@ -57,7 +57,7 @@ fn node_binary() -> Option<PathBuf> {
     }
     #[cfg(not(windows))]
     {
-        if let Some(value) = env::var_os("PATH") {
+        if let Some(value) = crate::process_util::process_path() {
             for dir in env::split_paths(&value) {
                 for name in ["node.exe", "node"] {
                     let candidate = dir.join(name);
@@ -215,7 +215,7 @@ fn install_windows_runtimes_impl() -> Result<Vec<InstallStepResult>, String> {
     }
 }
 
-fn install_agent_cli_impl(agent: String) -> Result<InstallStepResult, String> {
+pub(crate) fn install_agent_cli_impl(agent: String) -> Result<InstallStepResult, String> {
     let agent = AgentKind::parse(&agent)?;
     #[cfg(not(windows))]
     {
@@ -232,7 +232,11 @@ fn install_agent_cli_impl(agent: String) -> Result<InstallStepResult, String> {
     {
         crate::windows_setup::refresh_process_path();
         let runtime = crate::agent_core::inspect_agent_runtime(agent, None);
-        if runtime.cli.is_some() && runtime.app.is_some() {
+        let cli_ready = match runtime.cli.clone() {
+            Some(path) => crate::agent_core::is_preferred_windows_binary(agent, &path),
+            None => false,
+        };
+        if cli_ready && runtime.app.is_some() {
             return Ok(InstallStepResult {
                 id: agent.as_str().to_string(),
                 ok: true,
@@ -287,7 +291,7 @@ fn install_agent_cli_impl(agent: String) -> Result<InstallStepResult, String> {
     }
 }
 
-fn install_all_required_runtimes_impl() -> Result<Vec<InstallStepResult>, String> {
+pub(crate) fn install_all_required_runtimes_impl() -> Result<Vec<InstallStepResult>, String> {
     #[cfg(not(windows))]
     {
         Err(

@@ -1,3 +1,8 @@
+mod alerts;
+mod setup_web;
+mod usage_report;
+mod local_ai;
+mod remote_ai;
 mod chat_state;
 mod workspace_changes;
 mod run_history;
@@ -55,6 +60,18 @@ mod work_log;
 mod click_through;
 mod claude_plugins;
 mod single_instance;
+mod usage_ledger;
+mod policy_engine;
+mod cloud_commands;
+mod context_optimizer;
+mod process_util;
+mod coder_worktree;
+mod test_runner;
+mod claude_integration;
+#[cfg(desktop)]
+mod scheduled_jobs;
+#[cfg(desktop)]
+mod updates;
 
 use agent_commands::{
     ask_claude, cancel_agent, detect_agent, detect_agent_runtime, get_project_dir, run_agent,
@@ -301,6 +318,7 @@ mod tests {
     fn attachment_access_rejects_secret_and_system_paths() {
         assert!(inspect_attachment_access("keys.env".to_string()).is_err());
         assert!(inspect_attachment_access("/etc/passwd".to_string()).is_err());
+        #[cfg(windows)]
         assert!(inspect_attachment_access(r"C:\Windows\System32\config\SAM".to_string()).is_err());
     }
 }
@@ -320,6 +338,11 @@ mod process_stats_tests {
     }
 }
 
+/// Claude Code hooks re-invoke this binary with `--cradle-hook <kind>`.
+pub fn run_cli_hook() -> Option<i32> {
+    claude_integration::run_hook_from_args()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     crate::single_instance::claim();
@@ -328,7 +351,9 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
         .setup(|app| {
+            crate::alerts::init(app.handle().clone());
             // 외장 볼륨 keys는 시작 시 자동 접근하지 않음(TCC 대화로 UI가 막히는 것 방지).
             // 키가 필요하면 Application Support 또는 사용자가 허용한 뒤 설정에서 연다.
             let _ = app;
@@ -379,6 +404,15 @@ pub fn run() {
                         eprintln!("전역 단축키를 건너뜁니다: {error}");
                     }
                 }
+                match app
+                    .handle()
+                    .plugin(tauri_plugin_updater::Builder::new().build())
+                {
+                    Ok(()) => crate::updates::mark_updater_ready(),
+                    Err(error) => eprintln!("앱 업데이터를 건너뜁니다: {error}"),
+                }
+                crate::updates::start(app.handle().clone());
+                crate::scheduled_jobs::start(app.handle().clone());
             }
 
             crate::window_stack::bind_main_focus_restore(app.handle());
@@ -386,6 +420,8 @@ pub fn run() {
             if let Err(error) = crate::app_tray::install(app) {
                 eprintln!("트레이를 건너뜁니다: {error}");
             }
+            crate::setup_web::start(app.handle().clone());
+            std::thread::spawn(crate::remote_ai::on_startup);
 
             Ok(())
         })
@@ -467,7 +503,55 @@ pub fn run() {
             live2d_user::remove_user_live2d_model,
             live2d_user::dedupe_user_live2d_models,
             text_files::write_text_file,
-            text_files::read_text_file
+            text_files::read_text_file,
+            policy_engine::get_policy_settings,
+            policy_engine::set_policy_settings,
+            policy_engine::request_paid_approval,
+            policy_engine::request_risky_action_approval,
+            policy_engine::classify_shell_command,
+            cloud_commands::list_api_usage,
+            cloud_commands::get_api_usage_summary,
+            cloud_commands::list_provider_models,
+            cloud_commands::refresh_free_models,
+            cloud_commands::list_paid_approvals,
+            cloud_commands::list_update_history,
+            cloud_commands::get_agent_success_rates,
+            context_optimizer::build_task_context,
+            coder_worktree::create_coder_worktree,
+            coder_worktree::merge_coder_worktree,
+            coder_worktree::discard_coder_worktree,
+            test_runner::detect_project_test_commands,
+            test_runner::run_project_tests,
+            claude_integration::get_claude_integration_settings,
+            claude_integration::set_claude_integration_settings,
+            claude_integration::get_claude_integration_status,
+            claude_plugins::update_claude_plugins,
+            local_env::get_api_key_status,
+            local_env::save_api_key,
+            local_env::test_api_key,
+            updates::get_update_settings,
+            updates::set_update_settings,
+            updates::set_cradle_activity,
+            updates::run_updates_now,
+            updates::has_pending_app_update,
+            updates::restart_to_apply_update,
+            updates::get_update_status,
+            updates::cancel_updates,
+            updates::get_updater_build_status,
+            setup_web::open_setup_web,
+            usage_report::get_usage_report,
+            scheduled_jobs::list_scheduled_jobs,
+            scheduled_jobs::running_scheduled_jobs,
+            scheduled_jobs::cancel_scheduled_job,
+            scheduled_jobs::list_scheduled_job_runs,
+            alerts::get_usage_alerts,
+            alerts::get_alert_settings,
+            alerts::set_alert_settings,
+            alerts::notify_desktop,
+            scheduled_jobs::save_scheduled_job,
+            scheduled_jobs::delete_scheduled_job,
+            scheduled_jobs::run_scheduled_job_now,
+            scheduled_jobs::open_reports_folder
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

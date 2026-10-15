@@ -10,12 +10,26 @@ import {
   type AppPreferences,
 } from "./agent-client";
 import { collectWebResearch } from "./web-research";
+import { buildTaskContext } from "./context-client";
+import { setCradleActivity } from "./update-client";
+import {
+  createCoderWorktree,
+  discardCoderWorktree,
+  failingTestLogs,
+  mergeCoderWorktree,
+  runProjectTests,
+  summarizeTestRun,
+  type TestRunSummary,
+} from "./cradle-workspace-client";
 import { classifyRequestIntent, extractCurrentUserRequest } from "./request-intent";
 import { compactText, compactWorkerOutput, WORKER_RESULT_SCHEMA } from "./worker-result";
 import {
   classifyAutomaticProviderError,
   getAutomaticProviderStatuses,
+  isFreeAutomaticProvider,
+  requestPaidApproval,
   runAutomaticProvider,
+  type AutomaticCallContext,
   type AutomaticProviderHealth,
   type AutomaticProviderStatus,
 } from "./automatic-provider";
@@ -34,6 +48,7 @@ import type {
   OrchestrationPlan,
   OrchestrationTarget,
   OrchestrationTaskSpec,
+  TaskRole,
   WebAgentTarget,
   WebAvailability,
 } from "./orchestration-types";
@@ -66,9 +81,12 @@ const rememberedWebAvailability: Record<WebAgentTarget, WebAvailability> = {
 };
 const automaticProviderHealth: Record<AutomaticApiTarget, AutomaticProviderHealth> = {
   gemini_api: "unknown",
+  openrouter_api: "unknown",
+  free_pool_api: "unknown",
   openai_api: "unknown",
 };
 let automaticProviderStatuses: AutomaticProviderStatus[] = [];
+const deniedPaidProviders = new Set<string>();
 
 const WEB_PREFERENCE_FOR_CLI: Record<OrchestrationCliTarget, WebAgentTarget> = {
   claude: "claude_web",
@@ -103,7 +121,7 @@ function isWebTarget(target: OrchestrationTarget): target is WebAgentTarget {
 }
 
 function isAutomaticApiTarget(target: OrchestrationTarget): target is AutomaticApiTarget {
-  return target === "gemini_api" || target === "openai_api";
+  return target === "gemini_api" || target === "openrouter_api" || target === "free_pool_api" || target === "openai_api";
 }
 
 function isCliTarget(target: OrchestrationTarget): target is OrchestrationCliTarget {
@@ -235,27 +253,28 @@ export function availableModifyCliTargets(
   return CLI_SPREAD_ORDER.filter((target) => automaticCliTargets.includes(target));
 }
 
-function usableAutomaticProviders(
+/** Free providers first (Gemini, OpenRouter free models, the extra free pool), then the opt-in paid OpenAI API. */
+export function usableAutomaticProviders(
   statuses: AutomaticProviderStatus[],
-  preferences: AppPreferences
+  preferences: Pick<AppPreferences, "geminiApiEnabled" | "allowPaidOpenAiApi">,
+  health: Record<AutomaticApiTarget, AutomaticProviderHealth> = automaticProviderHealth
 ): AutomaticApiTarget[] {
+  const healthy = (provider: AutomaticApiTarget) =>
+    health[provider] !== "limited" && health[provider] !== "unavailable";
+  const available = (provider: AutomaticApiTarget) =>
+    statuses.find((status) => status.provider === provider)?.available === true && healthy(provider);
+
   const providers: AutomaticApiTarget[] = [];
-  const gemini = statuses.find((status) => status.provider === "gemini_api");
-  if (
-    preferences.geminiApiEnabled &&
-    gemini?.available &&
-    automaticProviderHealth.gemini_api !== "limited" &&
-    automaticProviderHealth.gemini_api !== "unavailable"
-  ) {
+  if (preferences.geminiApiEnabled && available("gemini_api")) {
     providers.push("gemini_api");
   }
-  const openai = statuses.find((status) => status.provider === "openai_api");
-  if (
-    preferences.allowPaidOpenAiApi &&
-    openai?.available &&
-    automaticProviderHealth.openai_api !== "limited" &&
-    automaticProviderHealth.openai_api !== "unavailable"
-  ) {
+  if (available("openrouter_api")) {
+    providers.push("openrouter_api");
+  }
+  if (available("free_pool_api")) {
+    providers.push("free_pool_api");
+  }
+  if (preferences.allowPaidOpenAiApi && available("openai_api")) {
     providers.push("openai_api");
   }
   return providers;
@@ -266,6 +285,71 @@ function rememberAutomaticProviderFailure(provider: AutomaticApiTarget, error: u
   if (health === "limited" || health === "unavailable") {
     automaticProviderHealth[provider] = health;
   }
+}
+
+function isPaidApprovalRequired(error: unknown): boolean {
+  return (error instanceof Error ? error.message : String(error)).includes("PAID_APPROVAL_REQUIRED|");
+}
+
+/**
+ * Calls an automatic provider. When the backend demands paid approval, asks the
+ * user once per session/provider; a denial is remembered for that session only.
+ */
+async function callAutomaticProvider(
+  provider: AutomaticApiTarget,
+  prompt: string,
+  context: AutomaticCallContext,
+  approvalReason: string
+): Promise<string> {
+  const deniedKey = `${context.sessionId ?? "direct"}:${provider}`;
+  if (deniedPaidProviders.has(deniedKey)) {
+    throw new Error(`PAID_APPROVAL_DENIED|${provider}|이번 세션에서 유료 호출을 거절했습니다.`);
+  }
+  try {
+    const response = await runAutomaticProvider(provider, prompt, context);
+    automaticProviderHealth[provider] = "available";
+    return response;
+  } catch (error) {
+    if (!isPaidApprovalRequired(error)) {
+      rememberAutomaticProviderFailure(provider, error);
+      throw error;
+    }
+    const approved = await requestPaidApproval(provider, approvalReason, context.sessionId ?? null);
+    if (!approved) {
+      deniedPaidProviders.add(deniedKey);
+      throw new Error(`PAID_APPROVAL_DENIED|${provider}|사용자가 유료 호출을 승인하지 않았습니다.`);
+    }
+    try {
+      const response = await runAutomaticProvider(provider, prompt, context);
+      automaticProviderHealth[provider] = "available";
+      return response;
+    } catch (retryError) {
+      rememberAutomaticProviderFailure(provider, retryError);
+      throw retryError;
+    }
+  }
+}
+
+/** Tries providers in order and returns the first non-empty response, or null. */
+async function tryAutomaticProviders(
+  providers: AutomaticApiTarget[],
+  prompt: string,
+  context: AutomaticCallContext,
+  approvalReason: string,
+  onAttempt?: (provider: AutomaticApiTarget) => void
+): Promise<{ provider: AutomaticApiTarget; response: string } | null> {
+  for (const provider of providers) {
+    onAttempt?.(provider);
+    try {
+      const response = (await callAutomaticProvider(provider, prompt, context, approvalReason)).trim();
+      if (response) {
+        return { provider, response };
+      }
+    } catch (error) {
+      console.warn("자동 Provider 실패", { provider, error });
+    }
+  }
+  return null;
 }
 
 export function createPlanningPrompt(
@@ -282,10 +366,13 @@ export function createPlanningPrompt(
     "This path is for PROJECT work only. Simple chat questions should not be planned here.",
     "Return JSON only. Do not use markdown fences or explanatory text.",
     "Schema:",
-    '{"summary":"overall plan","tasks":[{"id":"task-1","title":"short title","target":"gemini_api|openai_api|claude_web|chatgpt_web|gemini_web|claude|codex|cursor|antigravity","mode":"analyze|modify","prompt":"self-contained worker instruction","dependsOn":[]}]}',
+    '{"summary":"overall plan","tasks":[{"id":"task-1","title":"short title","target":"gemini_api|openrouter_api|free_pool_api|openai_api|claude_web|chatgpt_web|gemini_web|claude|codex|cursor|antigravity","mode":"analyze|modify","role":"planner|coder|reviewer|tester|documenter","prompt":"self-contained worker instruction","dependsOn":[]}]}',
     "Rules:",
     "- Use 1 to 8 tasks. Prefer fewer workers when one worker is enough.",
+    "- Give every task a role: planner (design/breakdown), coder (edits files, mode=modify, CLI only), reviewer (checks code/results), tester (runs the project's tests and analyzes failures; depend on coder tasks), documenter (writes docs/reports).",
+    "- Planner, reviewer, tester, and documenter use free automatic APIs. Only coder tasks use CLI workers.",
     "- Gemini API is the preferred free automatic analysis/research/review worker when available.",
+    "- OpenRouter API uses only verified zero-cost models; use it as the second free analysis worker or to spread analyze tasks.",
     "- OpenAI API is paid and may be assigned only when it appears in the available automatic API list.",
     "- Manual Claude/ChatGPT/Gemini Web targets are fallbacks when automatic providers are unavailable.",
     "- For mode=analyze, prefer an available automatic API target instead of CLI targets.",
@@ -335,7 +422,8 @@ export function normalizePlanForAutomaticProviders(
   automaticCliTargets: OrchestrationCliTarget[],
   availability: Record<WebAgentTarget, WebAvailability>
 ): OrchestrationPlan {
-  const freeAutomatic = automaticApiTargets.includes("gemini_api") ? "gemini_api" : null;
+  const freeTargets = automaticApiTargets.filter((target) => isFreeAutomaticProvider(target));
+  const freeAutomatic: AutomaticApiTarget | null = freeTargets[0] ?? null;
   const paidAutomatic = automaticApiTargets.includes("openai_api") ? "openai_api" : null;
   const modifyClis = availableModifyCliTargets(automaticCliTargets);
   let modifyIndex = 0;
@@ -359,6 +447,9 @@ export function normalizePlanForAutomaticProviders(
       }
 
       if (isAutomaticApiTarget(task.target)) {
+        if (task.target === "openai_api" && freeAutomatic) {
+          return { ...task, target: freeAutomatic, dependsOn: [...task.dependsOn] };
+        }
         if (automaticApiTargets.includes(task.target)) {
           return { ...task, dependsOn: [...task.dependsOn] };
         }
@@ -409,6 +500,14 @@ function dependencyContext(session: CradleSession, task: CradleTaskState): strin
   return parts.length > 0 ? parts.join("\n\n") : "No dependency outputs.";
 }
 
+const ROLE_INSTRUCTIONS: Record<TaskRole, string> = {
+  planner: "break the work into concrete steps and interfaces; do not edit files.",
+  coder: "implement the change in the workspace files; keep the diff minimal.",
+  reviewer: "check correctness, regressions, and security; list concrete issues.",
+  tester: "explain failing tests from the logs and propose the smallest fix.",
+  documenter: "write concise documentation or a change report from the results.",
+};
+
 function buildWorkerPrompt(session: CradleSession, task: CradleTaskState): string {
   const researchPromptBlock = compactResearchForPrompt(session.webResearch.researchPromptBlock);
   const webModifyNotice = isWebTarget(task.target) && task.mode === "modify"
@@ -421,6 +520,7 @@ function buildWorkerPrompt(session: CradleSession, task: CradleTaskState): strin
     `You are the ${task.target} worker in a CRADLE orchestration session.`,
     `Task: ${task.title}`,
     `Mode: ${task.mode}`,
+    task.role ? `Role: ${task.role} — ${ROLE_INSTRUCTIONS[task.role]}` : "",
     "Follow only this assigned task.",
     jsonNotice,
     task.mode === "modify" && isCliTarget(task.target)
@@ -435,10 +535,62 @@ function buildWorkerPrompt(session: CradleSession, task: CradleTaskState): strin
     compactText(task.prompt, 2_000),
     researchPromptBlock ? "" : "",
     researchPromptBlock,
+    task.codeContext ? "" : "",
+    task.codeContext
+      ? `RELEVANT PROJECT CONTEXT (selected blocks only, not the whole project):\n${task.codeContext}`
+      : "",
+    task.testSummary ? `TEST RUN SUMMARY:\n${task.testSummary}` : "",
+    task.testLog ? `FAILING TEST LOGS (trimmed):\n${task.testLog}` : "",
     "",
     "DEPENDENCY RESULTS:",
     dependencyContext(session, task),
   ].filter(Boolean).join("\n");
+}
+
+/** CLI workers can read files themselves, so they get a smaller excerpt. */
+export function contextBudgetFor(target: OrchestrationTarget): number {
+  return isCliTarget(target) ? 4_000 : 12_000;
+}
+
+async function runTesterCommands(session: CradleSession, task: CradleTaskState): Promise<TestRunSummary | null> {
+  if (task.role !== "tester" || !session.conversationId || task.testSummary !== undefined) {
+    return null;
+  }
+  setSessionStatus(session, session.status, `${task.title}: 프로젝트 테스트를 실행합니다.`);
+  try {
+    const summary = await runProjectTests(session.conversationId, session.id, task.id, "tester");
+    task.testSummary = summarizeTestRun(summary);
+    task.testLog = summary.passed ? "" : failingTestLogs(summary);
+    return summary;
+  } catch (error) {
+    task.testSummary = JSON.stringify({ tests: "error", error: error instanceof Error ? error.message : String(error) });
+    return null;
+  }
+}
+
+/** A passing (or absent) test run needs no model call. */
+export function testerResultWithoutModel(summary: TestRunSummary | null): string | null {
+  if (!summary || (summary.detected && !summary.passed)) {
+    return null;
+  }
+  return JSON.stringify({
+    summary: summary.detected ? "모든 프로젝트 테스트가 통과했습니다." : "실행할 테스트 명령을 찾지 못했습니다.",
+    findings: [],
+    tests: summarizeTestRun(summary),
+  });
+}
+
+async function prepareTaskContext(session: CradleSession, task: CradleTaskState): Promise<void> {
+  if (task.codeContext !== undefined || !session.conversationId) {
+    return;
+  }
+  const result = await buildTaskContext(
+    session.conversationId,
+    [task.title, task.prompt, session.originalPrompt].join("\n"),
+    contextBudgetFor(task.target)
+  );
+  task.codeContext = result.context;
+  task.contextFingerprint = result.fingerprint;
 }
 
 export function buildSynthesisPrompt(session: CradleSession, allowRevision: boolean): string {
@@ -506,6 +658,32 @@ async function runClaudeManagerCli(
   }
 }
 
+export type ManagerStep = AutomaticApiTarget | "claude_cli";
+
+/** Free APIs → subscription Claude CLI → paid APIs (each paid call still needs approval). */
+export function managerProviderOrder(apis: AutomaticApiTarget[], claudeCliAvailable: boolean): ManagerStep[] {
+  const order: ManagerStep[] = apis.filter((api) => isFreeAutomaticProvider(api));
+  if (claudeCliAvailable) {
+    order.push("claude_cli");
+  }
+  order.push(...apis.filter((api) => !isFreeAutomaticProvider(api)));
+  return order;
+}
+
+function managerStatusMessage(provider: AutomaticApiTarget, stage: ManagerWebStage): string {
+  const name =
+    provider === "gemini_api"
+      ? "Gemini 공식 API(무료 우선)"
+      : provider === "openrouter_api"
+        ? "OpenRouter 무료 모델"
+        : provider === "free_pool_api"
+          ? "추가 무료 AI(Groq·NVIDIA·GLM 등)"
+          : "승인된 OpenAI 유료 API";
+  return stage === "planning"
+    ? `${name}로 CRADLE 계획을 자동 생성합니다.`
+    : `${name}로 Worker 결과를 자동 취합합니다.`;
+}
+
 export async function runAutomaticManager(
   session: CradleSession,
   stage: ManagerWebStage,
@@ -513,50 +691,28 @@ export async function runAutomaticManager(
   preferences: AppPreferences,
   sensitiveAcknowledged: boolean
 ): Promise<string> {
-  const availableApis = usableAutomaticProviders(automaticProviderStatuses, preferences);
+  const order = managerProviderOrder(
+    usableAutomaticProviders(automaticProviderStatuses, preferences),
+    session.automaticCliTargets.includes("claude")
+  );
+  const status = stage === "planning" ? "planning" : "synthesizing";
+  const context: AutomaticCallContext = { sessionId: session.id, role: stage === "planning" ? "planner" : "reviewer" };
+  const approvalReason = stage === "planning" ? "CRADLE 작업 계획 생성" : "CRADLE Worker 결과 취합";
 
-  if (availableApis.includes("gemini_api")) {
-    setSessionStatus(
-      session,
-      stage === "planning" ? "planning" : "synthesizing",
-      stage === "planning"
-        ? "Gemini 공식 API(무료 우선)로 CRADLE 계획을 자동 생성합니다."
-        : "Gemini 공식 API(무료 우선)로 Worker 결과를 자동 취합합니다."
-    );
-    try {
-      const response = await runAutomaticProvider("gemini_api", prompt);
-      automaticProviderHealth.gemini_api = "available";
-      return response;
-    } catch (error) {
-      rememberAutomaticProviderFailure("gemini_api", error);
-    }
-  }
-
-  if (session.automaticCliTargets.includes("claude")) {
-    setSessionStatus(session, stage === "planning" ? "planning" : "synthesizing", "Gemini 자동 Provider를 사용할 수 없어 Claude CLI 총괄로 전환합니다.");
-    try {
-      return await runClaudeManagerCli(
-        prompt,
-        session.conversationId,
-        preferences,
-        sensitiveAcknowledged
-      );
-    } catch (error) {
-      if (!isQuotaOrLimitError(error)) {
-        // A missing/broken Claude CLI can still fall through to an explicitly
-        // enabled paid API or the existing manual Web handoff.
+  for (const step of order) {
+    if (step === "claude_cli") {
+      setSessionStatus(session, status, "무료 자동 Provider를 사용할 수 없어 Claude CLI(구독) 총괄로 전환합니다.");
+      try {
+        return await runClaudeManagerCli(prompt, session.conversationId, preferences, sensitiveAcknowledged);
+      } catch (error) {
+        console.warn("Claude CLI 총괄 실패", error);
       }
+      continue;
     }
-  }
-
-  if (preferences.allowPaidOpenAiApi && availableApis.includes("openai_api")) {
-    setSessionStatus(session, stage === "planning" ? "planning" : "synthesizing", "무료/CLI 총괄을 사용할 수 없어 허용된 OpenAI API로 전환합니다.");
-    try {
-      const response = await runAutomaticProvider("openai_api", prompt);
-      automaticProviderHealth.openai_api = "available";
-      return response;
-    } catch (error) {
-      rememberAutomaticProviderFailure("openai_api", error);
+    setSessionStatus(session, status, managerStatusMessage(step, stage));
+    const result = await tryAutomaticProviders([step], prompt, context, approvalReason);
+    if (result) {
+      return result.response;
     }
   }
 
@@ -731,16 +887,43 @@ async function runAutomaticApiTask(
   task.handoffPrompt = null;
   dispatchSession(session);
 
+  const testRun = await runTesterCommands(session, task);
+  const directTesterResult = testerResultWithoutModel(testRun);
+  if (directTesterResult) {
+    task.output = directTesterResult;
+    task.status = session.status === "cancelled" ? "cancelled" : "completed";
+    dispatchSession(session);
+    return;
+  }
+  await prepareTaskContext(session, task);
+  const workerPrompt = buildWorkerPrompt(session, task);
+  const context: AutomaticCallContext = {
+    sessionId: session.id,
+    taskId: task.id,
+    role: "worker",
+    cacheFingerprint: task.contextFingerprint || null,
+  };
+  const reason = `CRADLE Worker 작업: ${task.title}`;
   try {
     task.output = compactWorkerOutput(
-      (await runAutomaticProvider(provider, buildWorkerPrompt(session, task))).trim(),
+      (await callAutomaticProvider(provider, workerPrompt, context, reason)).trim(),
       task.mode
     );
-    automaticProviderHealth[provider] = "available";
     task.status = session.status === "cancelled" ? "cancelled" : "completed";
   } catch (error) {
-    rememberAutomaticProviderFailure(provider, error);
-    if (session.status === "cancelled") {
+    const alternatives = usableAutomaticProviders(automaticProviderStatuses, await getAppPreferences())
+      .filter((candidate) => candidate !== provider && isFreeAutomaticProvider(candidate));
+    const alternative = session.status === "cancelled"
+      ? null
+      : await tryAutomaticProviders(alternatives, workerPrompt, context, reason);
+    if (alternative) {
+      task.fallbackCount += 1;
+      task.fallbackFrom = provider;
+      task.fallbackReason = `${provider} 사용 불가 → ${alternative.provider} 무료 Provider로 전환`;
+      task.target = alternative.provider;
+      task.output = compactWorkerOutput(alternative.response, task.mode);
+      task.status = "completed";
+    } else if (session.status === "cancelled") {
       task.error = "CRADLE 작업이 취소되었습니다.";
       task.status = "cancelled";
     } else if (task.fallbackCount < 1) {
@@ -763,6 +946,11 @@ async function runAutomaticApiTask(
   dispatchSession(session);
 }
 
+/** Not a type guard on purpose: status can change while an awaited worker is running. */
+function isSessionCancelled(session: CradleSession): boolean {
+  return session.status === "cancelled";
+}
+
 async function runAutomaticTask(
   session: CradleSession,
   task: CradleTaskState,
@@ -777,9 +965,14 @@ async function runAutomaticTask(
   task.handoffPrompt = null;
   dispatchSession(session);
 
+  await prepareTaskContext(session, task);
+  const worktree = task.mode === "modify" && session.conversationId
+    ? await createCoderWorktree(session.conversationId, task.id)
+    : null;
   const worker = runAgentTask({
     agent: task.target,
     prompt: buildWorkerPrompt(session, task),
+    workingDir: worktree?.path ?? null,
     conversationId: session.conversationId,
     timeoutSeconds: preferences.timeoutSeconds,
     sensitiveAcknowledged,
@@ -790,10 +983,34 @@ async function runAutomaticTask(
   });
   activeCliTaskIds.add(worker.taskId);
 
+  let mergeAttempted = false;
   try {
     task.output = compactWorkerOutput((await worker.result).trim(), task.mode);
+    if (isSessionCancelled(session)) {
+      throw new Error("CRADLE 작업이 취소되었습니다.");
+    }
+    if (worktree && session.conversationId) {
+      mergeAttempted = true;
+      const merge = await mergeCoderWorktree(session.conversationId, task.id);
+      task.output = `${task.output}\n\nWORKTREE MERGE: ${merge.message}`;
+      if (merge.conflictFiles.length > 0) {
+        task.fallbackReason = `병합 충돌 파일: ${merge.conflictFiles.join(", ")} (변경 검토 화면에서 확인)`;
+      }
+      if (!merge.merged) {
+        throw new Error(merge.message);
+      }
+    }
     task.status = session.status === "cancelled" ? "cancelled" : "completed";
   } catch (error) {
+    if (mergeAttempted) {
+      task.error = error instanceof Error ? error.message : String(error);
+      task.status = "failed";
+      dispatchSession(session);
+      return;
+    }
+    if (worktree && session.conversationId) {
+      await discardCoderWorktree(session.conversationId, task.id);
+    }
     if (session.status === "cancelled") {
       task.error = "CRADLE 작업이 취소되었습니다.";
       task.status = "cancelled";
@@ -813,10 +1030,12 @@ async function runAutomaticTask(
   dispatchSession(session);
 }
 
-function waitForWebTask(session: CradleSession, task: CradleTaskState): Promise<void> {
+async function waitForWebTask(session: CradleSession, task: CradleTaskState): Promise<void> {
   if (!isWebTarget(task.target)) {
-    return Promise.resolve();
+    return;
   }
+  await runTesterCommands(session, task);
+  await prepareTaskContext(session, task);
   task.status = "waiting_web";
   task.error = null;
   task.handoffPrompt = buildWorkerPrompt(session, task);
@@ -1174,6 +1393,7 @@ export async function retryCradleSynthesis(sessionId: string): Promise<string> {
     throw new Error("민감 파일 경고에서 Claude 합성 재시도를 취소했습니다.");
   }
   session.error = null;
+  holdCradleActivity(session.id);
   try {
     const answer = await finishWithSynthesis(session, preferences, sensitiveAcknowledged);
     const waiter = synthesisWaiters.get(session.id);
@@ -1186,6 +1406,23 @@ export async function retryCradleSynthesis(sessionId: string): Promise<string> {
     session.error = error instanceof Error ? error.message : String(error);
     setSessionStatus(session, "failed", "Claude 최종 합성에 실패했습니다. 합성만 다시 시도할 수 있습니다.");
     throw error;
+  } finally {
+    releaseCradleActivity(session.id);
+  }
+}
+
+const cradleActivityHeld = new Set<string>();
+
+function holdCradleActivity(sessionId: string): void {
+  if (!cradleActivityHeld.has(sessionId)) {
+    cradleActivityHeld.add(sessionId);
+    void setCradleActivity(true);
+  }
+}
+
+function releaseCradleActivity(sessionId: string): void {
+  if (cradleActivityHeld.delete(sessionId)) {
+    void setCradleActivity(false);
   }
 }
 
@@ -1200,6 +1437,11 @@ export async function runCradleOrchestration(
 ): Promise<string> {
   if (activeSession && !["completed", "failed", "cancelled"].includes(activeSession.status)) {
     throw new Error("이미 CRADLE 작업이 진행 중입니다. 현재 작업을 완료한 뒤 다시 시도해주세요.");
+  }
+  const staleWaiter = activeSession ? synthesisWaiters.get(activeSession.id) : undefined;
+  if (activeSession && staleWaiter) {
+    synthesisWaiters.delete(activeSession.id);
+    staleWaiter.reject(new Error("새 CRADLE 작업이 시작되어 이전 합성 재시도를 종료했습니다."));
   }
 
   const preferences = await getAppPreferences();
@@ -1249,6 +1491,7 @@ export async function runCradleOrchestration(
   };
   activeSession = session;
   dispatchSession(session);
+  holdCradleActivity(session.id);
 
   try {
     if (preferences.autoWebSearch) {
@@ -1300,6 +1543,7 @@ export async function runCradleOrchestration(
       }
       session.error = error instanceof Error ? error.message : String(error);
       setSessionStatus(session, "failed", "Claude 최종 합성에 실패했습니다. 합성만 다시 시도할 수 있습니다.");
+      releaseCradleActivity(session.id);
       return await new Promise<string>((resolve, reject) => {
         synthesisWaiters.set(session.id, { resolve, reject });
       });
@@ -1325,6 +1569,7 @@ export async function runCradleOrchestration(
       }
     }
     synthesisWaiters.delete(session.id);
+    releaseCradleActivity(session.id);
   }
 }
 
@@ -1346,7 +1591,8 @@ async function answerDirectly(
   prompt: string,
   conversationId: string | null | undefined,
   conversationContext: string,
-  researchBlock = ""
+  researchBlock = "",
+  streamId: string | null = null
 ): Promise<string> {
   const preferences = await getAppPreferences();
   try {
@@ -1356,35 +1602,37 @@ async function answerDirectly(
   }
   const composed = composeDirectPrompt(prompt, conversationContext, researchBlock);
   const apis = usableAutomaticProviders(automaticProviderStatuses, preferences);
-  if (apis.includes("gemini_api")) {
-    try {
-      const response = (await runAutomaticProvider("gemini_api", composed)).trim();
-      if (response) {
-        automaticProviderHealth.gemini_api = "available";
-        return response;
-      }
-    } catch (error) {
-      rememberAutomaticProviderFailure("gemini_api", error);
-    }
+  const context: AutomaticCallContext = { sessionId: conversationId ?? null, role: "chat" };
+  const free = await tryAutomaticProviders(
+    apis.filter(isFreeAutomaticProvider),
+    composed,
+    { ...context, streamId },
+    "일반 대화 답변"
+  );
+  if (free) {
+    return free.response;
   }
-  if (preferences.allowPaidOpenAiApi && apis.includes("openai_api")) {
-    try {
-      const response = (await runAutomaticProvider("openai_api", composed)).trim();
-      if (response) {
-        automaticProviderHealth.openai_api = "available";
-        return response;
-      }
-    } catch (error) {
-      rememberAutomaticProviderFailure("openai_api", error);
+  try {
+    return await askClaudeCompat(composed, conversationId);
+  } catch (error) {
+    const paid = await tryAutomaticProviders(
+      apis.filter((api) => !isFreeAutomaticProvider(api)),
+      composed,
+      context,
+      "무료/구독 답변 경로를 모두 사용할 수 없어 유료 API로 답변"
+    );
+    if (paid) {
+      return paid.response;
     }
+    throw error;
   }
-  return askClaudeCompat(composed, conversationId);
 }
 
 export async function askCradleCompat(
   prompt: string,
   conversationId?: string | null,
-  conversationContext = ""
+  conversationContext = "",
+  streamId: string | null = null
 ): Promise<string> {
   const preferences = await getAppPreferences();
   const current = extractCurrentUserRequest(prompt);
@@ -1401,7 +1649,7 @@ export async function askCradleCompat(
       const research = await collectWebResearch(current, true);
       researchBlock = research.researchPromptBlock;
     }
-    return answerDirectly(current, conversationId, history, researchBlock);
+    return answerDirectly(current, conversationId, history, researchBlock, streamId);
   }
 
   return runCradleOrchestration(current, conversationId, history);

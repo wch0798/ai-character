@@ -101,6 +101,24 @@
 
   <section class="grid tiles" id="tiles"></section>
 
+  <section class="card" style="margin-top:16px" id="ledgerSection">
+    <h2>CRADLE API 사용량 (최근 30일)</h2>
+    <div class="grid tiles" id="ledgerTiles"></div>
+    <div class="note">절감 추정치는 무료·구독 경로 대신 유료 API를 썼다면 들었을 비용을 가정해 계산한 값이며, 실제 청구 비용과 다릅니다.</div>
+    <div class="grid two" style="margin-top:16px">
+      <div class="card scroll"><h2>제공자별 사용량</h2><div id="ledgerProviders"></div></div>
+      <div class="card scroll"><h2>모델별 성공률</h2><div id="ledgerModels"></div></div>
+    </div>
+    <div class="grid two" style="margin-top:16px">
+      <div class="card scroll"><h2>에이전트별 테스트 통과율</h2><div id="ledgerTests"></div></div>
+      <div class="card scroll"><h2>승인 내역</h2><div id="ledgerApprovals"></div></div>
+    </div>
+    <div class="grid two" style="margin-top:16px">
+      <div class="card scroll"><h2>업데이트 이력</h2><div id="ledgerUpdates"></div></div>
+      <div class="card scroll"><h2>예약 작업</h2><div id="ledgerJobs"></div></div>
+    </div>
+  </section>
+
   <div id="providers"></div>
 
   <section class="grid two" style="margin-top:16px">
@@ -255,7 +273,92 @@ function renderProvider(p, color) {
   </section>`;
 }
 
+const usd = (n) => '$' + (Number(n) || 0).toFixed(4);
+const pct = (n) => n == null ? '—' : n + '%';
+const APPROVAL_LABELS = { risky_action: '고위험 작업', openai_api: 'OpenAI API (유료)' };
+const UPDATE_STATUS = {
+  updated: '업데이트 완료', failed: '실패', rolled_back: '실패, 이전 버전 유지',
+  pending_restart: '재시작하면 적용', skipped: '건너뜀', current: '최신',
+};
+
+function renderLedger(ledger) {
+  if (!ledger?.available) {
+    $('ledgerTiles').innerHTML = `<div class="muted">${esc(ledger?.error || '아직 CRADLE 사용 기록이 없습니다.')}</div>`;
+    ['ledgerProviders', 'ledgerModels', 'ledgerTests', 'ledgerApprovals', 'ledgerUpdates', 'ledgerJobs']
+      .forEach((id) => { $(id).innerHTML = '<div class="muted">기록 없음</div>'; });
+    return;
+  }
+  const t = ledger.totals || {};
+  $('ledgerTiles').innerHTML = [
+    ['실제 청구 비용', usd(t.billedUsd), '유료 API에 실제로 쓴 금액'],
+    ['절감 추정치', usd(t.estimatedSavingsUsd), '가정 기반 참고값'],
+    ['API 호출', full(t.calls), `최근 ${ledger.days}일`],
+    ['테스트 통과율', pct(t.testPassRate), `${full(t.testPassed)} / ${full(t.testRuns)}`],
+  ].map(([l, v, s]) =>
+    `<div class="card tile"><div class="label">${esc(l)}</div><div class="value">${esc(v)}</div><div class="muted">${esc(s)}</div></div>`
+  ).join('');
+  $('ledgerProviders').innerHTML = table([
+    { key: 'provider', label: '제공자' },
+    { key: 'costClass', label: '구분' },
+    { key: 'calls', label: '호출', num: true },
+    { key: 'rate', label: '성공률' },
+    { key: 'cacheHits', label: '캐시', num: true },
+    { key: 'billed', label: '청구' },
+    { key: 'estimated', label: '추정' },
+  ], (ledger.providers || []).map((p) => ({
+    ...p, rate: pct(p.successRate), billed: usd(p.costUsd), estimated: usd(p.estimatedPaidUsd),
+  })));
+  $('ledgerModels').innerHTML = table([
+    { key: 'model', label: '모델' },
+    { key: 'provider', label: '제공자' },
+    { key: 'calls', label: '호출', num: true },
+    { key: 'rate', label: '성공률' },
+    { key: 'latency', label: '평균 지연' },
+  ], (ledger.models || []).map((m) => ({ ...m, rate: pct(m.successRate), latency: dur(m.avgLatencyMs) })));
+  $('ledgerTests').innerHTML = table([
+    { key: 'agent', label: '에이전트' },
+    { key: 'runs', label: '실행', num: true },
+    { key: 'passed', label: '통과', num: true },
+    { key: 'rate', label: '통과율' },
+  ], (ledger.tests || []).map((r) => ({ ...r, rate: pct(r.passRate) })));
+  $('ledgerApprovals').innerHTML = table([
+    { key: 'when', label: '시각' },
+    { key: 'kind', label: '종류' },
+    { key: 'result', label: '결과' },
+    { key: 'reason', label: '사유' },
+  ], (ledger.approvals || []).map((a) => ({
+    when: time(a.createdAt),
+    kind: APPROVAL_LABELS[a.provider] ?? a.provider,
+    result: a.approved ? '승인' : '거절',
+    reason: a.reason,
+  })));
+  $('ledgerUpdates').innerHTML = table([
+    { key: 'when', label: '시각' },
+    { key: 'target', label: '대상' },
+    { key: 'versions', label: '버전' },
+    { key: 'result', label: '결과' },
+  ], (ledger.updates || []).map((u) => ({
+    when: time(u.createdAt),
+    target: `${u.target} (${u.category})`,
+    versions: [u.fromVersion, u.toVersion].filter(Boolean).join(' → '),
+    result: (UPDATE_STATUS[u.status] ?? u.status) + (u.message && u.status !== 'updated' ? ` · ${u.message}` : ''),
+  })));
+  $('ledgerJobs').innerHTML = table([
+    { key: 'title', label: '작업' },
+    { key: 'every', label: '간격' },
+    { key: 'state', label: '상태' },
+    { key: 'last', label: '마지막 실행' },
+  ], (ledger.jobs || []).map((j) => ({
+    title: j.title,
+    every: j.intervalMinutes >= 1440 ? `${Math.round(j.intervalMinutes / 1440)}일` : `${j.intervalMinutes}분`,
+    state: !j.enabled ? '꺼짐'
+      : ({ failed: '마지막 실행 실패', ok: '정상', skipped: '건너뜀' })[j.lastStatus] ?? '대기',
+    last: time(j.lastRunAt),
+  })));
+}
+
 function render(d) {
+  renderLedger(d.ledger);
   const providers = d.providers || [];
   const app = d.app || {};
   const keys = d.keys || [];

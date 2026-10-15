@@ -35,6 +35,7 @@ fn current_snapshot() -> WorkLogSnapshot {
     CURRENT.lock().map(|guard| guard.clone()).unwrap_or_default()
 }
 
+#[cfg(test)]
 fn format_work_log(snapshot: &WorkLogSnapshot) -> String {
     let mut parts = Vec::new();
     if !snapshot.status.trim().is_empty() {

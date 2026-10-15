@@ -323,6 +323,7 @@ fn path_is_runnable(path: &Path) -> bool {
     true
 }
 
+#[cfg_attr(not(windows), allow(dead_code))]
 fn windows_extension_rank(path: &Path) -> u8 {
     let ext = path
         .extension()
@@ -339,6 +340,7 @@ fn windows_extension_rank(path: &Path) -> u8 {
 
 /// Windows에서 `.exe`와 `.cmd`는 모두 정식 실행 파일입니다.
 /// `.cmd`는 npm/공식 설치 스크립트이며 `cmd.exe`로 실행합니다.
+#[cfg_attr(not(windows), allow(dead_code))]
 pub fn is_preferred_windows_binary(agent: AgentKind, path: &Path) -> bool {
     let _ = agent;
     matches!(windows_extension_rank(path), 0 | 1)
@@ -456,7 +458,7 @@ fn visit_agent_binaries(agent: AgentKind, mut visit: impl FnMut(PathBuf) -> bool
         }
     };
 
-    if let Some(value) = env::var_os("PATH") {
+    if let Some(value) = crate::process_util::process_path() {
         for dir in env::split_paths(&value) {
             for name in agent.binary_names() {
                 for variant in executable_variants(name) {
@@ -678,6 +680,16 @@ where
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    // Subscription CLIs must not silently switch to metered API billing.
+    match request.agent {
+        AgentKind::Claude => {
+            child_cmd.env_remove("ANTHROPIC_API_KEY");
+        }
+        AgentKind::Codex => {
+            child_cmd.env_remove("OPENAI_API_KEY");
+        }
+        _ => {}
+    }
     if request.agent == AgentKind::Claude {
         if env::var_os("HOME").is_none() {
             if let Some(profile) = env::var_os("USERPROFILE") {
@@ -813,6 +825,7 @@ mod tests {
         ));
     }
 
+    #[cfg(windows)]
     #[test]
     fn classifies_cli_and_desktop_app() {
         assert_eq!(

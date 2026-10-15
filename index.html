@@ -97,9 +97,9 @@
 
     <div id="usage-dashboard-panel" hidden>
       <div class="usage-dashboard-header">
-        <div class="usage-dashboard-title">사용량</div>
+        <div class="usage-dashboard-title">오늘 사용량</div>
         <button type="button" id="usage-dashboard-login">로그인</button>
-        <button type="button" id="usage-dashboard-web">자세한 창</button>
+        <button type="button" id="usage-dashboard-web">자세히 (웹)</button>
         <button type="button" id="usage-dashboard-refresh">새로고침</button>
         <button type="button" id="usage-dashboard-close" aria-label="사용량 닫기">×</button>
       </div>
@@ -161,12 +161,13 @@
         +
       </button>
 
-      <input
+      <textarea
         id="chat-input"
-        type="text"
+        rows="1"
         autocomplete="off"
-        placeholder="무엇이든 물어보세요"
-      />
+        spellcheck="false"
+        placeholder="무엇이든 물어보세요 (Shift+Enter 줄바꿈)"
+      ></textarea>
 
       <button type="submit">
         전송

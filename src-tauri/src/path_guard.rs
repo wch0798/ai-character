@@ -209,6 +209,7 @@ mod tests {
 
     #[test]
     fn blocks_windows_system_paths() {
+        #[cfg(windows)]
         assert!(is_blocked_system_path(Path::new(r"C:\Windows\System32\config\SAM")));
         assert!(is_blocked_system_path(Path::new("/etc/passwd")));
         assert!(is_secret_filename(Path::new("/tmp/keys.env")));

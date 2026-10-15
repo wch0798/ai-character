@@ -5,12 +5,14 @@ export type OrchestrationCliTarget =
   | "antigravity";
 
 export type WebAgentTarget = "claude_web" | "chatgpt_web" | "gemini_web";
-export type AutomaticApiTarget = "gemini_api" | "openai_api";
+export type AutomaticApiTarget = "gemini_api" | "openrouter_api" | "free_pool_api" | "openai_api";
 export type WebAvailability = "unknown" | "available" | "limited";
 
 export type OrchestrationTarget = OrchestrationCliTarget | WebAgentTarget | AutomaticApiTarget;
 
 export type OrchestrationTaskMode = "analyze" | "modify";
+
+export type TaskRole = "planner" | "coder" | "reviewer" | "tester" | "documenter";
 
 export type OrchestrationTaskSpec = {
   id: string;
@@ -19,6 +21,7 @@ export type OrchestrationTaskSpec = {
   prompt: string;
   dependsOn: string[];
   mode: "analyze" | "modify";
+  role?: TaskRole;
 };
 
 export type OrchestrationPlan = {
@@ -42,6 +45,10 @@ export type CradleTaskState = OrchestrationTaskSpec & {
   fallbackFrom: OrchestrationTarget | null;
   fallbackReason: string | null;
   handoffPrompt: string | null;
+  codeContext?: string;
+  contextFingerprint?: string;
+  testSummary?: string;
+  testLog?: string;
 };
 
 export type ManagerWebStage = "planning" | "synthesis";

@@ -78,8 +78,12 @@ def main() -> None:
             min_width = window.get("minWidth", 0)
             pane_width = int(pane_match.group(1)) if pane_match else 0
             check(
-                isinstance(width, (int, float)) and width >= pane_width + 400,
-                "main window widened while character lane stays fixed",
+                isinstance(width, (int, float))
+                and width >= pane_width
+                and min_width <= pane_width
+                and "minChatAppWindowSize" in main_ts
+                and "setSize(" in main_ts,
+                "window starts at the character lane and widens for chat at runtime",
                 failures,
             )
             check(

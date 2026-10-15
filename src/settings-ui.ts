@@ -1,4 +1,11 @@
 import { getAutomaticProviderStatuses } from "./automatic-provider";
+import { createApiKeysSection } from "./api-keys-ui";
+import { createClaudeIntegrationSection, updateClaudePlugins } from "./claude-integration-ui";
+import { createPolicySection } from "./policy-ui";
+import { createUpdateSection } from "./update-ui";
+import { openSetupWeb } from "./setup-web-client";
+import { createScheduledJobsSection } from "./scheduled-jobs-ui";
+import { createAlertsSection } from "./alerts-ui";
 import {
   chooseAgentExecutable,
   chooseProjectDirectory,
@@ -44,7 +51,7 @@ import {
   exportAllChatsJson,
   importChatsFromJson,
 } from "./chat-backup";
-import { safeConfirm } from "./safe-confirm";
+import { confirmOnSecondClick, withBusy } from "./settings-controls";
 import {
   BOOTH_FREE_ORIGINAL_PICKS,
   dedupeUserLive2DModels,
@@ -183,8 +190,21 @@ export function initializeSettingsUi(): void {
   const openKeysButton = makeButton("키 파일", "ai-settings-ghost");
   const refreshReadyButton = makeButton("다시 확인", "ai-settings-ghost");
   easyActions.append(openKeysButton, installRuntimesButton, refreshReadyButton);
+  const setupWebButton = makeButton("웹에서 쉽게 설정하기", "ai-settings-action ai-settings-primary");
+  setupWebButton.title = "브라우저에서 처음 설정을 단계별로 진행합니다. 키·폴더·알림·업데이트를 한곳에서 저장합니다.";
+  setupWebButton.addEventListener("click", () => {
+    void withBusy([setupWebButton], async () => {
+      try {
+        await openSetupWeb();
+        setMessage("브라우저에서 설정 페이지를 열었습니다.");
+      } catch (error) {
+        setMessage(`설정 페이지 열기 실패: ${errorText(error)}`);
+      }
+    });
+  });
   easySection.append(
     easyTitle,
+    setupWebButton,
     easyStatus,
     easyChecklist,
     easyNext,
@@ -493,12 +513,6 @@ export function initializeSettingsUi(): void {
   checkpointEmpty.className = "ai-checkpoint-history-empty";
   checkpointEmpty.textContent = "체크포인트가 없습니다.";
   checkpointList.append(checkpointEmpty);
-  checkpointSection.append(checkpointHeader, checkpointHelp, checkpointList);
-
-  const safetySection = document.createElement("section");
-  safetySection.className = "ai-settings-section";
-  const safetyTitle = document.createElement("h3");
-  safetyTitle.textContent = "안전";
   const safetyList = document.createElement("div");
   safetyList.className = "ai-settings-safety-list";
   for (const text of [
@@ -511,7 +525,7 @@ export function initializeSettingsUi(): void {
     item.textContent = `✓ ${text}`;
     safetyList.append(item);
   }
-  safetySection.append(safetyTitle, safetyList);
+  checkpointSection.append(checkpointHeader, checkpointHelp, safetyList, checkpointList);
 
   const backupSection = document.createElement("section");
   backupSection.className = "ai-settings-section";
@@ -605,10 +619,18 @@ export function initializeSettingsUi(): void {
     return fold;
   };
 
+  const setMessage = (text: string): void => {
+    message.textContent = text;
+  };
+
+  const apiKeys = createApiKeysSection(makeButton, setMessage, () => {
+    void refreshFreeAutoReadiness();
+    void refreshLoginStatus();
+  });
   const basicPane = document.createElement("div");
   basicPane.className = "ai-settings-pane";
   basicPane.dataset.pane = "basic";
-  basicPane.append(easySection, projectSection);
+  basicPane.append(easySection, apiKeys.section, projectSection);
 
   const accountsPane = document.createElement("div");
   accountsPane.className = "ai-settings-pane";
@@ -616,11 +638,59 @@ export function initializeSettingsUi(): void {
   accountsPane.hidden = true;
   accountsPane.append(accountsSection);
 
-  const pluginPane = document.createElement("div");
-  pluginPane.className = "ai-settings-pane";
-  pluginPane.dataset.pane = "plugins";
-  pluginPane.hidden = true;
-  pluginPane.append(pluginSection);
+  const updatePluginsButton = makeButton("플러그인 업데이트", "ai-settings-ghost");
+  updatePluginsButton.addEventListener("click", () => {
+    void (async () => {
+      updatePluginsButton.disabled = true;
+      setMessage("Claude 플러그인을 업데이트하는 중…");
+      try {
+        setMessage(await updateClaudePlugins());
+        await refreshClaudePlugins();
+      } catch (error) {
+        setMessage(`플러그인 업데이트 실패: ${errorText(error)}`);
+      } finally {
+        updatePluginsButton.disabled = false;
+      }
+    })();
+  });
+  pluginBrowseActions.append(updatePluginsButton);
+
+  const claudeIntegration = createClaudeIntegrationSection(makeButton, setMessage);
+  const claudePane = document.createElement("div");
+  claudePane.className = "ai-settings-pane";
+  claudePane.dataset.pane = "claude";
+  claudePane.hidden = true;
+  claudePane.append(claudeIntegration.section, pluginSection);
+
+  const updateSection = createUpdateSection(makeButton, setMessage);
+  const signingSection = document.createElement("section");
+  signingSection.className = "ai-settings-section";
+  const signingTitle = document.createElement("h3");
+  signingTitle.textContent = "앱 자동 업데이트 서명";
+  const signingHelp = document.createElement("div");
+  signingHelp.className = "ai-settings-help";
+  signingHelp.textContent = "서명 키를 GitHub에 등록하는 순서를 브라우저에서 단계별로 안내합니다.";
+  const signingButton = makeButton("웹에서 서명 설정 열기", "ai-settings-action");
+  signingButton.addEventListener("click", () => {
+    void withBusy([signingButton], async () => {
+      try {
+        await openSetupWeb("updates");
+        setMessage("브라우저에서 자동 업데이트 설정을 열었습니다.");
+      } catch (error) {
+        setMessage(`설정 페이지 열기 실패: ${errorText(error)}`);
+      }
+    });
+  });
+  signingSection.append(signingTitle, signingHelp, signingButton);
+  const scheduledJobs = createScheduledJobsSection(makeButton, setMessage);
+  const alertsSection = createAlertsSection(setMessage);
+  const updatesPane = document.createElement("div");
+  updatesPane.className = "ai-settings-pane";
+  updatesPane.dataset.pane = "updates";
+  updatesPane.hidden = true;
+  updatesPane.append(updateSection.section, signingSection, scheduledJobs.section, alertsSection.section);
+
+  const policySection = createPolicySection(makeButton, setMessage);
 
   const characterPane = document.createElement("div");
   characterPane.className = "ai-settings-pane";
@@ -634,29 +704,31 @@ export function initializeSettingsUi(): void {
   advancedPane.hidden = true;
   advancedPane.append(
     simpleSection,
+    policySection.section,
     agentsSection,
     foldCard(runtimeSection),
     foldCard(environmentSection),
     foldCard(runHistorySection),
     foldCard(checkpointSection),
-    foldCard(backupSection),
-    foldCard(safetySection)
+    foldCard(backupSection)
   );
 
   const tabDefs: Array<{
-    id: "basic" | "accounts" | "plugins" | "character" | "advanced";
+    id: "basic" | "accounts" | "claude" | "updates" | "character" | "advanced";
     label: string;
   }> = [
     { id: "basic", label: "시작" },
     { id: "accounts", label: "로그인" },
-    { id: "plugins", label: "플러그인" },
+    { id: "claude", label: "Claude" },
+    { id: "updates", label: "자동화" },
     { id: "character", label: "캐릭터" },
     { id: "advanced", label: "고급" },
   ];
   const panes = {
     basic: basicPane,
     accounts: accountsPane,
-    plugins: pluginPane,
+    claude: claudePane,
+    updates: updatesPane,
     character: characterPane,
     advanced: advancedPane,
   } as const;
@@ -713,7 +785,8 @@ export function initializeSettingsUi(): void {
     message,
     basicPane,
     accountsPane,
-    pluginPane,
+    claudePane,
+    updatesPane,
     characterPane,
     advancedPane
   );
@@ -1107,11 +1180,8 @@ export function initializeSettingsUi(): void {
       info.append(title, meta, id);
 
       const restore = makeButton("복원", "ai-settings-action");
-      restore.addEventListener("click", async () => {
-        const ok = safeConfirm(
-          `체크포인트 ${record.id} 상태로 원본 프로젝트를 복원할까요?\n\n복원 직전 현재 원본은 새 안전 체크포인트로 저장됩니다.`
-        );
-        if (!ok) return;
+      restore.title = "원본 프로젝트를 이 상태로 되돌립니다. 복원 직전 상태는 새 안전 체크포인트로 저장됩니다. 한 번 더 누르면 실행합니다.";
+      confirmOnSecondClick(restore, "한 번 더 누르면 복원", async () => {
         restore.disabled = true;
         message.textContent = "체크포인트 복원 중…";
         try {
@@ -1517,7 +1587,14 @@ export function initializeSettingsUi(): void {
     try {
       const statuses = await getAutomaticProviderStatuses();
       providerStatusBox.textContent = statuses.map((provider) => {
-        const label = provider.provider === "gemini_api" ? "Gemini API" : "OpenAI API";
+        const label =
+          provider.provider === "gemini_api"
+            ? "Gemini API"
+            : provider.provider === "openrouter_api"
+              ? "OpenRouter 무료"
+              : provider.provider === "free_pool_api"
+                ? "추가 무료 AI"
+                : "OpenAI API (유료·승인 필요)";
         const state = provider.available ? `구성됨 · ${provider.model}` : (provider.reason ?? "사용 불가");
         return `${label}: ${state}`;
       }).join(" / ");
@@ -1535,6 +1612,7 @@ export function initializeSettingsUi(): void {
     const rows: Array<[string, boolean]> = [
       ["CRADLE", readiness.cradleEnabled],
       ["Gemini", readiness.geminiApiConfigured && readiness.geminiApiEnabled],
+      ["OpenRouter", readiness.openrouterApiConfigured],
       ["검색", readiness.jinaApiConfigured],
       ["Claude", readiness.claudeCliReady],
     ];
@@ -1699,6 +1777,7 @@ export function initializeSettingsUi(): void {
             refreshProject(),
             ensurePreferences(),
             refreshFreeAutoReadiness(),
+            apiKeys.refresh(),
           ]);
           break;
         case "accounts":
@@ -1708,8 +1787,11 @@ export function initializeSettingsUi(): void {
             refreshLoginStatus(),
           ]);
           break;
-        case "plugins":
-          await refreshClaudePlugins();
+        case "claude":
+          await Promise.all([claudeIntegration.refresh(), refreshClaudePlugins()]);
+          break;
+        case "updates":
+          await Promise.all([updateSection.refresh(), scheduledJobs.refresh(), alertsSection.refresh()]);
           break;
         case "character":
           await renderUserModels();
@@ -1722,11 +1804,13 @@ export function initializeSettingsUi(): void {
             refreshAgents(),
             refreshRunHistory(),
             refreshCheckpoints(),
+            policySection.refresh(),
           ]);
           break;
       }
-    } catch {
+    } catch (error) {
       tabFreshAt.delete(tab);
+      message.textContent = `일부 설정을 불러오지 못했습니다. 탭을 다시 열면 재시도합니다: ${errorText(error)}`;
     }
   }
 
@@ -2084,14 +2168,8 @@ export function initializeSettingsUi(): void {
       });
   });
 
-  importReplaceButton.addEventListener("click", () => {
-    if (
-      !safeConfirm(
-        "기존 대화를 모두 지우고 백업으로 교체할까요?"
-      )
-    ) {
-      return;
-    }
+  importReplaceButton.title = "기존 대화를 모두 지우고 백업으로 바꿉니다. 한 번 더 누르면 실행합니다.";
+  confirmOnSecondClick(importReplaceButton, "한 번 더 누르면 전체 교체", () => {
     void importChatsFromJson(chatStore, "replace")
       .then((result) => {
         message.textContent = `교체 완료: ${result.imported}개 대화 (앱을 다시 열면 목록이 갱신됩니다)`;
@@ -2126,12 +2204,12 @@ export function initializeSettingsUi(): void {
         remove.textContent = "×";
         remove.title = "삭제";
         remove.setAttribute("aria-label", `${model.name} 삭제`);
+        remove.title = "한 번 더 누르면 삭제합니다";
         remove.addEventListener("click", (event) => {
           event.preventDefault();
           event.stopPropagation();
-          if (!safeConfirm(`"${model.name}" 모델을 삭제할까요?`)) {
-            return;
-          }
+        });
+        confirmOnSecondClick(remove, "삭제?", () => {
           void removeUserLive2DModel(model.folder)
             .then(() => {
               if (
@@ -2176,14 +2254,8 @@ export function initializeSettingsUi(): void {
       });
   });
 
-  dedupeModelsButton.addEventListener("click", () => {
-    if (
-      !safeConfirm(
-        "내용이 같은 내 모델을 찾아 하나만 남기고 나머지를 삭제할까요?"
-      )
-    ) {
-      return;
-    }
+  dedupeModelsButton.title = "내용이 같은 내 모델을 하나만 남기고 지웁니다. 한 번 더 누르면 실행합니다.";
+  confirmOnSecondClick(dedupeModelsButton, "한 번 더 누르면 중복 삭제", () => {
     void dedupeUserLive2DModels()
       .then((result) => {
         message.textContent =

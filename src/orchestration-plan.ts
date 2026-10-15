@@ -3,6 +3,7 @@ import type {
   OrchestrationTarget,
   OrchestrationTaskSpec,
   SynthesisEnvelope,
+  TaskRole,
 } from "./orchestration-types";
 
 export const MAX_ORCHESTRATION_TASKS = 8;
@@ -21,8 +22,12 @@ const TARGETS = new Set<OrchestrationTarget>([
   "chatgpt_web",
   "gemini_web",
   "gemini_api",
+  "openrouter_api",
+  "free_pool_api",
   "openai_api",
 ]);
+
+const ROLES = new Set<TaskRole>(["planner", "coder", "reviewer", "tester", "documenter"]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -98,13 +103,19 @@ function parseTask(raw: unknown, index: number): OrchestrationTaskSpec {
     return dep;
   });
 
+  const role = raw.role ?? (mode === "modify" ? "coder" : "reviewer");
+  if (typeof role !== "string" || !ROLES.has(role as TaskRole)) {
+    throw new Error(`task ${id} role must be one of ${[...ROLES].join(", ")}`);
+  }
+
   return {
     id,
     title: boundedText(raw.title, `task ${id} title`, MAX_TITLE_CHARS),
     target: target as OrchestrationTarget,
     prompt: boundedText(raw.prompt, `task ${id} prompt`, MAX_PROMPT_CHARS),
     dependsOn,
-    mode,
+    mode: role === "coder" ? "modify" : role === "tester" || role === "planner" ? "analyze" : mode,
+    role: role as TaskRole,
   };
 }
 

@@ -29,7 +29,13 @@ check("backend sensitive acknowledgement enforced", "sensitive_acknowledged" in 
 check("sensitive file scanner present", "pub fn sensitive_project_files" in workspace and '".env"' in workspace and '".pem"' in workspace)
 check("chat uses configured Agent", "preferences.defaultAgent" in client)
 check("chat uses configured timeout", "preferences.timeoutSeconds" in client)
-check("chat does not block on sensitive files", "confirmSensitiveAgentAccess" in client and "Never block project work" in client and "sensitiveAcknowledged" in client)
+check(
+    "chat does not block on sensitive files",
+    "confirmSensitiveAgentAccess" in client
+    and "return safeConfirm(" in client
+    and "return true;" in read("src/safe-confirm.ts")
+    and "sensitiveAcknowledged" in client,
+)
 check("settings UI exposes default Agent", "기본 Agent" in ui and "defaultAgentSelect" in ui)
 check("settings UI exposes timeout", "Timeout (초)" in ui and "timeoutInput" in ui)
 check("settings UI exposes sensitive warning", "민감 파일 접근 전 경고" in ui and "sensitiveCheckbox" in ui)

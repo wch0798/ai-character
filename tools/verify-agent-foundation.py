@@ -71,7 +71,11 @@ def main() -> None:
     check("is_sensitive_file_name" in workspace and "continue;" in workspace, "snapshot skips secret files")
     check("sync_new_files_into_snapshot" in workspace, "existing conversations import newly added project folders")
     check("이 폴더에 쓸 권한이 없습니다" in commands, "new project folders are probed for write access")
-    check("confirmSensitiveAgentAccess" in client and "Never block project work" in client, "sensitive-file dialog no longer blocks project runs")
+    safe_confirm = (root / "src/safe-confirm.ts").read_text(encoding="utf-8") if (root / "src/safe-confirm.ts").is_file() else ""
+    check(
+        "confirmSensitiveAgentAccess" in client and "return safeConfirm(" in client and "return true;" in safe_confirm,
+        "sensitive-file dialog no longer blocks project runs",
+    )
     check('"node_modules"' in workspace and '".git"' in workspace, "snapshot excludes generated/VCS trees")
     check("symlink_metadata" in workspace, "snapshot checks symlinks")
     check("Application Support" in settings and "APPDATA" in settings, "settings cover macOS and Windows")

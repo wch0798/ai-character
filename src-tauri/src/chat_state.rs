@@ -5,7 +5,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 const STATE_KEY: &str = "ui.local_storage.v1";
 
-fn app_support_dir() -> Result<PathBuf, String> {
+pub(crate) fn app_support_dir() -> Result<PathBuf, String> {
     #[cfg(target_os = "macos")]
     {
         let home = std::env::var_os("HOME").ok_or("HOME 환경 변수가 없습니다.")?;
@@ -31,7 +31,7 @@ fn app_support_dir() -> Result<PathBuf, String> {
     }
 }
 
-fn state_db_path() -> Result<PathBuf, String> {
+pub(crate) fn state_db_path() -> Result<PathBuf, String> {
     // UI 상태는 프로젝트(외장 디스크)가 아니라 앱 지원 폴더에 둡니다.
     // 외장 볼륨 TCC 권한 대화상자에 막혀 Live2D가 시작되지 않는 문제를 피합니다.
     Ok(app_support_dir()?.join("state.db"))

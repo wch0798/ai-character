@@ -53,7 +53,7 @@ fn common_git_dirs() -> Vec<PathBuf> {
 }
 
 pub fn git_binary() -> Option<PathBuf> {
-    if let Some(value) = env::var_os("PATH") {
+    if let Some(value) = crate::process_util::process_path() {
         for dir in env::split_paths(&value) {
             for name in executable_variants("git") {
                 let candidate = dir.join(name);
@@ -94,7 +94,7 @@ fn git_version_for(binary: &Path) -> Option<String> {
     (!text.is_empty()).then_some(text)
 }
 
-fn run_git(binary: &Path, workspace: &Path, args: &[&str]) -> Result<String, String> {
+pub(crate) fn run_git(binary: &Path, workspace: &Path, args: &[&str]) -> Result<String, String> {
     let mut command = Command::new(binary);
     #[cfg(windows)]
     {

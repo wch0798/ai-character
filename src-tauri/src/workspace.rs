@@ -73,11 +73,11 @@ pub fn ensure_conversation_workspace(
     Ok(root)
 }
 
-fn should_exclude(name: &str) -> bool {
+pub(crate) fn should_exclude(name: &str) -> bool {
     PROJECT_EXCLUDES.iter().any(|excluded| *excluded == name)
 }
 
-fn is_sensitive_file_name(name: &str) -> bool {
+pub(crate) fn is_sensitive_file_name(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
     if lower == ".env"
         || lower == "keys.env"

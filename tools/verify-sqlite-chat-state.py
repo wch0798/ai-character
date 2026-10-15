@@ -34,11 +34,19 @@ def main() -> None:
         check(name in lib, f"Tauri handler exposes {name}", failures)
     if rust_path.is_file():
         rust = rust_path.read_text(encoding="utf-8")
-        check('join(".ai-character").join("state.db")' in rust, "state.db is project-local", failures)
+        check(
+            'app_support_dir()?.join("state.db")' in rust,
+            "state.db lives in the app support folder (no external-disk permission prompt)",
+            failures,
+        )
         check("CREATE TABLE IF NOT EXISTS app_state" in rust, "SQLite schema initialization exists", failures)
     check('import { initializeSqliteStateMirror } from "./chat-state-client";' in main_ts, "frontend imports SQLite state mirror", failures)
-    check("await initializeSqliteStateMirror();" in main_ts, "frontend restores state before app setup", failures)
-    check(main_ts.count("await initializeSqliteStateMirror();") == 1, "SQLite restore wired exactly once", failures)
+    check(
+        "void initializeSqliteStateMirror();" in main_ts,
+        "frontend restores state in the background so Live2D never waits on disk access",
+        failures,
+    )
+    check(main_ts.count("initializeSqliteStateMirror();") == 1, "SQLite restore wired exactly once", failures)
 
     if failures:
         print(f"\nRESULT: FAIL ({len(failures)} checks failed)")

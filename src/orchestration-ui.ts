@@ -16,6 +16,7 @@ import type {
   CradleTaskState,
   ManagerWebHandoff,
   OrchestrationTarget,
+  TaskRole,
   WebAgentTarget,
 } from "./orchestration-types";
 import {
@@ -37,6 +38,8 @@ const TARGET_LABELS: Record<OrchestrationTarget, string> = {
   chatgpt_web: "ChatGPT Web",
   gemini_web: "Gemini Web",
   gemini_api: "Gemini API (자동)",
+  openrouter_api: "OpenRouter 무료 모델 (자동)",
+  free_pool_api: "추가 무료 AI (Groq·NVIDIA·GLM 등)",
   openai_api: "OpenAI API (자동·옵션)",
 };
 
@@ -49,7 +52,17 @@ const FRIENDLY_TARGETS: Record<OrchestrationTarget, string> = {
   chatgpt_web: "ChatGPT",
   gemini_web: "Gemini",
   gemini_api: "자동 분석",
+  openrouter_api: "자동 분석",
+  free_pool_api: "자동 분석",
   openai_api: "자동 분석",
+};
+
+const ROLE_LABELS: Record<TaskRole, string> = {
+  planner: "계획",
+  coder: "코딩",
+  reviewer: "검토",
+  tester: "테스트",
+  documenter: "문서",
 };
 
 const STATUS_LABELS: Record<CradleTaskState["status"], string> = {
@@ -85,7 +98,12 @@ function jsonFileButton(onText: (text: string) => void): HTMLButtonElement {
       void file.text().then((text) => {
         onText(text);
       }).catch((error) => {
-        window.alert(error instanceof Error ? error.message : String(error));
+        element.textContent = "파일을 읽지 못했습니다";
+        element.title = error instanceof Error ? error.message : String(error);
+        window.setTimeout(() => {
+          element.textContent = "JSON 파일 열기";
+          element.title = "";
+        }, 3000);
       });
     });
     input.click();
@@ -586,7 +604,8 @@ export function initializeCradleOrchestrationUi(): void {
     const label = document.createElement("strong");
     label.textContent = task.title;
     const meta = document.createElement("span");
-    meta.textContent = `${FRIENDLY_TARGETS[task.target]} · ${STATUS_LABELS[task.status]}`;
+    const role = task.role ? `${ROLE_LABELS[task.role]} · ` : "";
+    meta.textContent = `${role}${FRIENDLY_TARGETS[task.target]} · ${STATUS_LABELS[task.status]}`;
     taskHeader.append(label, meta);
     card.append(taskHeader);
 

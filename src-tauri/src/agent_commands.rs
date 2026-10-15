@@ -37,7 +37,7 @@ pub struct AppPreferences {
     cradle_enabled: bool,
     auto_web_search: bool,
     gemini_api_enabled: bool,
-    allow_paid_openai_api: bool,
+    allow_paid_open_ai_api: bool,
     close_web_account_after_handoff: bool,
     close_web_account_when_cradle_done: bool,
     timeout_seconds: u64,
@@ -93,7 +93,7 @@ fn preferences_from_settings(settings: &crate::settings::AppSettings) -> AppPref
         cradle_enabled: settings.cradle_enabled,
         auto_web_search: settings.auto_web_search,
         gemini_api_enabled: settings.gemini_api_enabled,
-        allow_paid_openai_api: settings.allow_paid_openai_api,
+        allow_paid_open_ai_api: settings.allow_paid_openai_api,
         close_web_account_after_handoff: settings.close_web_account_after_handoff,
         close_web_account_when_cradle_done: settings.close_web_account_when_cradle_done,
         timeout_seconds: settings.timeout_seconds,
@@ -150,6 +150,18 @@ fn resolve_working_dir(
         Some(path) if !path.trim().is_empty() => {
             let candidate = PathBuf::from(path.trim());
             assert_agent_path_allowed(&configured, &candidate)?;
+            let canonical = canonical_existing_dir(&candidate)?;
+            if let Some(conversation_id) = conversation_id.map(str::trim).filter(|value| !value.is_empty()) {
+                let expected_parent = canonical_existing_dir(
+                    &crate::workspace::ensure_conversation_workspace(&configured, conversation_id)?,
+                )?
+                .join("worktrees");
+                if crate::coder_worktree::is_conversation_worktree(&canonical)
+                    && canonical.parent() == Some(expected_parent.as_path())
+                {
+                    return Ok(canonical);
+                }
+            }
             // 명시 경로가 conversation snapshot이면 그대로 쓰고,
             // 그 외에는 설정 프로젝트만 신뢰한다.
             let canonical = canonical_existing_dir(&candidate)?;
@@ -364,7 +376,7 @@ pub fn set_app_preferences(
     cradle_enabled: bool,
     auto_web_search: bool,
     gemini_api_enabled: bool,
-    allow_paid_openai_api: bool,
+    allow_paid_open_ai_api: bool,
     close_web_account_after_handoff: bool,
     close_web_account_when_cradle_done: bool,
     timeout_seconds: u64,
@@ -381,7 +393,7 @@ pub fn set_app_preferences(
     settings.cradle_enabled = cradle_enabled;
     settings.auto_web_search = auto_web_search;
     settings.gemini_api_enabled = gemini_api_enabled;
-    settings.allow_paid_openai_api = allow_paid_openai_api;
+    settings.allow_paid_openai_api = allow_paid_open_ai_api;
     settings.close_web_account_after_handoff = close_web_account_after_handoff;
     settings.close_web_account_when_cradle_done = close_web_account_when_cradle_done;
     settings.timeout_seconds = timeout_seconds;
@@ -393,6 +405,49 @@ pub fn set_app_preferences(
     Ok(preferences_from_settings(&settings))
 }
 
+
+/// Partial update used by the web setup page; omitted fields keep their saved value.
+#[derive(Clone, Debug, Default, serde::Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct BasicPreferencesPatch {
+    pub default_agent: Option<String>,
+    pub cradle_enabled: Option<bool>,
+    pub auto_web_search: Option<bool>,
+    pub gemini_api_enabled: Option<bool>,
+    pub allow_paid_open_ai_api: Option<bool>,
+    pub close_web_account_after_handoff: Option<bool>,
+    pub close_web_account_when_cradle_done: Option<bool>,
+    pub timeout_seconds: Option<u64>,
+    pub warn_sensitive_files: Option<bool>,
+}
+
+pub(crate) fn apply_basic_preferences(patch: BasicPreferencesPatch) -> Result<AppPreferences, String> {
+    let mut settings = load_settings()?;
+    if let Some(agent) = patch.default_agent.as_deref() {
+        settings.default_agent = AgentKind::parse(agent)?;
+    }
+    if let Some(seconds) = patch.timeout_seconds {
+        if !(10..=3600).contains(&seconds) {
+            return Err("Timeout은 10초에서 3600초 사이여야 합니다.".to_string());
+        }
+        settings.timeout_seconds = seconds;
+    }
+    for (target, value) in [
+        (&mut settings.cradle_enabled, patch.cradle_enabled),
+        (&mut settings.auto_web_search, patch.auto_web_search),
+        (&mut settings.gemini_api_enabled, patch.gemini_api_enabled),
+        (&mut settings.allow_paid_openai_api, patch.allow_paid_open_ai_api),
+        (&mut settings.close_web_account_after_handoff, patch.close_web_account_after_handoff),
+        (&mut settings.close_web_account_when_cradle_done, patch.close_web_account_when_cradle_done),
+        (&mut settings.warn_sensitive_files, patch.warn_sensitive_files),
+    ] {
+        if let Some(value) = value {
+            *target = value;
+        }
+    }
+    save_settings(&settings)?;
+    Ok(preferences_from_settings(&settings))
+}
 
 #[tauri::command]
 pub fn get_cradle_environment_status(
@@ -470,9 +525,38 @@ pub fn open_keys_env_file(app: tauri::AppHandle) -> Result<String, String> {
 }
 
 #[tauri::command]
-pub async fn run_automatic_provider(provider: String, prompt: String) -> Result<String, String> {
+pub async fn run_automatic_provider(
+    app: tauri::AppHandle,
+    provider: String,
+    prompt: String,
+    session_id: Option<String>,
+    task_id: Option<String>,
+    role: Option<String>,
+    cache_fingerprint: Option<String>,
+    stream_id: Option<String>,
+) -> Result<String, String> {
     let settings = load_settings()?;
-    provider_router::run_provider(&provider, &prompt, &settings).await
+    let stream = stream_id.filter(|id| !id.trim().is_empty()).map(|id| {
+        let sink: provider_router::StreamSink = std::sync::Arc::new(move |event| {
+            let (reset, text) = match event {
+                provider_router::StreamEvent::Reset => (true, ""),
+                provider_router::StreamEvent::Delta(text) => (false, text),
+            };
+            let _ = app.emit(
+                "provider-stream",
+                serde_json::json!({ "streamId": id, "reset": reset, "text": text }),
+            );
+        });
+        sink
+    });
+    let context = provider_router::CallContext {
+        session_id,
+        task_id,
+        role,
+        cache_fingerprint,
+        stream,
+    };
+    provider_router::run_provider_with_context(&provider, &prompt, &settings, &context).await
 }
 
 #[tauri::command]
@@ -609,7 +693,8 @@ where
                 .clamp(10, 3600),
         );
 
-        let managed_workspace = is_conversation_workspace(&working_dir);
+        let coder_worktree = crate::coder_worktree::is_conversation_worktree(&working_dir);
+        let managed_workspace = is_conversation_workspace(&working_dir) || coder_worktree;
         if managed_workspace {
             if let Err(error) = write_agent_context_file(
                 &working_dir,
@@ -617,11 +702,13 @@ where
             ) {
                 eprintln!("Agent workspace context 기록 경고: {error}");
             }
-            if let Err(error) = prepare_workspace_git(&working_dir) {
-                if agent == AgentKind::Codex {
-                    return Err(error);
+            if !coder_worktree {
+                if let Err(error) = prepare_workspace_git(&working_dir) {
+                    if agent == AgentKind::Codex {
+                        return Err(error);
+                    }
+                    eprintln!("CRADLE workspace Git 준비 경고: {error}");
                 }
-                eprintln!("CRADLE workspace Git 준비 경고: {error}");
             }
         }
 
@@ -635,7 +722,26 @@ where
                 &extra_args,
                 &claude_plugin_dir_args(&configured_project, &working_dir),
             );
+            if managed_workspace {
+                match crate::claude_integration::prepare_claude_workspace(&working_dir) {
+                    Ok(integration_args) => {
+                        let has_format = extra_args.iter().any(|arg| arg == "--output-format");
+                        let mut iter = integration_args.into_iter();
+                        while let Some(arg) = iter.next() {
+                            let value = iter.next().unwrap_or_default();
+                            if arg == "--output-format" && has_format {
+                                continue;
+                            }
+                            extra_args.push(arg);
+                            extra_args.push(value);
+                        }
+                    }
+                    Err(error) => eprintln!("Claude 통합 준비 경고: {error}"),
+                }
+            }
         }
+        let claude_json_mode = agent == AgentKind::Claude
+            && extra_args.windows(2).any(|pair| pair[0] == "--output-format" && pair[1] == "json");
         if managed_workspace {
             extra_args = merge_extra_args(
                 &extra_args,
@@ -654,7 +760,24 @@ where
             timeout,
         };
 
-        let first_result = run_request_streaming(&request, &mut on_chunk);
+        let first_result = run_request_streaming(&request, |chunk: AgentStreamChunk| {
+            if !(claude_json_mode && chunk.kind == crate::agent_core::AgentStreamKind::Stdout) {
+                on_chunk(chunk);
+            }
+        });
+        if claude_json_mode {
+            let raw = first_result?;
+            let Some(parsed) = crate::claude_integration::parse_claude_json(&raw) else {
+                on_chunk(AgentStreamChunk { kind: crate::agent_core::AgentStreamKind::Stdout, text: raw.clone() });
+                return Ok(raw);
+            };
+            crate::claude_integration::record_claude_usage(&parsed, conversation_id.as_deref(), Some(&history_task_id));
+            if parsed.is_error {
+                return Err(format!("Claude 오류: {}", parsed.text));
+            }
+            on_chunk(AgentStreamChunk { kind: crate::agent_core::AgentStreamKind::Stdout, text: parsed.text.clone() });
+            return Ok(parsed.text);
+        }
         if agent == AgentKind::Codex
             && managed_workspace
             && first_result
@@ -763,10 +886,42 @@ pub fn get_workspace_diff(conversation_id: String, path: String) -> Result<Strin
     workspace_changes::workspace_file_diff(&project_dir, conversation_id.trim(), path.trim())
 }
 
+const BULK_DELETE_THRESHOLD: usize = 5;
+
 #[tauri::command]
-pub fn apply_workspace_changes(conversation_id: String) -> Result<ApplyWorkspaceResult, String> {
-    let project_dir = configured_project_dir()?;
-    workspace_changes::apply_workspace_changes(&project_dir, conversation_id.trim())
+pub async fn apply_workspace_changes(
+    app: tauri::AppHandle,
+    conversation_id: String,
+) -> Result<ApplyWorkspaceResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let project_dir = configured_project_dir()?;
+        let conversation_id = conversation_id.trim();
+        let deleted_paths = |project_dir: &std::path::Path| -> Result<Vec<String>, String> {
+            Ok(workspace_changes::list_workspace_changes(project_dir, conversation_id)?
+                .into_iter()
+                .filter(|change| change.kind == workspace_changes::WorkspaceChangeKind::Deleted)
+                .map(|change| change.path)
+                .collect())
+        };
+        let deleted = deleted_paths(&project_dir)?;
+        if deleted.len() >= BULK_DELETE_THRESHOLD {
+            let preview = deleted.iter().take(8).cloned().collect::<Vec<_>>().join("\n");
+            let detail = format!(
+                "원본 프로젝트에서 파일 {}개를 삭제합니다.\n{preview}{}",
+                deleted.len(),
+                if deleted.len() > 8 { "\n…" } else { "" }
+            );
+            if !crate::policy_engine::ask_risky_approval_blocking(&app, "대량 삭제 적용", &detail) {
+                return Err("대량 삭제가 포함된 변경 적용을 취소했습니다.".to_string());
+            }
+            if deleted_paths(&project_dir)? != deleted {
+                return Err("승인하는 동안 삭제 목록이 바뀌어 적용을 멈췄습니다. 변경 검토 후 다시 적용하세요.".to_string());
+            }
+        }
+        workspace_changes::apply_workspace_changes(&project_dir, conversation_id)
+    })
+    .await
+    .map_err(|error| format!("변경 적용 작업 실행 실패: {error}"))?
 }
 
 #[tauri::command]

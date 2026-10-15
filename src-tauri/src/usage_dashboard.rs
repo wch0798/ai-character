@@ -284,7 +284,7 @@ fn candidate_node_binaries() -> Vec<PathBuf> {
     if let Ok(custom) = env::var("AI_CHARACTER_NODE_BIN") {
         push_node_candidate(&mut out, PathBuf::from(custom.trim()));
     }
-    if let Some(path_value) = env::var_os("PATH") {
+    if let Some(path_value) = crate::process_util::process_path() {
         for dir in env::split_paths(&path_value) {
             for name in ["node.exe", "node"] {
                 push_node_candidate(&mut out, dir.join(name));
@@ -393,6 +393,7 @@ fn spawn_dashboard_server(dashboard_dir: &Path, app_dir: &Path, port: u16) -> Re
 
     let token = generate_usage_token();
     let mut child_cmd = Command::new(&node);
+    crate::process_util::apply_process_env(&mut child_cmd);
     #[cfg(windows)]
     {
         crate::windows_process::hide_console(&mut child_cmd);
@@ -402,6 +403,16 @@ fn spawn_dashboard_server(dashboard_dir: &Path, app_dir: &Path, port: u16) -> Re
         .current_dir(dashboard_dir)
         .env("PORT", port.to_string())
         .env("AI_CHARACTER_DIR", app_dir)
+        .env(
+            "AI_CHARACTER_STATE_DB",
+            crate::chat_state::state_db_path().unwrap_or_else(|_| app_dir.join("state.db")),
+        )
+        .env(
+            "AI_CHARACTER_KEYS_FILE",
+            crate::local_env::loaded_keys_path()
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(crate::local_env::preferred_keys_path),
+        )
         .env("AI_CHARACTER_USAGE_TOKEN", &token)
         .stdin(Stdio::null())
         .stdout(Stdio::from(log))

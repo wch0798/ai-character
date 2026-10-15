@@ -62,7 +62,8 @@ def main() -> int:
         "conflict: boolean" in client
         and "conflictReason: string | null" in client
         and 'button.dataset.conflict = change.conflict ? "true" : "false"' in runtime
-        and "원본이 외부에서 변경되어 적용할 수 없습니다" in runtime,
+        and "원본이 밖에서 바뀌어 적용할 수 없습니다" in runtime
+        and "applyButton.disabled = hasConflicts" in runtime,
     )
     check(
         "conflict CSS present",

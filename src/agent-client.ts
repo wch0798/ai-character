@@ -125,6 +125,7 @@ export type CradleEnvironmentStatus = {
 
 export type FreeAutoReadiness = {
   geminiApiConfigured: boolean;
+  openrouterApiConfigured: boolean;
   jinaApiConfigured: boolean;
   claudeCliReady: boolean;
   cradleEnabled: boolean;

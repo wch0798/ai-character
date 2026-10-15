@@ -20,6 +20,7 @@ pub fn hide_console(command: &mut Command) -> &mut Command {
 }
 
 #[cfg(not(windows))]
+#[allow(dead_code)]
 pub fn hide_console(command: &mut Command) -> &mut Command {
     command
 }
@@ -34,6 +35,7 @@ pub fn command_with_args(path: &Path, args: &[&str]) -> Command {
     #[cfg(not(windows))]
     {
         let mut command = Command::new(path);
+        crate::process_util::apply_process_env(&mut command);
         command.args(args);
         command
     }
@@ -48,6 +50,7 @@ fn command_with_creation_flags(path: &Path, args: &[&str], flags: u32) -> Comman
         .to_ascii_lowercase();
     if matches!(ext.as_str(), "cmd" | "bat") {
         let mut command = Command::new("cmd.exe");
+        crate::process_util::apply_process_env(&mut command);
         command.creation_flags(flags);
         let mut line = format!("\"{}\"", path.display());
         for arg in args {
@@ -64,6 +67,7 @@ fn command_with_creation_flags(path: &Path, args: &[&str], flags: u32) -> Comman
         return command;
     }
     let mut command = Command::new(path);
+    crate::process_util::apply_process_env(&mut command);
     command.creation_flags(flags);
     command.args(args);
     command

@@ -7,14 +7,16 @@ pub fn install(app: &mut App) -> tauri::Result<()> {
     let hide = MenuItem::with_id(app, "hide", "캐릭터 숨기기", true, None::<&str>)?;
     let chat = MenuItem::with_id(app, "chat", "채팅 열기", true, None::<&str>)?;
     let settings = MenuItem::with_id(app, "settings", "설정", true, None::<&str>)?;
+    let setup_web = MenuItem::with_id(app, "setup_web", "처음 설정 (웹)", true, None::<&str>)?;
     let usage = MenuItem::with_id(app, "usage", "사용량", true, None::<&str>)?;
+    let automation = MenuItem::with_id(app, "automation", "자동화 현황", true, None::<&str>)?;
     let restart = MenuItem::with_id(app, "restart", "재시작", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "종료", true, None::<&str>)?;
     let sep = PredefinedMenuItem::separator(app)?;
     let menu = Menu::with_items(
         app,
         &[
-            &show, &hide, &sep, &chat, &settings, &usage, &sep, &restart, &quit,
+            &show, &hide, &sep, &chat, &settings, &setup_web, &usage, &automation, &sep, &restart, &quit,
         ],
     )?;
 
@@ -30,10 +32,21 @@ pub fn install(app: &mut App) -> tauri::Result<()> {
         .tooltip("AI Character")
         .on_menu_event(|app, event| match event.id().as_ref() {
             "quit" => app.exit(0),
-            "restart" => app.restart(),
+            "restart" => {
+                #[cfg(desktop)]
+                if let Err(error) = crate::updates::restart_to_apply_update(app.clone()) {
+                    eprintln!("{error}");
+                }
+                app.restart()
+            }
             "show" => show_main(app),
             "hide" => hide_main(app),
-            "chat" | "settings" | "usage" => {
+            "setup_web" => {
+                if let Err(error) = crate::setup_web::open(app, None) {
+                    eprintln!("{error}");
+                }
+            }
+            "chat" | "settings" | "usage" | "automation" => {
                 show_main(app);
                 if let Some(window) = app.get_webview_window("main") {
                     let _ = window.emit("tray-action", event.id().as_ref());

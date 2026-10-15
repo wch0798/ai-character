@@ -749,6 +749,45 @@ pub fn uninstall_claude_plugin(spec: String) -> Result<String, String> {
     Ok(format!("{spec} 을(를) 삭제했습니다."))
 }
 
+#[derive(Clone, Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginUpdateReport {
+    pub marketplaces_updated: bool,
+    pub updated: Vec<String>,
+    pub failed: Vec<(String, String)>,
+}
+
+/// Refreshes marketplace catalogs, then updates every installed plugin.
+/// Individual failures keep the previously installed version.
+pub fn update_all_plugins() -> Result<PluginUpdateReport, String> {
+    claude_binary()?;
+    let mut report = PluginUpdateReport {
+        marketplaces_updated: run_claude(&["plugin", "marketplace", "update"], Duration::from_secs(180)).is_ok(),
+        ..Default::default()
+    };
+    let listed = run_claude(&["plugin", "list", "--json"], Duration::from_secs(30)).unwrap_or_default();
+    for plugin in parse_plugin_list_json(&listed).into_iter().filter(|plugin| plugin.installed || !plugin.id.is_empty()) {
+        let Ok(spec) = sanitize_plugin_spec(&plugin.id) else { continue };
+        match run_claude(&["plugin", "update", &spec], Duration::from_secs(180)) {
+            Ok(_) => report.updated.push(spec),
+            Err(error) => report.failed.push((spec, error)),
+        }
+    }
+    Ok(report)
+}
+
+#[tauri::command]
+pub async fn update_claude_plugins() -> Result<PluginUpdateReport, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        #[cfg(desktop)]
+        let _guard = crate::updates::try_begin_update()
+            .ok_or("자동 업데이트가 진행 중입니다. 끝난 뒤 다시 눌러 주세요.")?;
+        update_all_plugins()
+    })
+    .await
+        .map_err(|error| format!("플러그인 업데이트 작업 실패: {error}"))?
+}
+
 pub fn plugin_catalog_url(kind: &str) -> &'static str {
     match kind.trim() {
         "repo" | "official-repo" => PLUGIN_OFFICIAL_REPO_URL,
