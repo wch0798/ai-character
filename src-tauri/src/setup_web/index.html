@@ -38,6 +38,10 @@
   nav ol { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
   nav a { display: flex; align-items: center; gap: 10px; padding: 9px 10px; border-radius: 10px; color: var(--text); text-decoration: none; font-size: 14px; }
   nav a:hover { background: rgba(255,255,255,0.04); }
+  details.later-nav { margin: 8px 4px 12px; }
+  details.later-nav summary { cursor: pointer; color: var(--muted); font-size: 13px; }
+  details.later-nav ol { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 4px; }
+  .beginner-hint { color: var(--muted); font-size: 13px; margin: 0 4px 14px; }
   nav a.active { background: rgba(108,156,255,0.14); }
   nav .dot { width: 24px; height: 24px; border-radius: 50%; display: grid; place-items: center; font-size: 12px; background: rgba(255,255,255,0.08); flex: none; }
   nav a.active .dot { background: var(--accent); color: #fff; }
@@ -200,6 +204,7 @@
       <div class="overall-bar"><span id="overall-fill"></span></div>
       <small id="overall-text">0 / 8 단계</small>
     </div>
+    <p class="beginner-hint">왼쪽 목록이 웹 설정 전체입니다. 1·2·3만 해도 쓸 수 있고, 4번부터는 필요할 때 누르면 됩니다.</p>
     <nav><ol id="nav"></ol></nav>
     <nav class="extra-nav"><a href="#local" id="nav-local"><span class="dot">💻</span>내 컴퓨터 AI (설치형)</a><a href="#remote" id="nav-remote"><span class="dot">🌐</span>다른 컴퓨터 AI (원격)</a><a href="#usage" id="nav-usage"><span class="dot">📊</span>사용량 보기</a><a href="#help" id="nav-help"><span class="dot">❓</span>사용 설명서</a></nav>
     <p class="save-state" id="save-state">변경 내용은 각 단계의 저장 버튼을 누르면 앱에 바로 저장됩니다.</p>

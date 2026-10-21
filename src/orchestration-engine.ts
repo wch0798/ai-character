@@ -1,4 +1,5 @@
 import {
+  askAgentCompat,
   askClaudeCompat,
   cancelAgent,
   confirmSensitiveAgentAccess,
@@ -362,7 +363,7 @@ export function createPlanningPrompt(
   return [
     "You are the lead manager of CRADLE inside AI-Character.",
     "Decompose the user's request into the smallest useful set of specialist tasks.",
-    "CRADLE is AUTOMATIC-FIRST: prefer configured official automatic API providers for analysis, research, critique, planning, and review. Use CLI workers mainly when local project files must actually be modified. Manual Web handoff is the last fallback.",
+    "Project work is led by Claude when Claude CLI is available, so plugins, skills, and subagents stay in that session. Cursor may also edit files. Assign factual lookup and review to a free automatic API.",
     "This path is for PROJECT work only. Simple chat questions should not be planned here.",
     "Return JSON only. Do not use markdown fences or explanatory text.",
     "Schema:",
@@ -370,14 +371,12 @@ export function createPlanningPrompt(
     "Rules:",
     "- Use 1 to 8 tasks. Prefer fewer workers when one worker is enough.",
     "- Give every task a role: planner (design/breakdown), coder (edits files, mode=modify, CLI only), reviewer (checks code/results), tester (runs the project's tests and analyzes failures; depend on coder tasks), documenter (writes docs/reports).",
-    "- Planner, reviewer, tester, and documenter use free automatic APIs. Only coder tasks use CLI workers.",
-    "- Gemini API is the preferred free automatic analysis/research/review worker when available.",
-    "- OpenRouter API uses only verified zero-cost models; use it as the second free analysis worker or to spread analyze tasks.",
+    "- If claude is available, mode=modify tasks use claude, and cursor when cursor is also available. Plugins load on the Claude run. Do not assign file edits to codex or antigravity while claude is available.",
+    "- Use Codex or Antigravity for mode=modify only when claude and cursor are both unavailable.",
+    "- Factual and review tasks use a free automatic API. Gemini is preferred, then OpenRouter.",
     "- OpenAI API is paid and may be assigned only when it appears in the available automatic API list.",
-    "- Manual Claude/ChatGPT/Gemini Web targets are fallbacks when automatic providers are unavailable.",
+    "- Manual web targets are the last fallback.",
     "- For mode=analyze, prefer an available automatic API target instead of CLI targets.",
-    "- Use Codex/Cursor/Claude/Antigravity CLI primarily for mode=modify when local files must be changed.",
-    "- When several CLIs are available, give different modify tasks to different CLIs. Use Cursor, Codex, Claude, and Antigravity together instead of one CLI for everything.",
     "- Creating or editing files, apps, or web pages REQUIRES at least one mode=modify CLI task.",
     "- The conversation workspace already has write permission. Never ask the user for /add-dir, extra folder access, or secret files.",
     `- Available automatic API targets: ${automaticApiTargets.join(", ") || "none"}. Do not assign an unavailable API target.`,
@@ -432,8 +431,10 @@ export function normalizePlanForAutomaticProviders(
     summary: plan.summary,
     tasks: plan.tasks.map((task) => {
       if (task.mode === "modify") {
-        if (modifyClis.length > 0) {
-          const target = modifyClis[modifyIndex % modifyClis.length];
+        const claudeAndCursor = (["claude", "cursor"] as const).filter((target) => automaticCliTargets.includes(target));
+        const fileEditors = claudeAndCursor.length > 0 ? claudeAndCursor : modifyClis;
+        if (fileEditors.length > 0) {
+          const target = fileEditors[modifyIndex % fileEditors.length];
           modifyIndex += 1;
           return { ...task, target, dependsOn: [...task.dependsOn] };
         }
@@ -660,12 +661,13 @@ async function runClaudeManagerCli(
 
 export type ManagerStep = AutomaticApiTarget | "claude_cli";
 
-/** Free APIs → subscription Claude CLI → paid APIs (each paid call still needs approval). */
+/** Claude leads project work so plugins stay attached. Free APIs are the factual fallback, then paid APIs. */
 export function managerProviderOrder(apis: AutomaticApiTarget[], claudeCliAvailable: boolean): ManagerStep[] {
-  const order: ManagerStep[] = apis.filter((api) => isFreeAutomaticProvider(api));
+  const order: ManagerStep[] = [];
   if (claudeCliAvailable) {
     order.push("claude_cli");
   }
+  order.push(...apis.filter((api) => isFreeAutomaticProvider(api)));
   order.push(...apis.filter((api) => !isFreeAutomaticProvider(api)));
   return order;
 }
@@ -701,10 +703,14 @@ export async function runAutomaticManager(
 
   for (const step of order) {
     if (step === "claude_cli") {
-      setSessionStatus(session, status, "무료 자동 Provider를 사용할 수 없어 Claude CLI(구독) 총괄로 전환합니다.");
+      setSessionStatus(session, status, "Claude가 플러그인과 함께 이 작업을 진행합니다.");
       try {
         return await runClaudeManagerCli(prompt, session.conversationId, preferences, sensitiveAcknowledged);
       } catch (error) {
+        pendingChatNotice = isQuotaOrLimitError(error)
+          ? "Claude 구독 사용량을 다 썼습니다. 무료 AI가 이어받습니다."
+          : "Claude로 처리하지 못해 무료 AI가 이어받습니다.";
+        setSessionStatus(session, status, pendingChatNotice);
         console.warn("Claude CLI 총괄 실패", error);
       }
       continue;
@@ -1330,7 +1336,7 @@ async function finishWithSynthesis(
     synthesis = await synthesize(session, preferences, sensitiveAcknowledged);
   }
 
-  session.finalAnswer = extractUserFacingAnswer(synthesis.finalAnswer) || synthesis.finalAnswer;
+  session.finalAnswer = withChatNotice(extractUserFacingAnswer(synthesis.finalAnswer) || synthesis.finalAnswer);
   session.error = null;
   setSessionStatus(session, "completed", "CRADLE 작업이 완료되었습니다.");
   return session.finalAnswer;
@@ -1573,13 +1579,36 @@ export async function runCradleOrchestration(
   }
 }
 
+let pendingChatNotice = "";
+
+function withChatNotice(text: string): string {
+  const notice = pendingChatNotice.trim();
+  pendingChatNotice = "";
+  if (!notice) {
+    return text;
+  }
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new CustomEvent("ai-character:limit-notice", { detail: notice }));
+  }
+  if (text.startsWith(notice)) {
+    return text;
+  }
+  return `${notice}\n\n${text}`;
+}
+
 function composeDirectPrompt(
   prompt: string,
   conversationContext: string,
-  researchBlock: string
+  researchBlock: string,
+  mode: "chat" | "facts"
 ): string {
+  const role = mode === "facts"
+    ? "You answer a factual question. Use the research block when it is present. Do not invent numbers, dates, or prices. Say what you could not verify."
+    : "You are ChatGPT, answering this chat. Answer the user directly in their language.";
   return [
-    "Answer the user directly. Do not create an orchestration plan, worker list, or CRADLE handoff.",
+    role,
+    "Do not pretend to be another model. Do not create an orchestration plan, worker list, or CRADLE handoff.",
+    "Do not edit files unless the user asked for a file change.",
     conversationContext ? `Recent conversation (compact):\n${compactText(conversationContext, 2_400)}` : "",
     researchBlock,
     "USER REQUEST:",
@@ -1592,39 +1621,83 @@ async function answerDirectly(
   conversationId: string | null | undefined,
   conversationContext: string,
   researchBlock = "",
-  streamId: string | null = null
+  streamId: string | null = null,
+  mode: "chat" | "facts" = "chat"
 ): Promise<string> {
+  pendingChatNotice = "";
   const preferences = await getAppPreferences();
   try {
     automaticProviderStatuses = await getAutomaticProviderStatuses();
   } catch {
     automaticProviderStatuses = [];
   }
-  const composed = composeDirectPrompt(prompt, conversationContext, researchBlock);
+  const composed = composeDirectPrompt(prompt, conversationContext, researchBlock, mode);
   const apis = usableAutomaticProviders(automaticProviderStatuses, preferences);
-  const context: AutomaticCallContext = { sessionId: conversationId ?? null, role: "chat" };
-  const free = await tryAutomaticProviders(
-    apis.filter(isFreeAutomaticProvider),
-    composed,
-    { ...context, streamId },
-    "일반 대화 답변"
-  );
-  if (free) {
-    return free.response;
+  const context: AutomaticCallContext = { sessionId: conversationId ?? null, role: mode === "facts" ? "researcher" : "chat" };
+  const freeApis = apis.filter(isFreeAutomaticProvider);
+  const paidApis = apis.filter((api) => !isFreeAutomaticProvider(api));
+  const blocked = (error: unknown): boolean => {
+    const message = error instanceof Error ? error.message : String(error);
+    return message.includes("취소") || message.includes("민감 파일");
+  };
+
+  if (mode === "facts") {
+    const free = await tryAutomaticProviders(freeApis, composed, { ...context, streamId }, "정보 조사");
+    if (free) {
+      return free.response;
+    }
+    try {
+      const text = await askAgentCompat("codex", composed, conversationId);
+      pendingChatNotice = "무료 AI로 정보를 확인하지 못해 ChatGPT가 답했습니다.";
+      return withChatNotice(text);
+    } catch (error) {
+      if (blocked(error)) {
+        throw error instanceof Error ? error : new Error(String(error));
+      }
+      if (isQuotaOrLimitError(error)) {
+        pendingChatNotice = "ChatGPT(Codex) 사용량을 다 썼습니다.";
+      }
+    }
+    if (!pendingChatNotice) {
+      pendingChatNotice = "무료 AI와 ChatGPT로 정보를 확인하지 못했습니다.";
+    }
+    const paid = await tryAutomaticProviders(paidApis, composed, context, "무료 AI와 ChatGPT를 쓸 수 없어 유료 API로 답변");
+    if (paid) {
+      return withChatNotice(paid.response);
+    }
+    throw new Error(withChatNotice(pendingChatNotice || "무료 AI로 정보를 확인하지 못했습니다. 잠시 뒤 다시 보내세요."));
   }
+
   try {
-    return await askClaudeCompat(composed, conversationId);
+    return await askAgentCompat("codex", composed, conversationId);
   } catch (error) {
+    if (blocked(error)) {
+      throw error instanceof Error ? error : new Error(error instanceof Error ? error.message : String(error));
+    }
+    pendingChatNotice = isQuotaOrLimitError(error)
+      ? "ChatGPT(Codex) 사용량을 다 썼습니다. 이 답은 무료 AI가 이어받았습니다."
+      : "ChatGPT(Codex)로 답하지 못했습니다. 이 답은 무료 AI가 이어받았습니다.";
+    const free = await tryAutomaticProviders(
+      freeApis,
+      composed,
+      { ...context, streamId },
+      pendingChatNotice
+    );
+    if (free) {
+      return withChatNotice(free.response);
+    }
     const paid = await tryAutomaticProviders(
-      apis.filter((api) => !isFreeAutomaticProvider(api)),
+      paidApis,
       composed,
       context,
-      "무료/구독 답변 경로를 모두 사용할 수 없어 유료 API로 답변"
+      "ChatGPT와 무료 AI를 쓸 수 없어 유료 API로 답변"
     );
     if (paid) {
-      return paid.response;
+      return withChatNotice(paid.response);
     }
-    throw error;
+    throw new Error(isQuotaOrLimitError(error)
+      ? "ChatGPT(Codex) 사용량을 다 썼고, 무료 AI도 지금은 답하지 못합니다. 한도가 초기화된 뒤 다시 보내세요."
+      : (error instanceof Error ? error.message : String(error)));
   }
 }
 
@@ -1639,7 +1712,7 @@ export async function askCradleCompat(
   const history = compactText(conversationContext.trim(), 2_400);
 
   if (!preferences.cradleEnabled) {
-    return askClaudeCompat(composeDirectPrompt(current, history, ""), conversationId);
+    return answerDirectly(current, conversationId, history, "", streamId);
   }
 
   const intent = classifyRequestIntent(current, history);
@@ -1649,7 +1722,7 @@ export async function askCradleCompat(
       const research = await collectWebResearch(current, true);
       researchBlock = research.researchPromptBlock;
     }
-    return answerDirectly(current, conversationId, history, researchBlock, streamId);
+    return answerDirectly(current, conversationId, history, researchBlock, streamId, intent === "research" ? "facts" : "chat");
   }
 
   return runCradleOrchestration(current, conversationId, history);

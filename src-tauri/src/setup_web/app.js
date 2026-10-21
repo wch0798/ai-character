@@ -6,7 +6,7 @@ const REPO_URL = `https://github.com/${REPO}`;
 const SECTIONS = [
   { id: "welcome", title: "시작하기" },
   { id: "folder", title: "작업 폴더" },
-  { id: "keys", title: "AI 연결 (API 키)" },
+  { id: "keys", title: "Gemini 키" },
   { id: "accounts", title: "프로그램 · 로그인" },
   { id: "behavior", title: "동작 방식" },
   { id: "alerts", title: "알림 · 비용 한도" },
@@ -19,7 +19,7 @@ const KEY_INFO = {
     title: "Google Gemini",
     tag: ["free", "무료 · 추천"],
     url: "https://aistudio.google.com/apikey",
-    desc: "Google 계정만 있으면 1분 안에 무료로 받을 수 있습니다. 대부분의 대화를 이 키로 처리합니다.",
+    desc: "Google 계정만 있으면 1분 안에 무료로 받을 수 있습니다. 조사·검토·계획처럼 정확한 정보가 필요한 일을 이 키로 처리합니다.",
     how: "링크 열기 → 'Create API key' → 만들어진 키 복사 → 아래 칸에 붙여넣고 저장",
   },
   OPENROUTER_API_KEY: {
@@ -450,18 +450,20 @@ function summary() {
 function renderNav() {
   const nav = document.getElementById("nav");
   const done = progress();
-  nav.replaceChildren(
-    ...SECTIONS.map((section, index) => {
-      const mark = done[section.id];
-      const link = h(
+  const item = (section, index) => {
+    const mark = done[section.id];
+    return h(
+      "li",
+      {},
+      h(
         "a",
         { href: `#${section.id}`, class: [section.id === current ? "active" : "", mark || ""].join(" ").trim() },
         h("span", { class: "dot", text: mark === "done" ? "✓" : mark === "skipped" ? "–" : String(index + 1) }),
         section.title
-      );
-      return h("li", {}, link);
-    })
-  );
+      )
+    );
+  };
+  nav.replaceChildren(...SECTIONS.map((section, index) => item(section, index)));
   document.getElementById("nav-usage").classList.toggle("active", current === "usage");
   for (const id of ["local", "remote", "help"]) document.getElementById(`nav-${id}`).classList.toggle("active", current === id);
   const count = SECTIONS.filter((s) => done[s.id]).length;
@@ -611,12 +613,12 @@ function usingNow() {
   const usage = state.usage;
   const build = state.build || {};
   const rows = [
-    usingRow("무료 자동 모드 (CRADLE)", "질문을 보고 알맞은 무료 AI를 골라 맡기는 앱의 두뇌입니다. 꺼져 있으면 아래 AI를 자동으로 쓰지 않습니다.", r.cradleEnabled ? true : "warn", r.cradleEnabled ? "켜짐" : "꺼짐", r.handsFreeReady ? "질문하면 바로 무료 AI가 답합니다." : r.message),
-    usingRow("Google Gemini", "기본 대화 AI. Google이 무료 사용량을 줍니다. 한도에 닿으면 OpenRouter로 넘어갑니다.", gemini.available ? true : "warn", gemini.available ? "사용 중" : "안 씀", gemini.available ? `모델: ${gemini.model}` : gemini.reason),
-    usingRow("OpenRouter", "Gemini가 막힐 때 쓰는 대체 무료 AI 모음입니다.", openrouter.available ? true : "", openrouter.available ? "대기 중" : "안 씀", openrouter.available ? `모델: ${openrouter.model}` : openrouter.reason),
+    usingRow("무료 자동 모드 (CRADLE)", "조사·검토·계획처럼 두뇌가 처리할 일은 무료 AI가 자동으로 합니다. 일반 대화는 ChatGPT(Codex)가 답합니다.", r.cradleEnabled ? true : "warn", r.cradleEnabled ? "켜짐" : "꺼짐", r.handsFreeReady ? "대화는 ChatGPT, 정보 처리는 무료 Gemini" : r.message),
+    usingRow("Google Gemini", "정확한 정보와 조사의 담당입니다. 무료 모델을 순서대로 시도합니다.", gemini.available ? true : "warn", gemini.available ? "정보 담당" : "안 씀", gemini.available ? `모델: ${gemini.model}` : gemini.reason),
+    usingRow("OpenRouter", "Gemini가 막힐 때의 무료 대체입니다. 코드·음악 전용 모델은 정보 답변에 쓰지 않습니다.", openrouter.available ? true : "", openrouter.available ? "대기" : "안 씀", openrouter.available ? `모델: ${openrouter.model}` : openrouter.reason),
     usingRow("추가 무료 AI", `Gemini·OpenRouter까지 막히면 ${FREE_ORDER_TEXT} 순서로 준비된 곳을 대신 씁니다. 모두 무료 등급만 사용합니다.`, freePool.available ? true : "", freePool.available ? "대기 중" : "안 씀", freePool.available ? `순서: ${freePool.model}` : "'AI 연결'에서 키를 넣거나 '내 컴퓨터 AI'에서 설치하면 사용합니다."),
     usingRow("Jina 웹 검색", "최신 정보가 필요한 질문이면 인터넷을 검색해 결과를 AI에게 넘깁니다.", r.jinaApiConfigured && r.autoWebSearch ? true : "warn", r.jinaApiConfigured ? (r.autoWebSearch ? "사용 중" : "꺼짐") : "키 없음", r.jinaApiConfigured ? (r.autoWebSearch ? "필요할 때 자동 검색" : "'동작 방식'에서 웹 검색을 켜세요.") : "키가 없어 웹 검색을 못 합니다. 3단계에서 넣을 수 있어요."),
-    usingRow("Claude (구독형 프로그램)", "코드 작업처럼 무거운 일에 쓰는 Claude Code. Pro/Max 월정액으로 동작하고, 앱이 종량제 키를 넘기지 않아 추가 요금이 없습니다.", r.claudeCliReady ? true : "", r.claudeCliReady ? "설치됨" : "없음", r.claudeCliReady ? "구독 사용 한도(5시간·주간) 안에서 사용" : "무료 키만으로도 대화는 됩니다."),
+    usingRow("Claude (구독형 프로그램)", "파일 작업의 계획과 수정 담당입니다. Cursor도 파일을 고칠 수 있고, 플러그인은 Claude에 붙습니다.", r.claudeCliReady ? true : "", r.claudeCliReady ? "파일 작업" : "없음", r.claudeCliReady ? "구독 사용 한도(5시간·주간) 안에서 사용" : "없어도 Cursor나 무료 AI로 일부 작업은 됩니다."),
     usingRow("OpenAI (유료)", "호출마다 요금이 나가는 API. 허용해도 매번 승인을 받고, 하루 한도를 넘으면 막힙니다.", openai.enabled ? "warn" : "", openai.enabled ? "허용됨" : "차단", openai.reason),
   ];
   if (usage) {
@@ -647,10 +649,61 @@ function usingNow() {
   );
 }
 
+function workOrder() {
+  const items = [
+    ["대화", "ChatGPT 구독이 답합니다."],
+    ["정보 찾기", "무료 Gemini가 찾습니다."],
+    ["파일 고치기", "Claude가 계획하고 고칩니다. Cursor도 고칠 수 있습니다."],
+  ];
+  return h(
+    "div",
+    { class: "card" },
+    h("h3", { text: "누가 하나요" }),
+    h("ol", { class: "steps" }, ...items.map(([title, body]) => h("li", {}, h("h4", { text: title }), h("p", { text: body })))),
+    h("p", { class: "muted small", text: "유료 API는 꺼져 있습니다. 사용량을 다 쓰면 채팅에 알려 줍니다." })
+  );
+}
+
+function resetSettingsCard() {
+  const button = h("button", { text: "설정 초기화" });
+  button.title = "동작 스위치와 왼쪽 단계 체크를 모두 풉니다. 키와 작업 폴더는 지우지 않습니다.";
+  let armed = false;
+  let timer = 0;
+  button.addEventListener("click", () => {
+    if (!armed) {
+      armed = true;
+      button.textContent = "한 번 더 누르면 체크까지 해제";
+      timer = window.setTimeout(() => {
+        armed = false;
+        button.textContent = "설정 초기화";
+      }, 4000);
+      return;
+    }
+    window.clearTimeout(timer);
+    armed = false;
+    button.textContent = "설정 초기화";
+    busy(button, async () => {
+      localStorage.removeItem("aic-sign-steps");
+      state = await api.post("/api/reset");
+      toast("초기화했습니다. 체크는 모두 풀렸고, 키와 작업 폴더는 그대로입니다.", "ok");
+      render();
+    }, "초기화 중…");
+  });
+  return h(
+    "div",
+    { class: "card" },
+    h("h3", { text: "설정 초기화" }),
+    h("p", { class: "muted small", text: "동작 방식, 알림, 업데이트 스위치와 왼쪽 단계 체크를 모두 풉니다. API 키와 작업 폴더는 지우지 않습니다." }),
+    h("div", { class: "row" }, button)
+  );
+}
+
 function sectionWelcome() {
   return [
     ...header("welcome", "AI Character 처음 설정", "아래 '빠른 설정' 세 가지만 하면 바로 쓸 수 있습니다. 저장 버튼을 누르는 즉시 앱에 반영되고, 언제든 다시 열어 고칠 수 있어요."),
+    workOrder(),
     quickSetup(),
+    resetSettingsCard(),
     usingNow(),
     footer("welcome"),
   ];
@@ -809,36 +862,19 @@ function sectionKeys() {
     })
   );
   return [
-    ...header("keys", "AI 연결 (API 키)", "키는 이 컴퓨터의 앱 전용 파일에만 저장되고, 이 페이지는 저장된 키를 다시 보여 주지 않습니다. 무료 키 하나만 있어도 충분합니다."),
-    guide(
-      "🔰 처음이라면 이 순서대로 하세요 (3분)",
-      [
-        ["가장 쉬운 것부터: SKT A.X 켜기", "아래 '추가 무료 AI' 칸의 'SKT A.X 4.0' 에서 '공개 체험 키로 켜기'를 누르세요. 가입도 복사도 필요 없습니다. 이것만으로도 대화가 됩니다."],
-        ["추천: Google Gemini 키 받기", "'Google Gemini'의 '키 받는 곳 열기'를 누르면 Google 사이트가 열립니다. Google 계정으로 로그인 → 'Create API key'(API 키 만들기) → 나온 글자를 복사(⌘C / Ctrl+C)하세요."],
-        ["붙여넣고 저장", "이 페이지로 돌아와 Gemini 칸에 붙여넣기(⌘V / Ctrl+V) → '저장'. 자동으로 연결 확인까지 하고, 성공하면 초록색 '등록됨'이 뜹니다."],
-        ["(선택) 더 연결하기", "Groq·NVIDIA·HASA 같은 무료 AI를 더 연결해 두면 한도에 걸려 막힐 일이 줄어듭니다. 방법은 각 칸 아래 회색 글씨에 적혀 있습니다."],
-      ],
-      { open: !(state.apiKeys || []).some((k) => k.configured), tip: "키는 비밀번호처럼 남에게 보여 주면 안 됩니다. 이 페이지는 저장한 키를 다시 보여 주지 않으니 안심하세요. '유료'라고 적힌 키는 넣지 않아도 됩니다." }
-    ),
-    explain("API 키가 뭔가요? 어떤 걸 넣어야 하나요?", [
-      "API 키는 앱이 AI 회사 서버를 대신 불러 쓰도록 허락하는 비밀번호 같은 문자열입니다. 각 회사 사이트에서 무료로 받을 수 있어요.",
-      `꼭 필요한 건 Gemini 하나입니다. 대화는 Gemini → OpenRouter → 추가 무료 AI(${FREE_ORDER_TEXT}) 순서로, 막히면 다음으로 자동으로 넘어갑니다.`,
-      "인터넷 검색이 필요하면 Jina 키를 넣으세요. 없으면 AI가 웹을 찾아보지 못합니다.",
-      "유료 키(OpenAI·Anthropic)는 넣지 않아도 됩니다. 넣더라도 허용 + 매번 승인 + 하루 한도 안에서만 쓰입니다.",
-      "키를 지우려면 '삭제'를 두 번 누르세요. 저장 위치는 각 키 아래에 표시됩니다.",
-    ]),
-    h("div", { class: "card" }, h("h3", { text: "무료 (하나 이상 추천)" }), ...free.map(keyRow)),
+    ...header("keys", "Gemini 키", "정보 찾기에 쓰는 무료 키입니다. 대화는 ChatGPT 로그인, 파일 고치기는 Claude 로그인이 담당이라 여기 키와 별개입니다."),
+    h("div", { class: "card" }, h("h3", { text: "Gemini (이것만 넣으면 됩니다)" }), ...free.filter((k) => k.name === "GEMINI_API_KEY").map(keyRow)),
     h(
-      "div",
+      "details",
       { class: "card" },
-      h("h3", { text: "추가 무료 AI (넣을수록 막힐 일이 줄어요)" }),
-      h("p", { class: "muted small", text: "Gemini와 OpenRouter가 한도에 걸리면 키가 있는 서비스를 아래 순서대로 대신 씁니다. 모두 인터넷 API의 무료 등급만 쓰고, 유료 모델은 부르지 않습니다. 하나도 안 넣어도 됩니다. 가장 쉬운 건 가입이 필요 없는 SKT A.X입니다." }),
-      ...extraFree.map(keyRow)
+      h("summary", { text: "다른 키 (안 넣어도 됩니다)" }),
+      h("p", { class: "muted small", text: "Gemini가 막힐 때의 대체와 웹 검색, 유료 키입니다. 유료 키는 허용하고 매번 승인해야 쓰입니다." }),
+      ...free.filter((k) => k.name !== "GEMINI_API_KEY").map(keyRow),
+      ...extraFree.map(keyRow),
+      ...optional.map(keyRow),
+      ...paid.map(keyRow),
+      h("div", { class: "row" }, openFile)
     ),
-    localLinkCard(),
-    h("div", { class: "card" }, h("h3", { text: "선택 기능" }), ...optional.map(keyRow)),
-    h("details", { class: "card" }, h("summary", { text: "유료 API (필요할 때만)" }), h("p", { class: "muted small", text: "유료 키는 등록해도 '동작 방식'에서 허용하고 매번 승인해야만 쓰이며, 하루 비용 한도를 넘으면 자동으로 막힙니다." }), ...paid.map(keyRow)),
-    h("div", { class: "row" }, openFile),
     footer("keys"),
   ];
 }
@@ -941,17 +977,19 @@ function sectionBehavior() {
   };
   return [
     ...header("behavior", "동작 방식", "질문을 어떤 AI가 어떻게 처리할지 정합니다. 잘 모르겠으면 기본값 그대로 두세요."),
+    workOrder(),
     explain("질문하면 앱 안에서 무슨 일이 일어나나요?", [
-      "1) 무료 자동 모드(CRADLE)가 질문을 보고 간단한 대화인지, 검색이 필요한지, 코드 작업인지 판단합니다.",
+      "1) 앱이 질문을 보고 일반 대화인지, 조사가 필요한지, 파일을 고쳐야 하는지 판단합니다.",
       "2) 최신 정보가 필요하면 Jina로 웹을 검색해 결과를 함께 넘깁니다 (웹 검색이 켜져 있고 키가 있을 때).",
-      "3) 대화는 Gemini 무료 → OpenRouter 무료 순서로 시도합니다. 코드 작업처럼 무거운 일은 설치된 구독형 프로그램(Claude 등)에 맡길 수 있습니다.",
-      "4) 유료 API는 '유료 허용'이 켜져 있고, 그 호출을 사용자가 승인하고, 하루 한도 안일 때만 씁니다.",
+      "3) 대화는 ChatGPT(Codex)가 먼저 답합니다. 정보 조사는 무료 Gemini가 먼저 해서 구독 한도를 아끼고, 막히면 채팅에 알린 뒤 다음 AI로 넘어갑니다.",
+      "4) 파일 작업은 Claude가 계획하고 고칩니다. Cursor도 파일을 고칠 수 있습니다. 플러그인·스킬·MCP는 Claude에 붙습니다. 구독 한도가 차면 채팅에 알리고 무료 AI가 이어받습니다.",
+      "5) 유료 API는 '유료 허용'이 켜져 있고, 그 호출을 사용자가 승인하고, 하루 한도 안일 때만 씁니다.",
     ]),
     h(
       "div",
       { class: "card" },
       toggle("cradleEnabled", "무료 자동 모드 (CRADLE)", "질문에 맞는 무료 AI를 자동으로 골라 처리합니다. 처음엔 켜 두는 것을 추천합니다.", p.cradleEnabled),
-      toggle("geminiApiEnabled", "Gemini 무료 키 사용", "등록한 Gemini 키로 대화를 처리합니다.", p.geminiApiEnabled),
+      toggle("geminiApiEnabled", "Gemini 무료 키 사용", "조사·검토·계획처럼 정확한 정보가 필요한 일을 무료 Gemini가 먼저 처리합니다.", p.geminiApiEnabled),
       toggle("autoWebSearch", "필요하면 웹 검색", "최신 정보가 필요한 질문은 웹을 찾아본 뒤 답합니다. Jina 키가 있어야 동작합니다.", p.autoWebSearch),
       toggle("warnSensitiveFiles", "민감한 파일 경고", ".env·키 파일 같은 비밀 파일을 AI에게 보내기 전에 알려 줍니다.", p.warnSensitiveFiles),
       toggle("allowPaidOpenAiApi", "유료 OpenAI API 허용", "켜도 호출마다 승인을 받습니다. 요금이 나가므로 필요할 때만 켜세요.", paid, { danger: true })
@@ -1016,7 +1054,7 @@ function sectionUpdates() {
     "ol",
     { class: "steps" },
     ...SIGN_STEPS.map((step) => {
-      const item = h("li", { class: done[step.id] || signed ? "done" : "" });
+      const item = h("li", { class: done[step.id] ? "done" : "" });
       const actions = h("div", { class: "row" });
       if (step.url) {
         const open = h("button", { class: "primary", text: step.name ? "열기 + 이름 복사" : "열기" });
@@ -1142,6 +1180,7 @@ function sectionFinish() {
       h("p", { class: "muted small", text: "동작 방식 · 알림 · 업데이트 · 작업 폴더를 JSON 파일로 저장합니다. API 키 같은 비밀 값은 넣지 않습니다." }),
       h("div", { class: "row", style: "margin-top:10px" }, exportButton, importButton, file)
     ),
+    resetSettingsCard(),
     footer("finish"),
   ];
 }
@@ -1789,13 +1828,13 @@ function sectionHelp() {
   return [
     h("div", { class: "eyebrow", text: "도움말" }),
     h("h2", { text: "사용 설명서 (처음 쓰는 분용)" }),
-    h("p", { class: "lead", text: "AI Character는 화면 위 캐릭터에게 말을 걸면 여러 AI 중 가장 알맞은(그리고 무료인) AI를 골라 대신 답해 주는 프로그램입니다. 이 페이지 하나만 읽으면 다 쓸 수 있도록 정리했어요." }),
+    h("p", { class: "lead", text: "대화는 ChatGPT 구독, 정보 찾기는 무료 Gemini, 파일 고치기는 Claude가 합니다. 처음이면 왼쪽 1·2·3만 하세요." }),
     guide(
       "🚀 5분 만에 시작하기",
       [
         ["'시작하기'에서 '추천 설정 한 번에 적용'", "왼쪽 메뉴 1번입니다. 무료로 안전하게 쓰는 설정이 한 번에 켜집니다."],
         ["'작업 폴더' 고르기", "AI가 읽고 고칠 폴더입니다. 문서·코드 작업을 안 한다면 아무 빈 폴더나 골라도 됩니다."],
-        ["'AI 연결'에서 무료 AI 켜기", "가장 쉬운 건 'SKT A.X'의 '공개 체험 키로 켜기' 버튼 하나입니다(가입 없음). 여유가 되면 Google Gemini 키도 받아 두세요(1분, 무료)."],
+        ["'Gemini 키' 넣기", "정보 찾기에 씁니다. 키 받는 곳을 열고 키를 붙여넣은 뒤 저장하세요. 대화와 파일 작업은 다음 단계의 ChatGPT·Claude 로그인입니다."],
         ["'마무리'에서 설정 완료", "이제 화면의 캐릭터를 클릭해 대화창을 열고 말을 걸면 됩니다."],
       ],
       { tip: "나머지 단계는 전부 '나중에 하기'를 눌러도 됩니다. 기본값이 안전하게 맞춰져 있어요." }

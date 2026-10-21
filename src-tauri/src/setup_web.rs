@@ -468,18 +468,68 @@ fn parse<T: serde::de::DeserializeOwned>(value: Value) -> Result<T, String> {
 
 fn apply_recommended() -> Result<(), String> {
     apply_basic_preferences(BasicPreferencesPatch {
+        default_agent: Some("claude".to_string()),
         cradle_enabled: Some(true),
         auto_web_search: Some(true),
         gemini_api_enabled: Some(true),
         allow_paid_open_ai_api: Some(false),
+        close_web_account_after_handoff: Some(true),
+        close_web_account_when_cradle_done: Some(true),
+        timeout_seconds: Some(180),
         warn_sensitive_files: Some(true),
-        ..Default::default()
     })?;
-    let mut alerts = crate::alerts::get_alert_settings();
-    alerts.desktop = true;
-    alerts.block_paid_over_limit = true;
-    crate::alerts::set_alert_settings(alerts)?;
+    crate::alerts::set_alert_settings(crate::alerts::AlertSettings {
+        desktop: true,
+        daily_cost_limit_usd: 1.0,
+        daily_call_warn: 300,
+        block_paid_over_limit: true,
+    })?;
+    crate::updates::set_update_settings(crate::updates::UpdateSettings {
+        app: true,
+        clis: true,
+        plugins: true,
+        models: true,
+        interval_hours: 6,
+    })?;
     Ok(())
+}
+
+fn reset_user_checks() -> Result<(), String> {
+    apply_basic_preferences(BasicPreferencesPatch {
+        default_agent: Some("claude".to_string()),
+        cradle_enabled: Some(false),
+        auto_web_search: Some(false),
+        gemini_api_enabled: Some(false),
+        allow_paid_open_ai_api: Some(false),
+        close_web_account_after_handoff: Some(false),
+        close_web_account_when_cradle_done: Some(false),
+        timeout_seconds: Some(180),
+        warn_sensitive_files: Some(false),
+    })?;
+    crate::alerts::set_alert_settings(crate::alerts::AlertSettings {
+        desktop: false,
+        daily_cost_limit_usd: 1.0,
+        daily_call_warn: 300,
+        block_paid_over_limit: false,
+    })?;
+    crate::updates::set_update_settings(crate::updates::UpdateSettings {
+        app: false,
+        clis: false,
+        plugins: false,
+        models: false,
+        interval_hours: 6,
+    })?;
+    let mut settings = load_settings()?;
+    settings.set_extra(PROGRESS_KEY, Some("{}".to_string()));
+    settings.set_extra(COMPLETED_KEY, Some("false".to_string()));
+    save_settings(&settings)?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn reset_recommended_settings() -> Result<String, String> {
+    reset_user_checks()?;
+    Ok("설정을 초기화했습니다. 체크는 모두 풀렸고, 키와 작업 폴더는 그대로입니다.".to_string())
 }
 
 fn import_settings(body: Value) -> Result<Value, String> {
@@ -566,6 +616,10 @@ fn api_post(path: &str, body: Value, app: &AppHandle) -> Result<Value, String> {
         "/api/updates" => to_json(crate::updates::set_update_settings(parse(body)?)?),
         "/api/recommended" => {
             apply_recommended()?;
+            state()
+        }
+        "/api/reset" => {
+            reset_user_checks()?;
             state()
         }
         "/api/login" => {

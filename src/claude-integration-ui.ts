@@ -57,6 +57,10 @@ export function createClaudeIntegrationSection(
   setMessage: (text: string) => void
 ): { section: HTMLElement; refresh: () => Promise<void> } {
   const { section } = sectionShell("Claude 기능");
+  const lead = document.createElement("div");
+  lead.className = "ai-settings-help";
+  lead.textContent = "파일을 고칠 때 같이 켜지는 도구입니다. 대화와 정보 조사는 이 기능을 쓰지 않습니다.";
+  section.append(lead);
   const inputs = new Map<FeatureKey, HTMLInputElement>();
   for (const feature of CLAUDE_FEATURES.filter((item) => !item.hidden)) {
     const { root, input } = toggleRow(feature.label, feature.help);

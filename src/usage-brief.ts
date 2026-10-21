@@ -94,6 +94,42 @@ export function usageBrief(report: UsageReport): BriefLine[] {
   return lines;
 }
 
+function resetPhrase(resetsAt?: number | null): string {
+  if (!resetsAt) {
+    return "";
+  }
+  const ms = resetsAt > 1e12 ? resetsAt : resetsAt > 1e9 ? resetsAt * 1000 : 0;
+  if (!ms) {
+    return "";
+  }
+  const date = new Date(ms);
+  if (Number.isNaN(date.getTime()) || date.getTime() < Date.now() - 60_000) {
+    return "";
+  }
+  const when = date.toLocaleString("ko-KR", { month: "numeric", day: "numeric", hour: "numeric", minute: "2-digit" });
+  return ` ${when}에 초기화됩니다.`;
+}
+
+/** Lines for the chat window. Only near-limit and exhausted quotas, not the full usage report. */
+export function chatLimitNotices(report: UsageReport): string[] {
+  const lines: string[] = [];
+  for (const meter of report.codex?.meters ?? []) {
+    if (meter.pct < 90) {
+      continue;
+    }
+    const reset = resetPhrase(meter.resetsAt);
+    lines.push(
+      meter.pct >= 100
+        ? `ChatGPT(Codex) ${meter.label}를 다 썼습니다.${reset}`
+        : `ChatGPT(Codex) ${meter.label} ${Math.round(meter.pct)}% 사용 중입니다.${reset}`
+    );
+  }
+  if (report.alerts?.paidBlocked || report.alerts?.level === "over") {
+    lines.push("오늘 유료 API 한도를 다 썼습니다. 무료 AI만 사용합니다.");
+  }
+  return lines;
+}
+
 export function getUsageReport(days: number, includeCli = true): Promise<UsageReport> {
   return invoke<UsageReport>("get_usage_report", { days, includeCli });
 }

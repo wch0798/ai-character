@@ -137,6 +137,25 @@ body {
   isolation: isolate;
 }
 
+#chat-limit-notice {
+  flex: 0 0 auto;
+  margin: 0 10px 4px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: rgba(240, 163, 94, 0.16);
+  color: #ffe0c2;
+  font-size: 12.5px;
+  line-height: 1.45;
+  white-space: pre-line;
+}
+#chat-limit-notice.is-over {
+  background: rgba(239, 107, 107, 0.18);
+  color: #ffd0d0;
+}
+#chat-limit-notice[hidden] {
+  display: none !important;
+}
+
 #messages {
   flex: 1 1 auto;
   min-height: 96px;
@@ -1881,8 +1900,8 @@ body:has(#ai-settings-panel:not([hidden])) #performance-hud {
 }
 
 .ai-settings-tabs {
-  display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
+  display: flex;
+  flex-wrap: wrap;
   gap: 2px;
   margin: 0;
   padding: 3px;
@@ -1897,6 +1916,9 @@ body:has(#ai-settings-panel:not([hidden])) #performance-hud {
   letter-spacing: -0.02em;
 }
 
+.ai-settings-tab[hidden] {
+  display: none !important;
+}
 .ai-settings-tab {
   min-width: 0;
   border: 0;
@@ -2929,6 +2951,29 @@ body:has(#ai-settings-panel:not([hidden])) #performance-hud {
   max-width: none;
   overflow: visible;
   text-overflow: clip;
+}
+.ai-settings-order {
+  margin: 0 0 8px;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.ai-settings-order li {
+  display: grid;
+  grid-template-columns: 18px 1fr;
+  gap: 8px;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: rgba(226, 232, 240, 0.94);
+}
+.ai-settings-order-num {
+  font-weight: 700;
+  color: rgba(170, 206, 255, 0.95);
+}
+.ai-settings-order strong {
+  font-weight: 650;
 }
 .ai-settings-easy {
   border: 0;

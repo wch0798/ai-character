@@ -31,6 +31,7 @@ import {
   launchGitInstaller,
   prepareCradleEnvironment,
   restoreProjectCheckpoint,
+  resetRecommendedSettings,
   setAppPreferences,
   getUsageSnapshot,
   type AgentKind,
@@ -163,12 +164,6 @@ export function initializeSettingsUi(): void {
 
   const easySection = document.createElement("section");
   easySection.className = "ai-settings-section";
-  const easyTitle = document.createElement("h3");
-  easyTitle.textContent = "한 번에 쓰기 (추천)";
-  const easyLead = document.createElement("div");
-  easyLead.className = "ai-settings-help";
-  easyLead.textContent = "채팅만 하면 됩니다. 키는 이 PC 파일에만 둡니다.";
-  easyLead.hidden = true;
   const easyStatus = document.createElement("div");
   easyStatus.className = "ai-settings-easy-status";
   easyStatus.textContent = "자동 준비 상태 확인 중…";
@@ -190,8 +185,8 @@ export function initializeSettingsUi(): void {
   const openKeysButton = makeButton("키 파일", "ai-settings-ghost");
   const refreshReadyButton = makeButton("다시 확인", "ai-settings-ghost");
   easyActions.append(openKeysButton, installRuntimesButton, refreshReadyButton);
-  const setupWebButton = makeButton("웹에서 쉽게 설정하기", "ai-settings-action ai-settings-primary");
-  setupWebButton.title = "브라우저에서 처음 설정을 단계별로 진행합니다. 키·폴더·알림·업데이트를 한곳에서 저장합니다.";
+  const setupWebButton = makeButton("웹에서 설정 보기", "ai-settings-action ai-settings-primary");
+  setupWebButton.title = "브라우저에서 설정 전체를 엽니다. 키, 폴더, 로그인, 알림을 한 화면에서 봅니다.";
   setupWebButton.addEventListener("click", () => {
     void withBusy([setupWebButton], async () => {
       try {
@@ -202,15 +197,49 @@ export function initializeSettingsUi(): void {
       }
     });
   });
+  const easyMore = document.createElement("details");
+  easyMore.className = "ai-settings-fold";
+  const easyMoreSummary = document.createElement("summary");
+  easyMoreSummary.textContent = "잘 안 되면";
+  easyMore.append(easyMoreSummary, easyChecklist, easyActions);
+  const resetSettingsButton = makeButton("설정 초기화", "ai-settings-ghost");
+  resetSettingsButton.title = "동작 스위치와 웹 설정의 단계 체크를 모두 풉니다. 키와 작업 폴더는 지우지 않습니다.";
   easySection.append(
-    easyTitle,
     setupWebButton,
     easyStatus,
-    easyChecklist,
     easyNext,
     enableFreeAutoButton,
-    easyActions
+    resetSettingsButton,
+    easyMore
   );
+
+  const orderSection = document.createElement("section");
+  orderSection.className = "ai-settings-section";
+  const orderTitle = document.createElement("h3");
+  orderTitle.textContent = "누가 먼저 하나요";
+  const orderList = document.createElement("ol");
+  orderList.className = "ai-settings-order";
+  const orderItems: Array<[string, string]> = [
+    ["대화", "ChatGPT 구독이 답합니다."],
+    ["정보 찾기", "무료 Gemini가 찾습니다."],
+    ["파일 고치기", "Claude가 계획하고 고칩니다. Cursor도 고칠 수 있습니다."],
+  ];
+  orderItems.forEach(([label, body], index) => {
+    const item = document.createElement("li");
+    const num = document.createElement("span");
+    num.className = "ai-settings-order-num";
+    num.textContent = String(index + 1);
+    const text = document.createElement("span");
+    const strong = document.createElement("strong");
+    strong.textContent = label;
+    text.append(strong, document.createTextNode(` ${body}`));
+    item.append(num, text);
+    orderList.append(item);
+  });
+  const orderNote = document.createElement("div");
+  orderNote.className = "ai-settings-help";
+  orderNote.textContent = "유료 API는 꺼져 있습니다. 사용량을 다 쓰면 채팅에 알려 줍니다.";
+  orderSection.append(orderTitle, orderList, orderNote);
 
   const pluginSection = document.createElement("section");
   pluginSection.className = "ai-settings-section ai-plugin-section";
@@ -219,8 +248,7 @@ export function initializeSettingsUi(): void {
   const pluginLead = document.createElement("div");
   pluginLead.className = "ai-settings-help";
   pluginLead.textContent =
-    "웹에서 원하는 플러그인을 찾은 뒤, 이름을 적어 설치하세요. 켠 항목은 채팅 Claude에 같이 쓰입니다.";
-  pluginLead.hidden = true;
+    "파일을 고칠 때 Claude에 같이 켜집니다. 대화와 정보 조사에는 붙지 않습니다. 웹에서 본 이름을 적어 설치하세요.";
   const pluginStatus = document.createElement("div");
   pluginStatus.className = "ai-settings-status";
   pluginStatus.textContent = "플러그인 확인 중…";
@@ -256,6 +284,7 @@ export function initializeSettingsUi(): void {
   pluginRecommend.append(pluginAvailableTitle, pluginAvailable);
   pluginSection.append(
     pluginTitle,
+    pluginLead,
     pluginStatus,
     pluginInstallRow,
     pluginInstalled,
@@ -630,7 +659,12 @@ export function initializeSettingsUi(): void {
   const basicPane = document.createElement("div");
   basicPane.className = "ai-settings-pane";
   basicPane.dataset.pane = "basic";
-  basicPane.append(easySection, apiKeys.section, projectSection);
+  const moreKeys = document.createElement("details");
+  moreKeys.className = "ai-settings-fold-card";
+  const moreKeysSummary = document.createElement("summary");
+  moreKeysSummary.textContent = "다른 AI 키 (안 넣어도 됩니다)";
+  moreKeys.append(moreKeysSummary, apiKeys.section);
+  basicPane.append(orderSection, easySection, projectSection, moreKeys);
 
   const accountsPane = document.createElement("div");
   accountsPane.className = "ai-settings-pane";
@@ -770,13 +804,30 @@ export function initializeSettingsUi(): void {
     }
   };
 
+  const moreTabsButton = makeButton("다른 설정", "ai-settings-tab");
+  moreTabsButton.type = "button";
   for (const def of tabDefs) {
     const button = makeButton(def.label, "ai-settings-tab");
     button.dataset.tab = def.id;
     button.setAttribute("role", "tab");
+    if (def.id !== "basic") {
+      button.hidden = true;
+    }
     button.addEventListener("click", () => setActiveTab(def.id));
     tabs.append(button);
   }
+  moreTabsButton.addEventListener("click", () => {
+    const open = moreTabsButton.dataset.open === "1";
+    moreTabsButton.dataset.open = open ? "0" : "1";
+    moreTabsButton.textContent = open ? "다른 설정" : "간단히";
+    for (const def of tabDefs) {
+      if (def.id === "basic") continue;
+      const button = tabs.querySelector<HTMLButtonElement>(`[data-tab="${def.id}"]`);
+      if (button) button.hidden = open;
+    }
+    if (open) setActiveTab("basic");
+  });
+  tabs.append(moreTabsButton);
   setActiveTab("basic");
 
   overlay.append(
@@ -1629,8 +1680,8 @@ export function initializeSettingsUi(): void {
     easyNext.hidden = readiness.nextSteps.length === 0;
     enableFreeAutoButton.textContent =
       readiness.cradleEnabled && readiness.autoWebSearch && readiness.geminiApiEnabled
-        ? "무료 자동 설정 다시 적용"
-        : "무료 자동 모드 켜기";
+        ? "추천 설정 다시 적용"
+        : "추천 설정 켜기";
   }
 
   async function refreshFreeAutoReadiness(): Promise<void> {
@@ -2068,6 +2119,23 @@ export function initializeSettingsUi(): void {
     } finally {
       enableFreeAutoButton.disabled = false;
     }
+  });
+
+  confirmOnSecondClick(resetSettingsButton, "한 번 더 누르면 초기화", () => {
+    void (async () => {
+      resetSettingsButton.disabled = true;
+      message.textContent = "설정을 처음 상태로 돌리는 중…";
+      try {
+        message.textContent = await resetRecommendedSettings();
+        invalidateSettings();
+        await refreshPreferences();
+        await refreshFreeAutoReadiness();
+      } catch (error) {
+        message.textContent = errorText(error);
+      } finally {
+        resetSettingsButton.disabled = false;
+      }
+    })();
   });
 
   installRuntimesButton.addEventListener("click", async () => {

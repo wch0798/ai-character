@@ -221,6 +221,10 @@ export async function getAppPreferences(): Promise<AppPreferences> {
   return invoke<AppPreferences>("get_app_preferences");
 }
 
+export function resetRecommendedSettings(): Promise<string> {
+  return invoke<string>("reset_recommended_settings");
+}
+
 export async function setAppPreferences(
   preferences: AppPreferences
 ): Promise<AppPreferences> {
@@ -567,7 +571,8 @@ export async function confirmSensitiveAgentAccess(
   );
 }
 
-export async function askClaudeCompat(
+export async function askAgentCompat(
+  agent: AgentKind,
   prompt: string,
   conversationId?: string | null
 ): Promise<string> {
@@ -579,7 +584,7 @@ export async function askClaudeCompat(
 
   try {
     return await runAgentText({
-      agent: preferences.defaultAgent,
+      agent,
       prompt,
       conversationId: conversationId ?? null,
       timeoutSeconds: preferences.timeoutSeconds,
@@ -593,4 +598,12 @@ export async function askClaudeCompat(
     setWorkLogStatus(friendly);
     throw new Error(friendly);
   }
+}
+
+export async function askClaudeCompat(
+  prompt: string,
+  conversationId?: string | null
+): Promise<string> {
+  const preferences = await getAppPreferences();
+  return askAgentCompat(preferences.defaultAgent, prompt, conversationId);
 }

@@ -539,6 +539,7 @@ pub fn run() {
             updates::cancel_updates,
             updates::get_updater_build_status,
             setup_web::open_setup_web,
+            setup_web::reset_recommended_settings,
             usage_report::get_usage_report,
             scheduled_jobs::list_scheduled_jobs,
             scheduled_jobs::running_scheduled_jobs,

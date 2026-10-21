@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 
-import { compactNumber, providerLabel, usageBrief, type UsageReport } from "../usage-brief";
+import { chatLimitNotices, compactNumber, providerLabel, usageBrief, type UsageReport } from "../usage-brief";
 
 const base: UsageReport = { days: 1, today: "2026-10-14", generatedAt: 0 };
 
@@ -34,6 +34,13 @@ describe("usage brief", () => {
     expect(lines.find((l) => l.label === "가장 많이 쓴 AI")?.value).toBe("Gemini 9 · OpenRouter 3");
     expect(lines.find((l) => l.label === "Claude 구독 (오늘)")?.value).toBe("응답 40회 · 1.3M 토큰");
     expect(lines.find((l) => l.label === "Codex 주간 한도")).toMatchObject({ value: "92% 사용", tone: "over" });
+    expect(chatLimitNotices({ ...base, codex: { available: true, meters: [{ label: "주간 한도", pct: 92.4 }] } })).toEqual([
+      "ChatGPT(Codex) 주간 한도 92% 사용 중입니다.",
+    ]);
+    expect(chatLimitNotices({ ...base, codex: { available: true, meters: [{ label: "주간 한도", pct: 100 }] } })[0]).toContain("다 썼습니다");
+    expect(chatLimitNotices({ ...base, alerts: { calls: 1, paidCalls: 1, costUsd: 1, dailyCostLimitUsd: 1, level: "over", paidBlocked: true } })).toEqual([
+      "오늘 유료 API 한도를 다 썼습니다. 무료 AI만 사용합니다.",
+    ]);
   });
 
   it("formats numbers and provider ids", () => {

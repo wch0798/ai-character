@@ -16,8 +16,8 @@ const OLLAMA_PROVIDER: &str = "ollama_local";
 const LMSTUDIO_PROVIDER: &str = "lmstudio_local";
 const REMOTE_OLLAMA_PROVIDER: &str = "ollama_remote";
 const MAX_MODELS_PER_FREE_SERVICE: usize = 2;
-const DEFAULT_GEMINI_MODEL: &str = "gemini-2.5-flash";
-const DEFAULT_GEMINI_FREE_MODELS: &str = "gemini-2.5-flash,gemini-2.5-flash-lite,gemini-2.0-flash";
+const DEFAULT_GEMINI_MODEL: &str = "gemini-3.8-flash";
+const DEFAULT_GEMINI_FREE_MODELS: &str = "gemini-3.8-flash,gemini-2.5-flash,gemini-2.5-flash-lite,gemini-2.0-flash";
 const DEFAULT_OPENAI_MODEL: &str = "gpt-5-mini";
 const MAX_PROMPT_CHARS: usize = 80_000;
 const MODEL_REFRESH_MS: i64 = 24 * 60 * 60 * 1000;
@@ -159,6 +159,39 @@ fn gemini_model_is_free(model: &str) -> bool {
     gemini_free_models().iter().any(|free| free == model)
 }
 
+fn gemini_candidates() -> Vec<String> {
+    let mut models = Vec::new();
+    let primary = gemini_model();
+    if gemini_model_is_free(&primary) {
+        models.push(primary);
+    }
+    for model in gemini_free_models() {
+        if !models.iter().any(|have| have == &model) {
+            models.push(model);
+        }
+    }
+    models
+}
+
+/// Code, music, and safety models are free but give the wrong kind of answer for facts.
+fn factual_chat_model(id: &str) -> bool {
+    let id = id.to_ascii_lowercase();
+    !["code", "lyria", "clip", "content-safety", "embed", "whisper", "tts", "image"]
+        .iter()
+        .any(|word| id.contains(word))
+}
+
+fn factual_rank(id: &str) -> u8 {
+    let id = id.to_ascii_lowercase();
+    if id.contains("preview") || id.contains("-note") {
+        return 3;
+    }
+    if id.contains("gemma") || id.contains("llama") || id.contains("qwen") || id.contains("gemini") || id.contains("nemotron") {
+        return 0;
+    }
+    1
+}
+
 fn openrouter_candidates(limit: usize) -> Vec<String> {
     if let Some(model) = env_key("OPENROUTER_MODEL") {
         return vec![model];
@@ -166,13 +199,19 @@ fn openrouter_candidates(limit: usize) -> Vec<String> {
     let Ok(connection) = usage_ledger::open_ledger() else {
         return Vec::new();
     };
-    usage_ledger::list_models(&connection, Some(OPENROUTER_PROVIDER))
-        .unwrap_or_default()
-        .into_iter()
+    let models = usage_ledger::list_models(&connection, Some(OPENROUTER_PROVIDER)).unwrap_or_default();
+    let usable: Vec<String> = models
+        .iter()
         .filter(|model| model.active && model.is_free && model.context_length >= 16_000)
-        .map(|model| model.model_id)
-        .take(limit)
-        .collect()
+        .map(|model| model.model_id.clone())
+        .collect();
+    let mut preferred: Vec<String> = usable.iter().filter(|id| factual_chat_model(id)).cloned().collect();
+    if preferred.is_empty() {
+        preferred = usable;
+    } else {
+        preferred.sort_by_key(|id| factual_rank(id));
+    }
+    preferred.into_iter().take(limit).collect()
 }
 
 /// An extra free service that speaks the OpenAI chat-completions format.
@@ -1234,7 +1273,19 @@ pub async fn run_provider_with_context(
                 policy_engine::require_paid_approval(GEMINI_PROVIDER, context.session_id.as_deref())?;
                 return call_model(GEMINI_PROVIDER, &model, "paid", &prompt, context, &policy).await;
             }
-            call_model(GEMINI_PROVIDER, &model, "free", &prompt, context, &policy).await
+            let mut last_error = String::new();
+            for candidate in gemini_candidates() {
+                match call_model(GEMINI_PROVIDER, &candidate, "free", &prompt, context, &policy).await {
+                    Ok(text) => return Ok(text),
+                    Err(error) if is_limited(&error) => last_error = error,
+                    Err(error) => return Err(error),
+                }
+            }
+            Err(if last_error.is_empty() {
+                "PROVIDER_FAILED|gemini_api|사용할 무료 Gemini 모델이 없습니다.".to_string()
+            } else {
+                last_error
+            })
         }
         OPENROUTER_PROVIDER => {
             if !policy.openrouter_enabled {
@@ -1567,6 +1618,18 @@ mod tests {
         let first_local = FREE_SERVICES.iter().position(|service| is_local_service(service.id)).unwrap();
         assert!(FREE_SERVICES[first_local..].iter().all(|service| is_local_service(service.id)));
         assert!(free_service(FREE_POOL_PROVIDER).is_none());
+    }
+
+    #[test]
+    fn factual_fallback_skips_code_and_media_models() {
+        assert!(!factual_chat_model("cohere/north-mini-code:free"));
+        assert!(!factual_chat_model("google/lyria-3-pro-preview"));
+        assert!(!factual_chat_model("nvidia/nemotron-3.5-content-safety:free"));
+        assert!(factual_chat_model("google/gemma-4-31b-it:free"));
+        assert!(factual_rank("google/gemma-4-31b-it:free") < factual_rank("dots-studio/dots-3-note-preview:free"));
+        assert_eq!(gemini_model(), "gemini-3.8-flash");
+        assert_eq!(gemini_candidates()[0], "gemini-3.8-flash");
+        assert!(gemini_candidates().contains(&"gemini-2.5-flash".to_string()));
     }
 
     #[test]

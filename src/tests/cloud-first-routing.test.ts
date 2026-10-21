@@ -57,11 +57,11 @@ describe("Cloud-First 무료 우선 라우팅", () => {
     expect(providers).toEqual(["openrouter_api"]);
   });
 
-  it("총괄 순서는 무료 API → Claude CLI → 유료 API", () => {
+  it("프로젝트 총괄 순서는 Claude CLI → 무료 API → 유료 API", () => {
     expect(managerProviderOrder(["gemini_api", "openrouter_api", "openai_api"], true)).toEqual([
+      "claude_cli",
       "gemini_api",
       "openrouter_api",
-      "claude_cli",
       "openai_api",
     ]);
     expect(managerProviderOrder(["openai_api"], false)).toEqual(["openai_api"]);
@@ -82,10 +82,10 @@ describe("Cloud-First 무료 우선 라우팅", () => {
     );
     expect(providers).toEqual(["gemini_api", "openrouter_api", "free_pool_api", "openai_api"]);
     expect(managerProviderOrder(providers, true)).toEqual([
+      "claude_cli",
       "gemini_api",
       "openrouter_api",
       "free_pool_api",
-      "claude_cli",
       "openai_api",
     ]);
   });

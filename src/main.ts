@@ -676,6 +676,17 @@ async function startLive2D() {
     void refreshClickThroughGeometry();
   };
 
+  const hideCharacterWindow = () => {
+    closeContextMenu();
+    setChatOpen(false);
+    flashStatus("숨겼습니다. Ctrl+Shift+Space로 다시 나옵니다.", "info", 700);
+    window.setTimeout(() => {
+      void getCurrentWindow().hide().catch((error) => {
+        console.warn("캐릭터 숨기기 실패:", error);
+      });
+    }, 450);
+  };
+
   const makeMenuHeader = (title: string) => {
     const header = document.createElement("div");
     header.className = "character-context-menu-header";
@@ -897,6 +908,11 @@ async function startLive2D() {
     const token = ++menuViewToken;
     menu.innerHTML = "";
     menu.appendChild(makeMenuHeader("메뉴"));
+    menu.appendChild(
+      makeMenuButton("캐릭터 숨기기", () => {
+        hideCharacterWindow();
+      })
+    );
 
     menu.appendChild(
       makeMenuButton(
@@ -1742,6 +1758,9 @@ async function startLive2D() {
     }
   };
 
+  let singleTapTimer = 0;
+  let lastCharacterTapAt = 0;
+
   characterHitLayer.addEventListener("pointerup", (event) => {
     const shouldTap =
       pointerDown &&
@@ -1752,10 +1771,28 @@ async function startLive2D() {
     if (!shouldTap || eventHitsInteractiveUi(event)) {
       return;
     }
-    setChatOpen(!isChatOpen());
-    void model.motion("TapBody", undefined, 3).catch((error) => {
-      console.warn("TapBody motion:", error);
-    });
+    const now = performance.now();
+    if (now - lastCharacterTapAt < 320) {
+      lastCharacterTapAt = 0;
+      if (singleTapTimer) {
+        window.clearTimeout(singleTapTimer);
+        singleTapTimer = 0;
+      }
+      hideCharacterWindow();
+      return;
+    }
+    lastCharacterTapAt = now;
+    if (singleTapTimer) {
+      window.clearTimeout(singleTapTimer);
+    }
+    singleTapTimer = window.setTimeout(() => {
+      singleTapTimer = 0;
+      lastCharacterTapAt = 0;
+      setChatOpen(!isChatOpen());
+      void model.motion("TapBody", undefined, 3).catch((error) => {
+        console.warn("TapBody motion:", error);
+      });
+    }, 280);
   });
   characterHitLayer.addEventListener("pointercancel", stopDragging);
   window.addEventListener("pointerup", stopDragging);
@@ -3435,6 +3472,7 @@ async function startLive2D() {
         postAssistantReply(
           answer || "작업을 마쳤지만 채팅에 넣을 답이 비어 있습니다."
         );
+        window.dispatchEvent(new Event("ai-character:usage-refresh"));
         notifyIfAway(startedAt, "답변이 도착했습니다", answer || "작업을 마쳤습니다.");
 
         characterActivity?.setActivity("done");
@@ -3489,9 +3527,10 @@ async function startLive2D() {
           chatForm?.requestSubmit();
         };
         addMessage(
-          `연결 오류: ${message}`,
+          message.includes("사용량") || message.includes("한도") ? message : `연결 오류: ${message}`,
           "assistant"
         );
+        window.dispatchEvent(new Event("ai-character:usage-refresh"));
         notifyIfAway(startedAt, "작업이 실패했습니다", message);
         retryLastRequest = null;
         characterActivity?.setActivity("error");

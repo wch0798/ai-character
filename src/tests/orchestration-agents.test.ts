@@ -18,7 +18,7 @@ describe("multi-agent modify assignment", () => {
     ).toEqual(["cursor", "codex", "claude"]);
   });
 
-  it("파일 작업을 Cursor와 Codex에 번갈아 맡긴다", () => {
+  it("Claude와 Cursor가 있으면 파일 수정은 둘만 쓴다", () => {
     const plan: OrchestrationPlan = {
       summary: "페이지 만들기",
       tasks: [
@@ -56,8 +56,32 @@ describe("multi-agent modify assignment", () => {
       availability
     );
 
-    expect(normalized.tasks[0]?.target).toBe("cursor");
-    expect(normalized.tasks[1]?.target).toBe("codex");
+    expect(normalized.tasks[0]?.target).toBe("claude");
+    expect(normalized.tasks[1]?.target).toBe("cursor");
     expect(normalized.tasks[2]?.target).toBe("gemini_api");
+  });
+
+  it("Cursor가 없으면 파일 수정은 Claude만 한다", () => {
+    const plan: OrchestrationPlan = {
+      summary: "페이지",
+      tasks: [
+        { id: "t1", title: "HTML", target: "codex", mode: "modify", prompt: "html", dependsOn: [] },
+        { id: "t2", title: "CSS", target: "cursor", mode: "modify", prompt: "css", dependsOn: [] },
+      ],
+    };
+    const normalized = normalizePlanForAutomaticProviders(plan, [], ["claude", "codex"], availability);
+    expect(normalized.tasks.map((task) => task.target)).toEqual(["claude", "claude"]);
+  });
+
+  it("Claude와 Cursor가 없으면 남은 CLI에 나눈다", () => {
+    const plan: OrchestrationPlan = {
+      summary: "페이지",
+      tasks: [
+        { id: "t1", title: "HTML", target: "gemini_api", mode: "modify", prompt: "html", dependsOn: [] },
+        { id: "t2", title: "CSS", target: "codex", mode: "modify", prompt: "css", dependsOn: [] },
+      ],
+    };
+    const normalized = normalizePlanForAutomaticProviders(plan, ["gemini_api"], ["codex", "antigravity"], availability);
+    expect(normalized.tasks.map((task) => task.target)).toEqual(["codex", "antigravity"]);
   });
 });

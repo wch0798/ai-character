@@ -1,5 +1,5 @@
 import { openSetupWeb } from "./setup-web-client";
-import { getUsageReport, usageBrief, type BriefLine, type UsageReport } from "./usage-brief";
+import { chatLimitNotices, getUsageReport, usageBrief, type BriefLine, type UsageReport } from "./usage-brief";
 
 const TONE_COLOR: Record<BriefLine["tone"], string> = {
   ok: "#4cc38a",
@@ -58,6 +58,27 @@ export function initializeUsageDashboardUi(options: {
 
   let autoTimer = 0;
   let loaded = false;
+  let handoffNotice = "";
+  const limitNotice = document.querySelector<HTMLElement>("#chat-limit-notice");
+
+  const showLimitNotice = (report?: UsageReport): void => {
+    if (!limitNotice) {
+      return;
+    }
+    const lines = [...(report ? chatLimitNotices(report) : [])];
+    if (handoffNotice && !lines.some((line) => line.startsWith(handoffNotice.slice(0, 12)))) {
+      lines.unshift(handoffNotice);
+    }
+    if (lines.length === 0) {
+      limitNotice.hidden = true;
+      limitNotice.textContent = "";
+      limitNotice.classList.remove("is-over");
+      return;
+    }
+    limitNotice.hidden = false;
+    limitNotice.textContent = lines.join("\n");
+    limitNotice.classList.toggle("is-over", lines.some((line) => line.includes("다 썼습니다")));
+  };
 
   const close = (): void => {
     if (!panel) {
@@ -77,7 +98,9 @@ export function initializeUsageDashboardUi(options: {
       body.innerHTML = `<div class="usage-muted">오늘 사용량을 불러오는 중…</div>`;
     }
     try {
-      body.innerHTML = renderBrief(await getUsageReport(1, true));
+      const report = await getUsageReport(1, true);
+      body.innerHTML = renderBrief(report);
+      showLimitNotice(report);
       loaded = true;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -140,6 +163,17 @@ export function initializeUsageDashboardUi(options: {
   bind(webButton, () => void openDetailed());
   bind(loginButton, openSettingsLogin);
   bind(launcher, () => void open());
+
+  const refreshLimit = (): void => {
+    void getUsageReport(1, true).then(showLimitNotice).catch(() => showLimitNotice());
+  };
+  window.addEventListener("ai-character:limit-notice", (event: Event) => {
+    handoffNotice = String((event as CustomEvent<string>).detail ?? "").trim();
+    showLimitNotice();
+    refreshLimit();
+  });
+  window.addEventListener("ai-character:usage-refresh", refreshLimit);
+  refreshLimit();
 
   return { open, openDetailed };
 }
