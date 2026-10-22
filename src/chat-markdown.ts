@@ -9,7 +9,11 @@ export type Block =
   | { type: "code"; lang: string; text: string }
   | { type: "heading"; level: number; inline: Inline[] }
   | { type: "list"; ordered: boolean; items: Inline[][] }
-  | { type: "quote"; lines: Inline[][] };
+  | { type: "quote"; lines: Inline[][] }
+  | { type: "table"; align: TableAlign[]; header: Inline[][]; rows: Inline[][][] }
+  | { type: "rule" };
+
+export type TableAlign = "left" | "center" | "right";
 
 const INLINE_PATTERN =
   /(`[^`\n]+`)|(\*\*[^*\n]+\*\*)|(\[[^\]\n]+\]\((https?:\/\/[^\s)]+)\))|(https?:\/\/[^\s<>()]+[^\s<>().,;:!?'"])/g;
@@ -56,6 +60,36 @@ const HEADING = /^(#{1,4})\s+(.+)$/;
 const BULLET = /^\s*[-*•]\s+(.*)$/;
 const ORDERED = /^\s*\d+[.)]\s+(.*)$/;
 const QUOTE = /^\s*>\s?(.*)$/;
+const RULE = /^\s*([-*_])(\s*\1){2,}\s*$/;
+const TABLE_DIVIDER = /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/;
+
+/** Cells of a `| a | b |` row; `\|` stays a literal bar inside a cell. */
+export function splitTableRow(line: string): string[] {
+  let text = line.trim();
+  if (text.startsWith("|")) text = text.slice(1);
+  if (text.endsWith("|") && !text.endsWith("\\|")) text = text.slice(0, -1);
+  const cells: string[] = [];
+  let current = "";
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+    if (char === "\\" && text[index + 1] === "|") {
+      current += "|";
+      index += 1;
+    } else if (char === "|") {
+      cells.push(current.trim());
+      current = "";
+    } else {
+      current += char;
+    }
+  }
+  cells.push(current.trim());
+  return cells;
+}
+
+function isTableStart(line: string, next: string | undefined): boolean {
+  return line.includes("|") && next !== undefined && TABLE_DIVIDER.test(next) && next.includes("-")
+    && splitTableRow(line).length === splitTableRow(next).length;
+}
 
 export function parseMarkdown(source: string): Block[] {
   const lines = source.replace(/\r\n?/g, "\n").split("\n");
@@ -85,6 +119,29 @@ export function parseMarkdown(source: string): Block[] {
     }
     if (!line.trim()) {
       flushParagraph();
+      continue;
+    }
+    if (isTableStart(line, lines[index + 1])) {
+      flushParagraph();
+      const header = splitTableRow(line);
+      const align = splitTableRow(lines[index + 1]).map((cell): TableAlign =>
+        cell.startsWith(":") && cell.endsWith(":") ? "center" : cell.endsWith(":") ? "right" : "left"
+      );
+      const rows: Inline[][][] = [];
+      index += 2;
+      while (index < lines.length && lines[index].includes("|") && lines[index].trim()) {
+        const cells = splitTableRow(lines[index]);
+        // Pad or trim so every row has the header's column count.
+        rows.push(header.map((_, column) => parseInline(cells[column] ?? "")));
+        index += 1;
+      }
+      index -= 1;
+      blocks.push({ type: "table", align, header: header.map((cell) => parseInline(cell)), rows });
+      continue;
+    }
+    if (RULE.test(line)) {
+      flushParagraph();
+      blocks.push({ type: "rule" });
       continue;
     }
     const heading = line.match(HEADING);
@@ -195,6 +252,33 @@ function codeBlock(block: Extract<Block, { type: "code" }>, handlers: MarkdownHa
   return wrapper;
 }
 
+function tableBlock(block: Extract<Block, { type: "table" }>, handlers: MarkdownHandlers): HTMLElement {
+  // Wrapped so a wide table scrolls sideways inside the narrow chat bubble.
+  const wrapper = document.createElement("div");
+  wrapper.className = "md-table-wrap";
+  const table = document.createElement("table");
+  table.className = "md-table";
+  const cell = (tag: "th" | "td", inline: Inline[], column: number): HTMLElement => {
+    const element = document.createElement(tag);
+    element.style.textAlign = block.align[column] ?? "left";
+    appendInline(element, inline, handlers);
+    return element;
+  };
+  const head = document.createElement("thead");
+  const headRow = document.createElement("tr");
+  block.header.forEach((inline, column) => headRow.append(cell("th", inline, column)));
+  head.append(headRow);
+  const body = document.createElement("tbody");
+  for (const row of block.rows) {
+    const tr = document.createElement("tr");
+    row.forEach((inline, column) => tr.append(cell("td", inline, column)));
+    body.append(tr);
+  }
+  table.append(head, body);
+  wrapper.append(table);
+  return wrapper;
+}
+
 /** Builds DOM nodes only (never innerHTML), so model output cannot inject markup. */
 export function renderMarkdown(source: string, handlers: MarkdownHandlers): DocumentFragment {
   const fragment = document.createDocumentFragment();
@@ -217,6 +301,10 @@ export function renderMarkdown(source: string, handlers: MarkdownHandlers): Docu
         list.append(li);
       }
       fragment.append(list);
+    } else if (block.type === "table") {
+      fragment.append(tableBlock(block, handlers));
+    } else if (block.type === "rule") {
+      fragment.append(document.createElement("hr"));
     } else {
       const quote = document.createElement("blockquote");
       appendLines(quote, block.lines, handlers);
