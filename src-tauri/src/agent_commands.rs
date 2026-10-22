@@ -739,7 +739,11 @@ where
     F: FnMut(AgentStreamChunk),
 {
     let settings = load_settings()?;
-    let model = settings.agent_model(agent).map(str::to_string);
+    let model = settings.agent_model(agent).map(str::to_string).or_else(|| {
+        (agent == AgentKind::Codex)
+            .then(crate::codex_model::replacement_for_retired_model)
+            .flatten()
+    });
     let history_task_id = task_id
         .as_deref()
         .map(str::trim)

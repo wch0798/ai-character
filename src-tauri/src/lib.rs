@@ -1,4 +1,7 @@
 mod alerts;
+mod login_status;
+mod cmd_shim;
+mod codex_model;
 mod setup_web;
 mod usage_report;
 mod local_ai;
@@ -438,6 +441,7 @@ pub fn run() {
             set_project_dir,
             get_conversation_dir,
             set_conversation_dir,
+            login_status::get_agent_logins,
             set_agent_path,
             detect_agent,
             detect_agent_runtime,

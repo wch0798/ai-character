@@ -326,6 +326,18 @@ export async function openUsageDashboard(): Promise<string> {
   return invoke<string>("open_usage_dashboard");
 }
 
+export type AgentLogin = {
+  id: AgentKind;
+  /** null when this program gives no reliable way to check. */
+  loggedIn: boolean | null;
+  account: string | null;
+  detail: string;
+};
+
+export async function getAgentLogins(): Promise<AgentLogin[]> {
+  return invoke<AgentLogin[]>("get_agent_logins");
+}
+
 export async function getUsageSnapshot(): Promise<unknown> {
   return invoke("get_usage_snapshot");
 }

@@ -396,12 +396,9 @@ pub fn launch_agent_login(app: tauri::AppHandle, agent: String) -> Result<String
             {
                 let envs = crate::isolated_browser::cli_browser_env("cursor-cli")
                     .unwrap_or_default();
-                crate::windows_process::launch_visible_cli_with_env(&binary, &[], &envs)
-                    .map_err(|error| format!("Cursor 실행 실패: {error}"))?;
-                let _ = crate::isolated_browser::open_url(
-                    "cursor-cli",
-                    "https://authenticator.cursor.sh/",
-                );
+                // `cursor-agent login` opens the sign-in page itself and saves the session.
+                crate::windows_process::launch_visible_cli_with_env(&binary, &["login"], &envs)
+                    .map_err(|error| format!("Cursor 로그인 실행 실패: {error}"))?;
             }
             #[cfg(not(windows))]
             {
@@ -413,11 +410,13 @@ pub fn launch_agent_login(app: tauri::AppHandle, agent: String) -> Result<String
         AgentKind::Antigravity => {
             #[cfg(windows)]
             {
-                crate::isolated_browser::open_url(
-                    "antigravity-cli",
-                    "https://antigravity.google/",
-                )
-                .map_err(|error| format!("페이지 열기 실패: {error}"))?;
+                // The CLI signs in when started without arguments ("Launch the CLI without
+                // arguments to sign in"); opening the website alone never signed the CLI in.
+                let envs = crate::isolated_browser::cli_browser_env("antigravity-cli")
+                    .unwrap_or_default();
+                crate::windows_process::launch_visible_cli_with_env(&binary, &[], &envs)
+                    .map_err(|error| format!("Antigravity 로그인 실행 실패: {error}"))?;
+                Ok("Antigravity 로그인 창을 열었습니다. 창의 안내대로 Google 계정으로 로그인한 뒤 이 화면으로 돌아오세요.".to_string())
             }
             #[cfg(not(windows))]
             {
@@ -425,8 +424,8 @@ pub fn launch_agent_login(app: tauri::AppHandle, agent: String) -> Result<String
                     .arg("https://antigravity.google/")
                     .spawn()
                     .map_err(|error| format!("페이지 열기 실패: {error}"))?;
+                Ok("Antigravity 페이지를 분리된 브라우저 창에서 열었습니다. 기본 구글 계정과 섞이지 않습니다.".to_string())
             }
-            Ok("Antigravity 페이지를 분리된 브라우저 창에서 열었습니다. 기본 구글 계정과 섞이지 않습니다.".to_string())
         }
     }
 }
