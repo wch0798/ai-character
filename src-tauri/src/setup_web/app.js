@@ -953,6 +953,12 @@ function loginBadge(signIn) {
   return h("span", { class: "badge", text: "로그인 확인 불가" });
 }
 
+// Its own line, so a sign-in with the wrong account is easy to spot.
+function loginAccount(signIn, ready) {
+  if (!ready || !signIn || signIn.loggedIn !== true) return null;
+  return h("p", { class: "small", style: "font-weight:600;word-break:break-all", text: `계정: ${signIn.account || "계정 이름은 확인할 수 없습니다"}` });
+}
+
 function renderRuntime(list) {
   if (!runtime) return;
   const rows = runtime.components.map((component) => {
@@ -986,7 +992,7 @@ function renderRuntime(list) {
     return h(
       "div",
       { class: "key-row row space" },
-      h("div", { style: "min-width:0;flex:1" }, h("div", { class: "row" }, h("h4", { text: component.label }), h("span", { class: `badge ${component.ready ? "ok" : "warn"}`, text: component.ready ? "설치됨" : "없음" }), component.ready ? loginBadge(signIn) : null), signIn && component.ready ? h("p", { class: "small", text: signIn.account ? `${signIn.detail} (${signIn.account})` : signIn.detail }) : null, h("p", { class: "muted small mono", style: "word-break:break-all", text: component.detail })),
+      h("div", { style: "min-width:0;flex:1" }, h("div", { class: "row" }, h("h4", { text: component.label }), h("span", { class: `badge ${component.ready ? "ok" : "warn"}`, text: component.ready ? "설치됨" : "없음" }), component.ready ? loginBadge(signIn) : null), loginAccount(signIn, component.ready), signIn && component.ready ? h("p", { class: "small", text: signIn.detail }) : null, h("p", { class: "muted small mono", style: "word-break:break-all", text: component.detail })),
       h("div", { class: "row" }, ...actions)
     );
   });

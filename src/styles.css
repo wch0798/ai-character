@@ -3078,6 +3078,11 @@ body:has(#ai-settings-panel:not([hidden])) #performance-hud {
 .ai-web-account-meta strong {
   font-size: 12px;
 }
+.ai-login-account {
+  font-size: 12px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
 .ai-web-account-actions {
   display: flex;
   flex-wrap: wrap;

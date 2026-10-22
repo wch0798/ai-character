@@ -127,9 +127,32 @@ fn antigravity_login_from(output: &str) -> AgentLogin {
     }
     let listed = output.lines().filter(|line| !line.trim().is_empty() && !line.to_lowercase().starts_with("fetching")).count();
     if listed > 0 && !lower.contains("error") {
-        return login("antigravity", Some(true), None, "Google 계정으로 로그인되어 있습니다.");
+        return login("antigravity", Some(true), antigravity_account(), "Google 계정으로 로그인되어 있습니다.");
     }
     login("antigravity", None, None, "로그인 상태를 확인하지 못했습니다. 인터넷 연결을 확인하세요.")
+}
+
+/// The CLI prints no account, but each run logs "authenticated successfully as <email>" under
+/// ~/.gemini/antigravity-cli; the newest log that has it names the signed-in account.
+fn antigravity_account() -> Option<String> {
+    let dir = home_dir()?.join(".gemini").join("antigravity-cli");
+    let mut logs: Vec<(std::time::SystemTime, PathBuf)> = std::fs::read_dir(dir.join("log"))
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .chain(std::iter::once(dir.join("cli.log")))
+        .filter_map(|path| Some((std::fs::metadata(&path).ok()?.modified().ok()?, path)))
+        .collect();
+    logs.sort_by(|a, b| b.0.cmp(&a.0));
+    logs.iter().take(20).find_map(|(_, path)| antigravity_account_from_log(&std::fs::read_to_string(path).ok()?))
+}
+
+fn antigravity_account_from_log(text: &str) -> Option<String> {
+    const MARKER: &str = "authenticated successfully as ";
+    let line = text.lines().rev().find(|line| line.contains(MARKER))?;
+    let account = line.split(MARKER).nth(1)?.split_whitespace().next()?.trim_end_matches(|c: char| ",.;".contains(c));
+    account.contains('@').then(|| account.to_string())
 }
 
 fn run_with_timeout(binary: &Path, args: &[&str], timeout: Duration) -> Option<String> {
@@ -207,5 +230,14 @@ gemini-4-argon
 gemini-3-flash").logged_in, Some(true));
         assert_eq!(antigravity_login_from("Fetching available models...
 Error: network unreachable").logged_in, None);
+    }
+
+    #[test]
+    fn antigravity_account_comes_from_the_newest_log_line() {
+        let log = "I1022 server_oauth.go:229] OAuth: authenticated successfully as old@example.com
+I1022 server_oauth.go:229] OAuth: authenticated successfully as me@example.com
+I1022 experiment_manager.go:66] Starting experiment refresh after login";
+        assert_eq!(antigravity_account_from_log(log).as_deref(), Some("me@example.com"));
+        assert_eq!(antigravity_account_from_log("Auth mode is unspecified"), None);
     }
 }
