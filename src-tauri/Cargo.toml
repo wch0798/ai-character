@@ -51,6 +51,10 @@ opt-level = 3
 panic = "abort"
 strip = true
 
+[target.'cfg(windows)'.dependencies]
+tauri-winrt-notification = "0.8.1"
+windows-registry = "0.6.1"
+
 [target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]
 tauri-plugin-global-shortcut = "2.3.2"
 tauri-plugin-updater = "2"

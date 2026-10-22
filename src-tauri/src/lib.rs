@@ -2,6 +2,8 @@ mod alerts;
 mod login_status;
 mod cmd_shim;
 mod codex_model;
+#[cfg(windows)]
+mod windows_toast;
 mod setup_web;
 mod usage_report;
 mod local_ai;

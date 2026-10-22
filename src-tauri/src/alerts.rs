@@ -52,6 +52,10 @@ pub struct UsageAlerts {
 }
 
 pub fn init(app: AppHandle) {
+    #[cfg(windows)]
+    if let Err(error) = crate::windows_toast::register(&app) {
+        eprintln!("{error}");
+    }
     let _ = APP.set(app);
 }
 
@@ -94,6 +98,11 @@ pub fn notify(title: &str, body: &str) {
     }
     if let Some(app) = APP.get() {
         let body: String = body.chars().take(240).collect();
+        // Windows: send as "AI Character" instead of the plugin's borrowed PowerShell identity.
+        #[cfg(windows)]
+        if crate::windows_toast::show(title, &body) {
+            return;
+        }
         let _ = app.notification().builder().title(title).body(body).show();
     }
 }
