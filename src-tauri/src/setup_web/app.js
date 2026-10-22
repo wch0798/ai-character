@@ -586,7 +586,7 @@ function quickSetup() {
     h(
       "div",
       { class: "quick", style: "margin-top:12px" },
-      step(recommendedDone, 1, "추천 설정 켜기", "무료 AI 자동 선택 · 필요할 때 웹 검색 · 유료 API 차단 · 하루 1달러 한도 · 알림을 한 번에 켭니다.", h("div", { class: "row" }, apply)),
+      step(recommendedDone, 1, "추천 설정 켜기", "무료 AI 자동 선택 · 필요할 때 웹 검색 · 유료 API 차단 · 한도에 닿으면 유료 호출 막기 · 알림을 한 번에 켭니다. 하루 한도 금액은 지금 정해 둔 값 그대로 둡니다.", h("div", { class: "row" }, apply)),
       step(s.folder, 2, "기본 작업 폴더 고르기", s.folder ? `현재: ${state.projectDir} — 대화마다 대화창 위 📁 '바꾸기'로 다른 폴더를 쓸 수 있어요.` : "새 대화가 처음 쓰는 폴더입니다. 대화마다 나중에 다른 폴더로 바꿀 수 있어요.", h("div", { class: "row" }, pick)),
       step(
         keyConfigured("GEMINI_API_KEY"),
@@ -637,7 +637,7 @@ function usingNow() {
     usingRow("추가 무료 AI", `Gemini·OpenRouter까지 막히면 ${FREE_ORDER_TEXT} 순서로 준비된 곳을 대신 씁니다. 모두 무료 등급만 사용합니다.`, freePool.available ? true : "", freePool.available ? "대기 중" : "안 씀", freePool.available ? `순서: ${freePool.model}` : "'AI 키 연결'에서 키를 넣거나 '내 컴퓨터 AI'에서 설치하면 사용합니다."),
     usingRow("Jina 웹 검색", "최신 정보가 필요한 질문이면 인터넷을 검색해 결과를 AI에게 넘깁니다.", r.jinaApiConfigured && r.autoWebSearch ? true : "warn", r.jinaApiConfigured ? (r.autoWebSearch ? "사용 중" : "꺼짐") : "키 없음", r.jinaApiConfigured ? (r.autoWebSearch ? "필요할 때 자동 검색" : "'동작 방식'에서 웹 검색을 켜세요.") : "키가 없어 웹 검색을 못 합니다. 3단계에서 넣을 수 있어요."),
     usingRow("Claude (구독형 프로그램)", "파일 작업의 계획과 수정 담당입니다. Cursor도 파일을 고칠 수 있고, 플러그인은 Claude에 붙습니다.", r.claudeCliReady ? true : "", r.claudeCliReady ? "파일 작업" : "없음", r.claudeCliReady ? "구독 사용 한도(5시간·주간) 안에서 사용" : "없어도 Cursor나 무료 AI로 일부 작업은 됩니다."),
-    usingRow("OpenAI (유료)", "호출마다 요금이 나가는 API. 허용해도 매번 승인을 받고, 하루 한도를 넘으면 막힙니다.", openai.enabled ? "warn" : "", openai.enabled ? "허용됨" : "차단", openai.reason),
+    usingRow("OpenAI (유료)", "호출마다 요금이 나가는 API. 허용해도 매번 승인을 받습니다. 하루 한도가 0달러면 아예 쓰지 않고, '한도에 닿으면 유료 호출 막기'를 켜 두면 한도에서 멈춥니다.", openai.enabled ? "warn" : "", openai.enabled ? "허용됨" : "차단", openai.reason),
   ];
   if (usage) {
     const limit = usage.dailyCostLimitUsd > 0 ? ` / 한도 $${usage.dailyCostLimitUsd}` : " (유료 사용 안 함)";
@@ -912,13 +912,13 @@ function sectionKeys() {
 function sectionAccounts() {
   const list = h("div", { class: "stack" });
   const refresh = h("button", { text: "다시 확인" });
-  const load = async () => {
+  const load = async (fresh = false) => {
     if (!runtime) list.replaceChildren(h("div", { class: "row muted" }, h("span", { class: "spinner" }), "설치·로그인 상태를 확인하는 중…"));
     runtimeStale = false;
-    runtime = await api.get("/api/runtime");
+    runtime = await api.get(fresh ? "/api/runtime/fresh" : "/api/runtime");
     renderRuntime(list);
   };
-  refresh.addEventListener("click", () => busy(refresh, load, "확인 중…"));
+  refresh.addEventListener("click", () => busy(refresh, () => load(true), "확인 중…"));
   if (runtime) renderRuntime(list);
   // Coming back from a login window marks the result stale: re-check quietly in the background.
   if (!runtime || runtimeStale) load().catch((error) => list.replaceChildren(h("p", { class: "notice warn", text: error.message })));
@@ -1928,7 +1928,7 @@ function sectionHelp() {
       ["중계 서버", "집 밖에서도 내 컴퓨터끼리 연결되도록 이어 주는 서버입니다. 내용은 암호화되어 서버도 볼 수 없습니다. 같은 공유기 안에서는 없어도 됩니다."],
     ]),
     faq("자주 묻는 질문", [
-      ["정말 돈이 안 드나요?", "기본 설정에서는 무료 AI만 씁니다. 유료 AI는 직접 허용하고 매번 승인해야만 쓰이고, 하루 한도를 넘으면 자동으로 막힙니다."],
+      ["정말 돈이 안 드나요?", "기본 설정에서는 무료 AI만 씁니다. 유료 AI는 직접 허용하고 매번 승인해야만 쓰입니다. 하루 한도를 0달러로 두면 유료 AI를 아예 쓰지 않고, '한도에 닿으면 유료 호출 막기'를 켜 두면 정한 금액에서 자동으로 멈춥니다."],
       ["'한도 초과', '막힘'이 떠요.", "무료 AI의 사용량이 잠시 찼다는 뜻입니다. 보통 몇 분~하루 뒤 풀립니다. 'AI 키 연결'에서 무료 AI를 더 연결하거나 설치형 AI를 준비해 두면 막힐 일이 거의 없습니다."],
       ["키를 잘못 넣었어요.", "'AI 키 연결'에서 해당 키의 '삭제'를 두 번 누르고 다시 넣으세요. '연결 확인' 버튼으로 맞는 키인지 확인할 수 있습니다."],
       ["설정을 망친 것 같아요.", "'시작하기'의 '추천 설정 적용'을 다시 누르면 안전한 기본값으로 돌아옵니다. 스위치를 모두 풀고 처음부터 하려면 '마무리 · 백업'의 '설정 초기화'를 쓰세요."],
@@ -2274,7 +2274,19 @@ async function refreshState() {
   state = await api.get("/api/state");
 }
 
-window.addEventListener("hashchange", () => show(location.hash.slice(1)));
+// Every way of leaving a section (menu, ← 이전, 나중에 하기, browser back) lands here.
+window.addEventListener("hashchange", () => {
+  const next = location.hash.slice(1);
+  if (next !== current && dirty.has(current)) {
+    if (!confirm("저장하지 않은 입력이 있습니다.\n저장하지 않고 다른 화면으로 이동할까요?")) {
+      // Stay put; replaceState does not fire another hashchange.
+      history.replaceState(null, "", `#${current}`);
+      return;
+    }
+    dirty.delete(current);
+  }
+  show(next);
+});
 window.addEventListener("beforeunload", (event) => {
   if (dirty.size > 0) {
     event.preventDefault();

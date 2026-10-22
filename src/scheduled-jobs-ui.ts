@@ -84,13 +84,9 @@ export function describeRun(run: JobRun): string {
   return `${when} · ${RUN_STATUS_TEXT[run.status] ?? "실패"} · ${formatDuration(run.durationMs)}`;
 }
 
-/** Resolves true when the job was running and has been asked to stop. */
+/** Resolves true when the job was running and has been asked to stop; rejects when asking failed. */
 export async function cancelScheduledJob(id: string): Promise<boolean> {
-  try {
-    return await invoke<boolean>("cancel_scheduled_job", { id });
-  } catch {
-    return false;
-  }
+  return invoke<boolean>("cancel_scheduled_job", { id });
 }
 
 export const INTERVAL_PRESETS = [60, 360, 720, 1440, 10080];
@@ -282,9 +278,15 @@ export function createScheduledJobsSection(
         runButton.addEventListener("click", () => {
           if (running) {
             runButton.disabled = true;
-            void cancelScheduledJob(job.id).then((stopping) => {
-              setMessage(stopping ? `'${job.title}' 중지하는 중…` : `'${job.title}'은 이미 끝났습니다.`);
-            });
+            void cancelScheduledJob(job.id).then(
+              (stopping) => {
+                setMessage(stopping ? `'${job.title}' 중지하는 중…` : `'${job.title}'은 이미 끝났습니다.`);
+              },
+              (error) => {
+                runButton.disabled = false;
+                setMessage(`'${job.title}'을(를) 멈추지 못했습니다: ${error instanceof Error ? error.message : String(error)}`);
+              }
+            );
             return;
           }
           running = true;

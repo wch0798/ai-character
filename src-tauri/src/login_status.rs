@@ -7,6 +7,7 @@ use serde::Serialize;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 #[derive(Clone, Debug, Serialize, PartialEq)]
@@ -173,15 +174,76 @@ fn run_with_timeout(binary: &Path, args: &[&str], timeout: Duration) -> Option<S
     Some(format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr)))
 }
 
+/// Asking the Cursor and Antigravity CLIs takes seconds (Antigravity up to 30), and the settings
+/// screen asks on every open and every window focus, so a recent answer is reused.
+const FRESH_FOR: Duration = Duration::from_secs(60);
+/// After a login window opens, every check asks again until the user has had time to finish.
+const LOGIN_WINDOW: Duration = Duration::from_secs(180);
+
+static LAST: Mutex<Option<(Instant, Vec<AgentLogin>)>> = Mutex::new(None);
+static CHECKING: Mutex<()> = Mutex::new(());
+static LOGIN_STARTED: Mutex<Option<Instant>> = Mutex::new(None);
+
+pub fn note_login_started() {
+    *LOGIN_STARTED.lock().unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());
+}
+
+/// The last answer, however old, so a screen can show something before a new check finishes.
+pub fn last_agent_logins() -> Option<Vec<AgentLogin>> {
+    LAST.lock().unwrap_or_else(|e| e.into_inner()).as_ref().map(|(_, logins)| logins.clone())
+}
+
+/// An answer no older than `FRESH_FOR` (none while a login is in progress), else a new check.
+pub fn agent_logins() -> Vec<AgentLogin> {
+    let logging_in = LOGIN_STARTED
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .is_some_and(|started| started.elapsed() < LOGIN_WINDOW);
+    agent_logins_within(if logging_in { Duration::ZERO } else { FRESH_FOR })
+}
+
+pub fn fresh_agent_logins() -> Vec<AgentLogin> {
+    agent_logins_within(Duration::ZERO)
+}
+
+fn agent_logins_within(max_age: Duration) -> Vec<AgentLogin> {
+    // `None` this early after boot means any answer is recent enough.
+    let since = Instant::now().checked_sub(max_age);
+    let recent = || {
+        LAST.lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .filter(|(at, _)| since.is_none_or(|since| *at >= since))
+            .map(|(_, logins)| logins.clone())
+    };
+    if let Some(logins) = recent() {
+        return logins;
+    }
+    // One check at a time: a caller that waited here takes the answer the other one just got.
+    let _checking = CHECKING.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(logins) = recent() {
+        return logins;
+    }
+    let logins = check_agent_logins();
+    *LAST.lock().unwrap_or_else(|e| e.into_inner()) = Some((Instant::now(), logins.clone()));
+    logins
+}
+
 #[tauri::command]
-pub async fn get_agent_logins() -> Result<Vec<AgentLogin>, String> {
-    tauri::async_runtime::spawn_blocking(agent_logins)
+pub async fn get_agent_logins(force: Option<bool>) -> Result<Vec<AgentLogin>, String> {
+    let check = if force == Some(true) { fresh_agent_logins } else { agent_logins };
+    tauri::async_runtime::spawn_blocking(check)
         .await
         .map_err(|error| format!("로그인 상태 확인 실패: {error}"))
 }
 
+#[tauri::command]
+pub fn get_last_agent_logins() -> Option<Vec<AgentLogin>> {
+    last_agent_logins()
+}
+
 /// Checks run in parallel; the Cursor CLI can take a few seconds.
-pub fn agent_logins() -> Vec<AgentLogin> {
+fn check_agent_logins() -> Vec<AgentLogin> {
     let cursor = std::thread::spawn(cursor_login);
     let antigravity = std::thread::spawn(antigravity_login);
     let mut logins = vec![claude_login(), codex_login()];

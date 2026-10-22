@@ -1,6 +1,7 @@
 use crate::chat_state::open_state_db;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const MAX_USAGE_ROWS: i64 = 5_000;
@@ -180,11 +181,27 @@ pub fn insert_usage(connection: &Connection, entry: &UsageEntry) -> Result<(), S
     Ok(())
 }
 
+/// Set while the last usage write failed. Paid calls are refused meanwhile, since spending that
+/// is not recorded would never count toward the daily limit.
+static WRITE_FAILED: AtomicBool = AtomicBool::new(false);
+
+pub fn last_write_failed() -> bool {
+    WRITE_FAILED.load(Ordering::Relaxed)
+}
+
 pub fn record_usage(entry: &UsageEntry) {
-    if let Ok(connection) = open_ledger() {
-        match insert_usage(&connection, entry) {
-            Ok(()) => crate::alerts::check_usage(&connection),
-            Err(error) => eprintln!("{error}"),
+    let result = open_ledger().and_then(|connection| {
+        insert_usage(&connection, entry)?;
+        Ok(connection)
+    });
+    match result {
+        Ok(connection) => {
+            WRITE_FAILED.store(false, Ordering::Relaxed);
+            crate::alerts::check_usage(&connection);
+        }
+        Err(error) => {
+            WRITE_FAILED.store(true, Ordering::Relaxed);
+            eprintln!("{error}");
         }
     }
 }

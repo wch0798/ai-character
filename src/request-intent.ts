@@ -2,34 +2,18 @@ import { shouldAutoWebSearch } from "./web-research";
 
 export type RequestIntent = "chat" | "research" | "project";
 
+/** Always work on the project, whatever else the request says. */
 const PROJECT_MARKERS = [
   "구현해",
   "구현하",
-  "수정해",
-  "수정하",
-  "고쳐",
-  "만들어줘",
-  "만들어 줘",
-  "만들어줄",
-  "만들어 줄",
-  "만들어주",
-  "만들어 줄수",
-  "만들어줄수",
   "웹페이지",
   "대시보드",
   "페이지를 만들",
   "페이지가 있었으면",
-  "추가해",
-  "추가해줘",
-  "삭제해",
   "리팩터",
   "리팩토",
   "패치해",
   "커밋해",
-  "적용해",
-  "변경해",
-  "바꿔줘",
-  "작성해",
   "빌드해",
   "버그 고",
   "오류 고",
@@ -39,11 +23,56 @@ const PROJECT_MARKERS = [
   "patch this",
   "commit this",
   "bugfix",
+  "create a page",
+  "create a dashboard",
+];
+
+/**
+ * Everyday verbs: "이 문장 영어로 바꿔줘" or "시 작성해줘" are plain chat, so these only mean
+ * project work when the request is about code or files (CODE_CONTEXT, LOCAL_FILE_MARKERS).
+ */
+const EDIT_VERBS = [
+  "수정해",
+  "수정하",
+  "고쳐",
+  "만들어줘",
+  "만들어 줘",
+  "만들어줄",
+  "만들어 줄",
+  "만들어주",
+  "추가해",
+  "삭제해",
+  "적용해",
+  "변경해",
+  "바꿔줘",
+  "작성해",
   "fix this",
   "fix the",
   "build a",
-  "create a page",
-  "create a dashboard",
+];
+
+const CODE_CONTEXT = [
+  "버그",
+  "오류",
+  "에러",
+  "컴포넌트",
+  "화면",
+  "버튼",
+  "기능",
+  "함수",
+  "클래스",
+  "변수",
+  "스크립트",
+  "앱",
+  "프로그램",
+  "웹",
+  "사이트",
+  "페이지",
+  "서버",
+  "스타일",
+  "테스트",
+  "빌드",
+  "설정",
 ];
 
 const PROJECT_CONFIRMATIONS = [
@@ -81,9 +110,20 @@ export function extractCurrentUserRequest(prompt: string): string {
   return text;
 }
 
-function includesProjectMarker(text: string): boolean {
+// Whole words only: "ui" is inside "build", "app" inside "happy".
+const CODE_CONTEXT_EN = /\b(ui|ux|api|css|html|bug|function|component|script|app|test)\b/i;
+
+function includesAny(text: string, markers: string[]): boolean {
   const lower = text.toLowerCase();
-  return PROJECT_MARKERS.some((marker) => lower.includes(marker.toLowerCase()));
+  return markers.some((marker) => lower.includes(marker.toLowerCase()));
+}
+
+function mentionsCodeOrFiles(text: string): boolean {
+  return includesAny(text, CODE_CONTEXT) || CODE_CONTEXT_EN.test(text) || includesAny(text, LOCAL_FILE_MARKERS) || FILE_NAME_PATTERN.test(text);
+}
+
+function includesProjectMarker(text: string): boolean {
+  return includesAny(text, PROJECT_MARKERS) || (includesAny(text, EDIT_VERBS) && mentionsCodeOrFiles(text));
 }
 
 function isProjectConfirmation(text: string): boolean {
@@ -97,10 +137,7 @@ function isProjectConfirmation(text: string): boolean {
 
 function historyLooksLikeProject(history: string): boolean {
   if (!history.trim()) return false;
-  return (
-    includesProjectMarker(history) ||
-    /웹페이지|대시보드|구현|폴더|페이지|계정/.test(history)
-  );
+  return includesProjectMarker(history) || /웹페이지|대시보드|구현/.test(history);
 }
 
 const LOCAL_FILE_MARKERS = [

@@ -190,6 +190,96 @@ pub fn estimate_paid_usd(input_tokens: i64, output_tokens: i64, per_1k: f64) -> 
     ((input_tokens + output_tokens).max(0) as f64 / 1000.0) * per_1k
 }
 
+/// USD per 1M tokens (input, output) for models not listed below. Kept above every listed
+/// price so an unknown model reaches the daily limit early rather than late.
+pub const UNKNOWN_MODEL_PRICE: (f64, f64) = (5.0, 20.0);
+
+/// Published list prices per 1M tokens (input, output), rounded up. Matched by the longest
+/// prefix of the model name (after any `vendor/` part), so `gpt-4o-mini` beats `gpt-4o`.
+const MODEL_PRICES: &[(&str, f64, f64)] = &[
+    ("gpt-5-nano", 0.05, 0.40),
+    ("gpt-5-mini", 0.25, 2.00),
+    ("gpt-5", 1.25, 10.00),
+    ("gpt-4.1-nano", 0.10, 0.40),
+    ("gpt-4.1-mini", 0.40, 1.60),
+    ("gpt-4.1", 2.00, 8.00),
+    ("gpt-4o-mini", 0.15, 0.60),
+    ("gpt-4o", 2.50, 10.00),
+    ("o4-mini", 1.10, 4.40),
+    ("o3-mini", 1.10, 4.40),
+    ("o3", 2.00, 8.00),
+    ("o1", 15.00, 60.00),
+    ("claude-3-haiku", 0.25, 1.25),
+    ("claude-3-5-haiku", 0.80, 4.00),
+    ("claude-haiku", 1.00, 5.00),
+    ("claude-3-5-sonnet", 3.00, 15.00),
+    ("claude-3-7-sonnet", 3.00, 15.00),
+    ("claude-sonnet", 3.00, 15.00),
+    ("claude-3-opus", 15.00, 75.00),
+    ("claude-opus", 15.00, 75.00),
+    ("gemini-2.0-flash-lite", 0.075, 0.30),
+    ("gemini-2.0-flash", 0.10, 0.40),
+    ("gemini-2.5-flash-lite", 0.10, 0.40),
+    ("gemini-2.5-flash", 0.30, 2.50),
+    ("gemini-2.5-pro", 2.50, 15.00),
+];
+
+/// (input, output) USD per 1M tokens for a model; newer Gemini names fall back by family.
+pub fn model_price(model: &str) -> (f64, f64) {
+    let name = model.rsplit('/').next().unwrap_or(model).trim().to_lowercase();
+    if let Some((_, input, output)) = MODEL_PRICES
+        .iter()
+        .filter(|(prefix, _, _)| name.starts_with(prefix))
+        .max_by_key(|(prefix, _, _)| prefix.len())
+    {
+        return (*input, *output);
+    }
+    if name.starts_with("gemini") {
+        if name.contains("flash-lite") {
+            return (0.10, 0.40);
+        }
+        if name.contains("flash") {
+            return (0.50, 3.00);
+        }
+        if name.contains("pro") {
+            return (2.50, 15.00);
+        }
+    }
+    UNKNOWN_MODEL_PRICE
+}
+
+pub fn estimate_model_usd(model: &str, input_tokens: i64, output_tokens: i64) -> f64 {
+    let (input, output) = model_price(model);
+    (input_tokens.max(0) as f64 * input + output_tokens.max(0) as f64 * output) / 1_000_000.0
+}
+
+/// Rough token count for text whose usage the provider never reported. Korean is about a
+/// token per character and English about four characters per token; half a token per
+/// character sits between them.
+pub fn estimate_tokens(text: &str) -> i64 {
+    (text.chars().count() as i64 + 1) / 2
+}
+
+/// Whether a paid call that failed may still have been billed: the provider received it and
+/// worked on it (server error, timeout, unreadable answer). Refusals (bad key, rate limit,
+/// bad request) and calls that never left the app are not billed.
+pub fn failed_call_may_bill(error: &str) -> bool {
+    if error.starts_with("PROVIDER_NOT_CONFIGURED|")
+        || error.starts_with("PROVIDER_AUTH|")
+        || error.starts_with("PROVIDER_LIMITED|")
+        || error.starts_with("BUDGET_EXCEEDED|")
+    {
+        return false;
+    }
+    error.contains("(HTTP 5")
+        || error.contains("응답 시간이 초과")
+        || error.contains("응답 읽기 실패")
+        || error.contains("스트림 읽기 실패")
+        || error.contains("JSON 해석 실패")
+        || error.contains("텍스트를 찾지 못")
+        || error.contains("응답을 읽지 못")
+}
+
 /// Paid metered providers may run only with a live approval that still has calls left.
 pub fn require_paid_approval(provider: &str, session_id: Option<&str>) -> Result<(), String> {
     let connection = usage_ledger::open_ledger()?;
@@ -557,5 +647,28 @@ mod tests {
     #[test]
     fn paid_estimate_scales_with_tokens() {
         assert!((estimate_paid_usd(1000, 1000, 0.003) - 0.006).abs() < 1e-9);
+    }
+
+    #[test]
+    fn model_prices_match_the_longest_prefix() {
+        assert_eq!(model_price("gpt-4o-mini"), (0.15, 0.60));
+        assert_eq!(model_price("gpt-4o-2024-08-06"), (2.50, 10.00));
+        assert_eq!(model_price("openai/gpt-5-mini"), (0.25, 2.00));
+        assert_eq!(model_price("gemini-3.8-flash"), (0.50, 3.00));
+        assert_eq!(model_price("someone/new-model"), UNKNOWN_MODEL_PRICE);
+        // Unknown models cost more than the old flat $0.003 per 1k tokens.
+        assert!(estimate_model_usd("x", 1000, 0) > 0.003);
+        assert!((estimate_model_usd("gpt-4o", 1_000_000, 1_000_000) - 12.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn only_failures_the_provider_worked_on_are_billed() {
+        assert!(failed_call_may_bill("PROVIDER_FAILED|openai_api|서버 문제 (HTTP 502) 자세히: x"));
+        assert!(failed_call_may_bill("PROVIDER_FAILED|openai_api|JSON 해석 실패: eof"));
+        assert!(failed_call_may_bill("PROVIDER_FAILED|openai_api|AI 서비스 응답 시간이 초과되었습니다."));
+        assert!(!failed_call_may_bill("PROVIDER_AUTH|openai_api|키 확인 (HTTP 401)"));
+        assert!(!failed_call_may_bill("PROVIDER_LIMITED|openai_api|한도 (HTTP 429)"));
+        assert!(!failed_call_may_bill("PROVIDER_NOT_CONFIGURED|openai_api|키 없음"));
+        assert!(!failed_call_may_bill("PROVIDER_FAILED|openai_api|AI 서비스에 연결하지 못했습니다."));
     }
 }

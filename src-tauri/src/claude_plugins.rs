@@ -1,11 +1,13 @@
 use crate::agent_core::{resolve_agent_binary, AgentKind};
+use crate::process_util;
 use crate::settings::load_settings;
 use crate::windows_process::command_with_args;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tauri::AppHandle;
 use tauri_plugin_opener::OpenerExt;
 
@@ -60,25 +62,35 @@ fn run_claude(args: &[&str], timeout: Duration) -> Result<String, String> {
     let binary = claude_binary()?;
     let mut command = command_with_args(&binary, args);
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
-    let child = command
+    command.stdin(Stdio::null());
+    let mut child = command
         .spawn()
         .map_err(|error| format!("Claude 플러그인 명령 실패: {error}"))?;
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let _ = tx.send(child.wait_with_output());
-    });
-    let output = match rx.recv_timeout(timeout) {
-        Ok(Ok(output)) => output,
-        Ok(Err(error)) => {
-            return Err(format!("Claude 플러그인 명령 실패: {error}"));
-        }
-        Err(_) => {
-            return Err("Claude 플러그인 명령이 너무 오래 걸려 중단했습니다.".to_string());
+    let stdout_reader = child.stdout.take().map(process_util::spawn_reader);
+    let stderr_reader = child.stderr.take().map(process_util::spawn_reader);
+    let started = Instant::now();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if started.elapsed() < timeout => std::thread::sleep(Duration::from_millis(100)),
+            Ok(None) => {
+                // Left running, it would keep working (and holding files) after we gave up.
+                process_util::kill_tree(&mut child);
+                let _ = child.wait();
+                return Err("Claude 플러그인 명령이 너무 오래 걸려 중단했습니다.".to_string());
+            }
+            Err(error) => return Err(format!("Claude 플러그인 명령 실패: {error}")),
         }
     };
-    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-    if output.status.success() {
+    let deadline = Instant::now() + process_util::PIPE_GRACE;
+    let collect = |reader: Option<(process_util::SharedOutput, std::thread::JoinHandle<()>)>| {
+        reader
+            .map(|(output, handle)| process_util::collect_until(&output, handle, deadline))
+            .unwrap_or_default()
+    };
+    let stdout = String::from_utf8_lossy(&collect(stdout_reader)).trim().to_string();
+    let stderr = String::from_utf8_lossy(&collect(stderr_reader)).trim().to_string();
+    if status.success() {
         return Ok(if stdout.is_empty() { stderr } else { stdout });
     }
     let detail = if stderr.is_empty() { stdout } else { stderr };
@@ -430,6 +442,39 @@ fn read_json_object(path: &Path) -> Value {
         .unwrap_or_else(|| Value::Object(serde_json::Map::new()))
 }
 
+/// For files we rewrite: a missing file is empty, but one we can't read or parse must stop the
+/// write. Treating it as `{}` would replace the user's Claude settings (permissions, hooks,
+/// model) with only our one key.
+fn read_json_object_for_update(path: &Path) -> Result<Value, String> {
+    let raw = match std::fs::read_to_string(path) {
+        Ok(raw) => raw,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(Value::Object(serde_json::Map::new()));
+        }
+        Err(error) => {
+            return Err(format!(
+                "{}을(를) 읽지 못해 바꾸지 않았습니다. Claude가 쓰는 중일 수 있으니 잠시 뒤 다시 시도하세요. ({error})",
+                path.display()
+            ))
+        }
+    };
+    let raw = raw.trim_start_matches('\u{feff}');
+    if raw.trim().is_empty() {
+        return Ok(Value::Object(serde_json::Map::new()));
+    }
+    serde_json::from_str::<Value>(raw)
+        .ok()
+        .filter(Value::is_object)
+        .ok_or_else(|| {
+            format!(
+                "{}의 내용이 올바른 설정 형식이 아니라 바꾸지 않았습니다. 파일을 열어 고친 뒤 다시 시도하세요.",
+                path.display()
+            )
+        })
+}
+
+/// Written to a temporary file next to the target and then swapped in, so a crash mid-write
+/// never leaves a half-written settings file.
 fn write_json_object(path: &Path, value: &Value) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
@@ -437,16 +482,51 @@ fn write_json_object(path: &Path, value: &Value) -> Result<(), String> {
     }
     let raw = serde_json::to_string_pretty(value)
         .map_err(|error| format!("설정 저장 실패: {error}"))?;
-    std::fs::write(path, raw).map_err(|error| format!("설정 저장 실패: {error}"))
+    let mut temp = path.as_os_str().to_owned();
+    temp.push(".ai-character.tmp");
+    let temp = PathBuf::from(temp);
+    std::fs::write(&temp, raw).map_err(|error| format!("설정 저장 실패: {error}"))?;
+    std::fs::rename(&temp, path).map_err(|error| {
+        let _ = std::fs::remove_file(&temp);
+        format!("설정 저장 실패: {error}")
+    })
+}
+
+/// Marketplace names become folders under ~/.claude/plugins/marketplaces, which is emptied
+/// before a fresh download, so an empty name or `..` would point at the whole folder.
+pub fn is_safe_marketplace_name(name: &str) -> bool {
+    !name.is_empty()
+        && name != "."
+        && name != ".."
+        && name.chars().all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-'))
+}
+
+/// `owner/repo` (also `github.com/owner/repo`, a trailing `/` or `.git`) → (name, `owner/repo`).
+pub fn custom_marketplace(source: &str) -> Result<(String, String), String> {
+    let invalid = || "마켓 주소는 GitHub의 ‘소유자/저장소’ 형태로 적어주세요. 예: anthropics/claude-plugins-official".to_string();
+    let source = source.strip_prefix("github.com/").unwrap_or(source);
+    let source = source.strip_suffix('/').unwrap_or(source);
+    let source = source.strip_suffix(".git").unwrap_or(source);
+    let mut parts = source.split('/');
+    let (Some(owner), Some(repo), None) = (parts.next(), parts.next(), parts.next()) else {
+        return Err(invalid());
+    };
+    if !is_safe_marketplace_name(owner) || !is_safe_marketplace_name(repo) {
+        return Err(invalid());
+    }
+    Ok((repo.to_string(), format!("{owner}/{repo}")))
 }
 
 pub fn register_known_marketplace(home: &Path, name: &str, repo: &str) -> Result<PathBuf, String> {
+    if !is_safe_marketplace_name(name) {
+        return Err(format!("마켓 이름 ‘{name}’은(는) 쓸 수 없습니다."));
+    }
     let install_dir = home.join("plugins").join("marketplaces").join(name);
     std::fs::create_dir_all(&install_dir)
         .map_err(|error| format!("마켓 폴더를 만들지 못했습니다: {error}"))?;
 
     let settings_path = home.join("settings.json");
-    let mut settings = read_json_object(&settings_path);
+    let mut settings = read_json_object_for_update(&settings_path)?;
     let extra = settings
         .as_object_mut()
         .ok_or_else(|| "Claude 설정을 읽지 못했습니다.".to_string())?
@@ -465,7 +545,7 @@ pub fn register_known_marketplace(home: &Path, name: &str, repo: &str) -> Result
     write_json_object(&settings_path, &settings)?;
 
     let known_path = home.join("plugins").join("known_marketplaces.json");
-    let mut known = read_json_object(&known_path);
+    let mut known = read_json_object_for_update(&known_path)?;
     known.as_object_mut().ok_or_else(|| "마켓 목록을 쓰지 못했습니다.".to_string())?
         .insert(
             name.to_string(),
@@ -509,6 +589,13 @@ fn clone_marketplace(install_dir: &Path, repo: &str) -> Result<(), String> {
     let Some(git) = crate::environment_preflight::git_binary() else {
         return Err("Git이 없어 공식 마켓을 받지 못했습니다. 설정에서 Git을 설치하세요.".to_string());
     };
+    let safe_to_replace = install_dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(is_safe_marketplace_name);
+    if !safe_to_replace {
+        return Err("마켓 폴더 위치가 올바르지 않아 받지 않았습니다.".to_string());
+    }
     if install_dir.exists() {
         let _ = std::fs::remove_dir_all(install_dir);
     }
@@ -517,18 +604,17 @@ fn clone_marketplace(install_dir: &Path, repo: &str) -> Result<(), String> {
             .map_err(|error| format!("마켓 폴더를 만들지 못했습니다: {error}"))?;
     }
     let url = format!("https://github.com/{repo}.git");
-    let mut command = crate::windows_process::command_with_args(
-        &git,
-        &["clone", "--depth", "1", &url, &install_dir.to_string_lossy()],
-    );
-    command.stdout(Stdio::piped()).stderr(Stdio::piped());
-    let output = command
-        .output()
-        .map_err(|error| format!("공식 마켓을 받지 못했습니다: {error}"))?;
-    if output.status.success() && marketplace_catalog_exists(install_dir) {
+    let args = ["clone".to_string(), "--depth".into(), "1".into(), url, install_dir.to_string_lossy().into_owned()];
+    // A repo that doesn't exist makes Git ask for a password; nobody can answer that prompt here.
+    let envs = [("GIT_TERMINAL_PROMPT", OsString::from("0")), ("GCM_INTERACTIVE", OsString::from("never"))];
+    let output = process_util::run_command(&git, &args, None, &envs, Duration::from_secs(180));
+    if output.success && marketplace_catalog_exists(install_dir) {
         return Ok(());
     }
-    let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    if output.timed_out {
+        return Err("마켓 목록을 받는 데 너무 오래 걸려 중단했습니다. 네트워크를 확인하세요.".to_string());
+    }
+    let detail = output.output.trim().to_string();
     Err(if detail.is_empty() {
         "공식 마켓을 받지 못했습니다. 네트워크를 확인하세요.".to_string()
     } else {
@@ -662,12 +748,24 @@ fn offline_snapshot() -> ClaudePluginSnapshot {
     }
 }
 
+/// Plugin commands run the Claude CLI (and Git) for up to minutes, so they stay off the UI thread.
+async fn off_ui_thread<T: Send + 'static>(
+    work: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    tauri::async_runtime::spawn_blocking(work)
+        .await
+        .map_err(|error| format!("플러그인 작업 실행 실패: {error}"))?
+}
+
 #[tauri::command]
-pub fn get_claude_plugins(live: Option<bool>) -> Result<ClaudePluginSnapshot, String> {
-    if live.unwrap_or(false) {
-        return snapshot_from_cli().or_else(|_| Ok(offline_snapshot()));
-    }
-    Ok(offline_snapshot())
+pub async fn get_claude_plugins(live: Option<bool>) -> Result<ClaudePluginSnapshot, String> {
+    off_ui_thread(move || {
+        if live.unwrap_or(false) {
+            return snapshot_from_cli().or_else(|_| Ok(offline_snapshot()));
+        }
+        Ok(offline_snapshot())
+    })
+    .await
 }
 
 fn connect_marketplace(name: &str, repo: &str) -> Result<String, String> {
@@ -686,24 +784,22 @@ fn connect_marketplace(name: &str, repo: &str) -> Result<String, String> {
 }
 
 #[tauri::command]
-pub fn add_claude_plugin_marketplace(source: String) -> Result<String, String> {
-    let source = sanitize_plugin_spec(&source)?;
+pub async fn add_claude_plugin_marketplace(source: String) -> Result<String, String> {
+    off_ui_thread(move || add_marketplace(&source)).await
+}
+
+fn add_marketplace(source: &str) -> Result<String, String> {
+    let source = sanitize_plugin_spec(source)?;
     let (name, repo) = if source == OFFICIAL_MARKETPLACE_SOURCE || source == OFFICIAL_MARKETPLACE {
-        (OFFICIAL_MARKETPLACE, OFFICIAL_MARKETPLACE_SOURCE)
+        (OFFICIAL_MARKETPLACE.to_string(), OFFICIAL_MARKETPLACE_SOURCE.to_string())
     } else if source == COMMUNITY_MARKETPLACE_SOURCE || source == "claude-plugins-community" {
-        ("claude-plugins-community", COMMUNITY_MARKETPLACE_SOURCE)
+        ("claude-plugins-community".to_string(), COMMUNITY_MARKETPLACE_SOURCE.to_string())
     } else if source.contains('/') {
-        (
-            source
-                .rsplit('/')
-                .next()
-                .unwrap_or(OFFICIAL_MARKETPLACE),
-            source.as_str(),
-        )
+        custom_marketplace(&source)?
     } else {
-        (OFFICIAL_MARKETPLACE, OFFICIAL_MARKETPLACE_SOURCE)
+        (OFFICIAL_MARKETPLACE.to_string(), OFFICIAL_MARKETPLACE_SOURCE.to_string())
     };
-    let message = connect_marketplace(name, repo)?;
+    let message = connect_marketplace(&name, &repo)?;
     if name == OFFICIAL_MARKETPLACE {
         let _ = connect_marketplace("claude-plugins-community", COMMUNITY_MARKETPLACE_SOURCE);
     }
@@ -711,8 +807,12 @@ pub fn add_claude_plugin_marketplace(source: String) -> Result<String, String> {
 }
 
 #[tauri::command]
-pub fn install_claude_plugin(spec: String) -> Result<String, String> {
-    let spec = qualify_plugin_spec(&spec)?;
+pub async fn install_claude_plugin(spec: String) -> Result<String, String> {
+    off_ui_thread(move || install_plugin(&spec)).await
+}
+
+fn install_plugin(spec: &str) -> Result<String, String> {
+    let spec = qualify_plugin_spec(spec)?;
     run_claude(
         &["plugin", "install", &spec, "--scope", "user"],
         Duration::from_secs(120),
@@ -808,6 +908,20 @@ pub fn open_claude_plugin_catalog(app: AppHandle, kind: String) -> Result<String
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn custom_marketplace_must_be_owner_and_repo() {
+        let ok = |source: &str| custom_marketplace(source).ok();
+        let pair = |name: &str, repo: &str| Some((name.to_string(), repo.to_string()));
+        assert_eq!(ok("me/tools"), pair("tools", "me/tools"));
+        assert_eq!(ok("me/tools/"), pair("tools", "me/tools"));
+        assert_eq!(ok("github.com/me/tools.git"), pair("tools", "me/tools"));
+        for bad in ["me/", "me/..", "me/.", "../x", "me/tools/extra", "/tools", "me//tools"] {
+            assert_eq!(ok(bad), None, "{bad}");
+        }
+        assert!(!is_safe_marketplace_name(""));
+        assert!(!is_safe_marketplace_name(".."));
+    }
 
     #[test]
     fn rejects_unsafe_plugin_spec() {

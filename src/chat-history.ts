@@ -5,6 +5,8 @@ export type ChatMessageRecord = {
   role: ChatRole;
   content: string;
   createdAt: number;
+  /** Which AI answered and what it cost, e.g. "Claude · 무료". */
+  source?: string;
 };
 
 export type ChatConversation = {
@@ -13,7 +15,12 @@ export type ChatConversation = {
   createdAt: number;
   updatedAt: number;
   messages: ChatMessageRecord[];
+  /** Pinned conversations stay at the top of the list. */
+  pinned?: boolean;
 };
+
+/** Fired when chat history could not be saved (usually: browser storage is full). */
+export const HISTORY_SAVE_FAILED_EVENT = "ai-character:history-save-failed";
 
 export type ChatHistorySnapshot = {
   version: 1;
@@ -93,7 +100,15 @@ export class ChatHistoryStore {
   }
 
   private write(snapshot: ChatHistorySnapshot): void {
-    this.storage.setItem(this.key, JSON.stringify(snapshot));
+    try {
+      this.storage.setItem(this.key, JSON.stringify(snapshot));
+    } catch (error) {
+      // Storage is full (or unavailable). Throwing here would also lose the answer on screen,
+      // so tell the UI instead; it asks the user to export or delete old chats.
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(new CustomEvent(HISTORY_SAVE_FAILED_EVENT, { detail: { error: String(error) } }));
+      }
+    }
   }
 
   createConversation(title = "새 채팅"): ChatConversation {
@@ -156,11 +171,26 @@ export class ChatHistoryStore {
           message.content.toLocaleLowerCase().includes(normalizedQuery)
         );
       })
-      .sort((a, b) => b.updatedAt - a.updatedAt)
+      .sort((a, b) => Number(Boolean(b.pinned)) - Number(Boolean(a.pinned)) || b.updatedAt - a.updatedAt)
       .map((conversation) => structuredClone(conversation));
   }
 
-  appendMessage(id: string, role: ChatRole, content: string): ChatMessageRecord {
+  setPinned(id: string, pinned: boolean): boolean {
+    const snapshot = this.read();
+    const conversation = snapshot.conversations.find((item) => item.id === id);
+    if (!conversation) return false;
+    conversation.pinned = pinned || undefined;
+    this.write(snapshot);
+    return true;
+  }
+
+  /** `activate: false` saves a reply for a conversation the user has since left without switching back to it. */
+  appendMessage(
+    id: string,
+    role: ChatRole,
+    content: string,
+    { activate = true, source }: { activate?: boolean; source?: string } = {}
+  ): ChatMessageRecord {
     const snapshot = this.read();
     const conversation = snapshot.conversations.find((item) => item.id === id);
     if (!conversation) {
@@ -173,6 +203,7 @@ export class ChatHistoryStore {
       role,
       content,
       createdAt: time,
+      ...(source ? { source } : {}),
     };
 
     conversation.messages.push(message);
@@ -182,7 +213,9 @@ export class ChatHistoryStore {
       conversation.title = normalizeTitle(content);
     }
 
-    snapshot.activeConversationId = id;
+    if (activate) {
+      snapshot.activeConversationId = id;
+    }
     this.write(snapshot);
     return structuredClone(message);
   }

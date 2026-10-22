@@ -152,10 +152,10 @@ function errorMessage(error: unknown): string {
 export function userFacingAgentError(message: string): string {
   const lower = message.toLowerCase();
   if (message.includes("CLI를 찾을 수 없습니다") || message.includes("실행 파일을 찾을 수 없습니다") || lower.includes("enoent")) {
-    return "선택한 Agent CLI를 찾을 수 없습니다. 설정에서 설치 상태와 실행 파일 경로를 확인해주세요.";
+    return "선택한 AI 프로그램를 찾을 수 없습니다. 설정에서 설치 상태와 실행 파일 경로를 확인해주세요.";
   }
   if (message.includes("시간을 초과") || message.includes("제한을 초과") || lower.includes("timeout") || lower.includes("timed out")) {
-    return "Agent 실행 시간이 설정된 제한을 초과했습니다. Timeout을 늘리거나 작업을 나눠서 다시 시도해주세요.";
+    return "AI 프로그램 실행 시간이 설정된 제한을 초과했습니다. 제한 시간을 늘리거나 작업을 나눠서 다시 시도해주세요.";
   }
   if (message.includes("프로젝트 폴더") || lower.includes("working directory")) {
     return "프로젝트 폴더를 사용할 수 없습니다. 설정에서 프로젝트 경로와 접근 권한을 확인해주세요.";
@@ -164,12 +164,12 @@ export function userFacingAgentError(message: string): string {
     return "파일 또는 실행 파일에 접근할 권한이 없습니다. macOS/Windows 권한과 파일 권한을 확인해주세요.";
   }
   if (message.includes("민감 파일 경고")) {
-    return "민감 파일 확인이 필요해 Agent 실행을 시작하지 않았습니다.";
+    return "민감 파일 확인이 필요해 AI 프로그램 실행을 시작하지 않았습니다.";
   }
   if (message.includes("취소") || lower.includes("cancel")) {
-    return "Agent 실행이 취소되었습니다.";
+    return "AI 프로그램 실행이 취소되었습니다.";
   }
-  return "Agent 실행 중 오류가 발생했습니다. 기술 로그에서 상세 내용을 확인해주세요.";
+  return "AI 프로그램 실행 중 오류가 발생했습니다. 기술 로그에서 상세 내용을 확인해주세요.";
 }
 
 export async function getProjectDirectory(): Promise<string | null> {
@@ -334,8 +334,14 @@ export type AgentLogin = {
   detail: string;
 };
 
-export async function getAgentLogins(): Promise<AgentLogin[]> {
-  return invoke<AgentLogin[]>("get_agent_logins");
+/** Reuses an answer from the last minute unless `force` (the CLIs can take seconds to answer). */
+export async function getAgentLogins(force = false): Promise<AgentLogin[]> {
+  return invoke<AgentLogin[]>("get_agent_logins", { force });
+}
+
+/** The last answer however old, or null before the first check; returns at once. */
+export async function getLastAgentLogins(): Promise<AgentLogin[] | null> {
+  return invoke<AgentLogin[] | null>("get_last_agent_logins");
 }
 
 export async function getUsageSnapshot(): Promise<unknown> {
@@ -619,7 +625,7 @@ export async function confirmSensitiveAgentAccess(
     sensitive.length > 5 ? ` 외 ${sensitive.length - 5}개` : "";
   return safeConfirm(
     `프로젝트에 민감해 보이는 파일이 있습니다:\n${preview}${more}\n\n` +
-      `Agent 작업 복사본에는 keys.env 등 비밀 파일이 들어가지 않습니다.\n` +
+      `AI 작업 복사본에는 keys.env 등 비밀 파일이 들어가지 않습니다.\n` +
       `계속 실행할까요?`
   );
 }
@@ -632,7 +638,7 @@ export async function askAgentCompat(
   const preferences = await getAppPreferences();
   const sensitiveAcknowledged = await confirmSensitiveAgentAccess(preferences);
   if (!sensitiveAcknowledged) {
-    throw new Error("민감 파일 경고에서 Agent 실행을 취소했습니다.");
+    throw new Error("민감 파일 경고에서 AI 프로그램 실행을 취소했습니다.");
   }
 
   try {

@@ -351,7 +351,11 @@ fn route(request: &Request, server: &SetupServer, app: &AppHandle) -> Response {
             }
             let body: Value = match serde_json::from_slice(if request.body.is_empty() { b"{}" } else { &request.body }) {
                 Ok(value) => value,
-                Err(error) => return Response::error(400, format!("잘못된 요청 형식: {error}")),
+                Err(error) => {
+                    // The parser's English text means nothing to a beginner; keep it in the log only.
+                    eprintln!("setup web: unreadable request body: {error}");
+                    return Response::error(400, "요청 내용을 읽지 못했습니다. 페이지를 새로고침한 뒤 다시 시도하세요.");
+                }
             };
             match api_post(path, body, app) {
                 Ok(value) => Response::json(200, value),
@@ -458,9 +462,15 @@ fn export_settings() -> Result<Value, String> {
 fn api_get(path: &str) -> Result<Value, String> {
     match path {
         "/api/state" => state(),
-        "/api/runtime" => {
-            let mut runtime = to_json(crate::agent_install::get_runtime_setup_status())?;
-            runtime["logins"] = to_json(crate::login_status::agent_logins())?;
+        // `/fresh` is the "다시 확인" button: ask every program again instead of reusing a recent answer.
+        "/api/runtime" | "/api/runtime/fresh" => {
+            let mut runtime = to_json(crate::agent_install::runtime_setup_status())?;
+            let logins = if path.ends_with("/fresh") {
+                crate::login_status::fresh_agent_logins()
+            } else {
+                crate::login_status::agent_logins()
+            };
+            runtime["logins"] = to_json(logins)?;
             Ok(runtime)
         }
         "/api/export" => export_settings(),
@@ -478,7 +488,10 @@ fn str_field(body: &Value, name: &str) -> Result<String, String> {
 }
 
 fn parse<T: serde::de::DeserializeOwned>(value: Value) -> Result<T, String> {
-    serde_json::from_value(value).map_err(|error| format!("잘못된 값: {error}"))
+    serde_json::from_value(value).map_err(|error| {
+        eprintln!("setup web: value does not fit: {error}");
+        "입력한 값의 형식이 맞지 않습니다. 페이지를 새로고침한 뒤 다시 시도하세요.".to_string()
+    })
 }
 
 fn apply_recommended() -> Result<(), String> {
@@ -495,7 +508,8 @@ fn apply_recommended() -> Result<(), String> {
         timeout_seconds: None,
         warn_sensitive_files: Some(true),
     })?;
-    // A limit the user already set is kept; only "no limit" (0) gets the safe $1 default.
+    // The amount is the user's (0 means "never use paid APIs") and is kept as it is; only
+    // stopping paid calls at the limit is switched on.
     crate::alerts::set_alert_settings(crate::alerts::AlertSettings {
         desktop: true,
         daily_cost_limit_usd: alerts.daily_cost_limit_usd,

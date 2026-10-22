@@ -5,7 +5,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::RwLock;
+use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -136,12 +136,38 @@ pub fn find_tool(name: &str) -> Option<PathBuf> {
     })
 }
 
-fn spawn_reader<R: Read + Send + 'static>(mut reader: R) -> thread::JoinHandle<Vec<u8>> {
-    thread::spawn(move || {
-        let mut buffer = Vec::new();
-        let _ = reader.read_to_end(&mut buffer);
-        buffer
-    })
+/// Bytes a pipe reader thread has collected so far; it keeps growing until the pipe closes.
+pub type SharedOutput = Arc<Mutex<Vec<u8>>>;
+
+/// How long to wait for the output pipes after the process itself has exited. A background
+/// grandchild (a server the agent started, the real binary behind a node shim) can hold them
+/// open for hours, and the run must still finish.
+pub const PIPE_GRACE: Duration = Duration::from_secs(3);
+
+pub fn spawn_reader<R: Read + Send + 'static>(mut reader: R) -> (SharedOutput, thread::JoinHandle<()>) {
+    let output = SharedOutput::default();
+    let sink = output.clone();
+    let handle = thread::spawn(move || {
+        let mut buffer = [0u8; 8192];
+        loop {
+            match reader.read(&mut buffer) {
+                Ok(0) | Err(_) => break,
+                Ok(read) => sink.lock().unwrap_or_else(|e| e.into_inner()).extend_from_slice(&buffer[..read]),
+            }
+        }
+    });
+    (output, handle)
+}
+
+/// What the reader collected, waiting at most until `deadline` for the pipe to close.
+pub fn collect_until(output: &SharedOutput, handle: thread::JoinHandle<()>, deadline: Instant) -> Vec<u8> {
+    while !handle.is_finished() && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(20));
+    }
+    if handle.is_finished() {
+        let _ = handle.join();
+    }
+    output.lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
 /// Runs a program with a hard timeout; stdout and stderr are combined.
@@ -179,7 +205,7 @@ pub fn run_command_cancellable(
 }
 
 /// Shells spawn grandchildren that keep the output pipes open, so the whole group is killed.
-fn kill_tree(child: &mut Child) {
+pub fn kill_tree(child: &mut Child) {
     #[cfg(unix)]
     {
         let _ = Command::new("kill")
@@ -266,10 +292,9 @@ fn run_command_with(
         }
     };
     let mut output = String::new();
-    for handle in [stdout, stderr].into_iter().flatten() {
-        if let Ok(bytes) = handle.join() {
-            output.push_str(&String::from_utf8_lossy(&bytes));
-        }
+    let deadline = Instant::now() + PIPE_GRACE;
+    for (collected, handle) in [stdout, stderr].into_iter().flatten() {
+        output.push_str(&String::from_utf8_lossy(&collect_until(&collected, handle, deadline)));
     }
     CommandOutput {
         success: !timed_out && !cancelled && status.map(|status| status.success()).unwrap_or(false),
@@ -284,6 +309,30 @@ fn run_command_with(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A reader that sends a little and then blocks, like a pipe a background grandchild holds.
+    struct HeldOpen(bool);
+
+    impl Read for HeldOpen {
+        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+            if !self.0 {
+                self.0 = true;
+                buffer[..2].copy_from_slice(b"hi");
+                return Ok(2);
+            }
+            thread::sleep(Duration::from_secs(3600));
+            Ok(0)
+        }
+    }
+
+    #[test]
+    fn collect_until_gives_up_on_a_pipe_that_stays_open() {
+        let (output, handle) = spawn_reader(HeldOpen(false));
+        let started = Instant::now();
+        let bytes = collect_until(&output, handle, Instant::now() + Duration::from_millis(300));
+        assert_eq!(bytes, b"hi");
+        assert!(started.elapsed() < Duration::from_secs(2));
+    }
 
     #[cfg(unix)]
     #[test]

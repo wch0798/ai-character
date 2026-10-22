@@ -190,23 +190,29 @@ fn hook_command(kind: &str) -> Option<String> {
     Some(format!("\"{}\" --cradle-hook {kind}", exe.to_string_lossy()))
 }
 
-pub fn hooks_json() -> Option<Value> {
-    Some(json!({
-        "hooks": {
-            "PreToolUse": [{
-                "matcher": "Bash",
-                "hooks": [{ "type": "command", "command": hook_command("pre-bash")?, "timeout": 10 }]
-            }],
-            "PostToolUse": [{
-                "matcher": "Edit|Write|MultiEdit",
-                "hooks": [{ "type": "command", "command": hook_command("post-edit")?, "timeout": LINT_TIMEOUT.as_secs() + 20 }]
-            }],
-            "Stop": [{
-                "hooks": [{ "type": "command", "command": hook_command("stop")?, "timeout": STOP_TEST_TIMEOUT.as_secs() + 30 }]
-            }]
-        }
-    }))
+/// The workspace guard (PreToolUse) is always on; `quality` adds the lint and test hooks the
+/// user can switch off in settings.
+pub fn hooks_json(quality: bool) -> Option<Value> {
+    let mut hooks = json!({
+        "PreToolUse": [{
+            "matcher": GUARDED_TOOLS,
+            "hooks": [{ "type": "command", "command": hook_command("pre-tool")?, "timeout": 10 }]
+        }]
+    });
+    if quality {
+        hooks["PostToolUse"] = json!([{
+            "matcher": "Edit|Write|MultiEdit",
+            "hooks": [{ "type": "command", "command": hook_command("post-edit")?, "timeout": LINT_TIMEOUT.as_secs() + 20 }]
+        }]);
+        hooks["Stop"] = json!([{
+            "hooks": [{ "type": "command", "command": hook_command("stop")?, "timeout": STOP_TEST_TIMEOUT.as_secs() + 30 }]
+        }]);
+    }
+    Some(json!({ "hooks": hooks }))
 }
+
+/// Every Claude tool that touches files or runs commands.
+const GUARDED_TOOLS: &str = "Bash|Read|Write|Edit|MultiEdit|NotebookEdit|NotebookRead|Glob|Grep|LS";
 
 /// GitHub's token is referenced as `${GITHUB_TOKEN}` and expanded by Claude at
 /// runtime, so it never lands in the file.
@@ -253,6 +259,26 @@ pub fn prepare_claude_workspace(working_dir: &Path) -> Result<Vec<String>, Strin
         let _ = fs::remove_file(&claude_md);
     }
 
+    // Claude runs here with `--setting-sources user` (no project hooks), which also stops it
+    // from reading CLAUDE.md files, so they are handed over directly: the app's guide, then
+    // the project's own.
+    let mut instructions = Vec::new();
+    for path in [claude_md.clone(), working_dir.join("CLAUDE.md"), working_dir.join(".claude").join("CLAUDE.md")] {
+        if let Ok(text) = fs::read_to_string(&path) {
+            if !text.trim().is_empty() {
+                instructions.push(text);
+            }
+        }
+    }
+    let instructions_path = integration_dir.join("instructions.md");
+    if instructions.is_empty() {
+        let _ = fs::remove_file(&instructions_path);
+    } else {
+        write_if_changed(&instructions_path, &instructions.join("\n\n---\n\n"))?;
+        args.push("--append-system-prompt-file".to_string());
+        args.push(instructions_path.to_string_lossy().into_owned());
+    }
+
     let plugin = integration_dir.join("plugin");
     write_if_changed(
         &plugin.join(".claude-plugin").join("plugin.json"),
@@ -277,11 +303,12 @@ pub fn prepare_claude_workspace(working_dir: &Path) -> Result<Vec<String>, Strin
     } else {
         remove_dir(&plugin.join("agents"));
     }
-    match (settings.hooks, hooks_json()) {
-        (true, Some(hooks)) => {
+    // Written even with quality hooks off: it carries the workspace guard.
+    match hooks_json(settings.hooks) {
+        Some(hooks) => {
             write_if_changed(&plugin.join("hooks").join("hooks.json"), &serde_json::to_string_pretty(&hooks).unwrap_or_default())?
         }
-        _ => remove_dir(&plugin.join("hooks")),
+        None => return Err("작업 폴더 보호 설정을 만들지 못해 Claude 실행을 멈췄습니다.".to_string()),
     }
     args.push("--plugin-dir".to_string());
     args.push(plugin.to_string_lossy().into_owned());
@@ -410,6 +437,31 @@ pub fn pre_bash_decision(command: &str) -> Result<(), String> {
             "AI-Character 안전 규칙: push·배포·삭제 같은 명령은 사용자 승인이 필요해 실행하지 않았습니다: {command}. 필요한 이유를 결과에 적어 사용자에게 요청하세요."
         )),
     }
+}
+
+/// The PreToolUse check: the command safety rules for Bash, and for every tool, nothing
+/// outside the workspace copy (see workspace_guard).
+fn pre_tool_decision(input: &Value) -> Result<(), String> {
+    use crate::workspace_guard::{check_file_tool, check_shell, WORKSPACE_ENV};
+    let cwd = hook_cwd(input);
+    let workspace = std::env::var_os(WORKSPACE_ENV).map(PathBuf::from).unwrap_or_else(|| cwd.clone());
+    let temp = std::env::temp_dir();
+    let home = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")).map(PathBuf::from);
+    let tool = input.get("tool_name").and_then(Value::as_str).unwrap_or_default();
+    let tool_input = input.get("tool_input").cloned().unwrap_or(Value::Null);
+    let refusal = if tool == "Bash" {
+        let command = tool_input.get("command").and_then(Value::as_str).unwrap_or_default();
+        pre_bash_decision(command)?;
+        // Commands may name tools in Program Files or Windows; those folders need admin to change.
+        let system: Vec<PathBuf> = ["ProgramFiles", "ProgramFiles(x86)", "SystemRoot"]
+            .iter()
+            .filter_map(|name| std::env::var_os(name).map(PathBuf::from))
+            .collect();
+        check_shell(command, &cwd, &workspace, &temp, home.as_deref(), &system)
+    } else {
+        check_file_tool(&tool_input, &cwd, &workspace, &temp, home.as_deref())
+    };
+    refusal.map_or(Ok(()), Err)
 }
 
 fn hook_envs(cwd: &Path) -> Vec<(&'static str, OsString)> {
@@ -552,6 +604,13 @@ pub fn run_hook_from_args() -> Option<i32> {
                 }
             }
         }
+        "pre-tool" => match pre_tool_decision(&input) {
+            Ok(()) => 0,
+            Err(reason) => {
+                eprintln!("{reason}");
+                2
+            }
+        },
         "post-edit" => post_edit(&input),
         "stop" => stop(&input),
         _ => 0,
@@ -642,10 +701,19 @@ mod tests {
 
     #[test]
     fn hooks_cover_bash_guard_edit_lint_and_stop_tests() {
-        let hooks = hooks_json().unwrap();
-        assert_eq!(hooks.pointer("/hooks/PreToolUse/0/matcher").and_then(Value::as_str), Some("Bash"));
+        let hooks = hooks_json(true).unwrap();
+        let guarded = hooks.pointer("/hooks/PreToolUse/0/matcher").and_then(Value::as_str).unwrap();
+        assert!(guarded.contains("Bash") && guarded.contains("Read") && guarded.contains("Write"));
         assert!(hooks.pointer("/hooks/PostToolUse/0/matcher").and_then(Value::as_str).unwrap().contains("Edit"));
         assert!(hooks.pointer("/hooks/Stop/0/hooks/0/command").and_then(Value::as_str).unwrap().contains("--cradle-hook stop"));
+    }
+
+    #[test]
+    fn workspace_guard_stays_on_without_quality_hooks() {
+        let hooks = hooks_json(false).unwrap();
+        assert!(hooks.pointer("/hooks/PreToolUse/0/hooks/0/command").and_then(Value::as_str).unwrap().contains("--cradle-hook pre-tool"));
+        assert!(hooks.pointer("/hooks/PostToolUse").is_none());
+        assert!(hooks.pointer("/hooks/Stop").is_none());
     }
 
     #[test]

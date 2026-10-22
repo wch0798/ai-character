@@ -85,11 +85,27 @@ fn block_reason(cost_usd: f64, settings: &AlertSettings) -> Option<String> {
 }
 
 /// Why paid calls are refused right now, or None when they may proceed.
+/// Fails closed: when today's spending can't be read or wasn't recorded, paid calls are refused.
 pub fn paid_block_reason(connection: &Connection) -> Option<String> {
     let settings = alert_settings();
-    let (_, _, cost) = today_usage(connection, day_start(connection)).ok()?;
-    block_reason(cost, &settings)
+    if normalize_cost_limit(settings.daily_cost_limit_usd) <= 0.0 {
+        return block_reason(0.0, &settings);
+    }
+    // The user chose not to block at the limit, so not knowing the spending blocks nothing either.
+    if !settings.block_paid_over_limit {
+        return None;
+    }
+    if usage_ledger::last_write_failed() {
+        return Some(UNKNOWN_SPENDING.to_string());
+    }
+    match today_usage(connection, day_start(connection)) {
+        Ok((_, _, cost)) => block_reason(cost, &settings),
+        Err(_) => Some(UNKNOWN_SPENDING.to_string()),
+    }
 }
+
+const UNKNOWN_SPENDING: &str =
+    "오늘 유료 사용액을 확인하지 못해 한도를 지키려고 유료 API 호출을 막았습니다. 무료 경로로 진행합니다. 앱을 다시 시작하면 대부분 해결됩니다.";
 
 /// Shows an OS notification when the user has them enabled; failures are silent.
 pub fn notify(title: &str, body: &str) {

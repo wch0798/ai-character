@@ -41,3 +41,9 @@ export async function removeStagedAttachment(
     { path }
   );
 }
+
+/** Saves a screenshot pasted with Ctrl+V to a temp file and returns its path. */
+export async function savePastedImage(blob: Blob): Promise<string> {
+  const bytes = Array.from(new Uint8Array(await blob.arrayBuffer()));
+  return invoke<string>("save_pasted_image", { bytes, mime: blob.type });
+}

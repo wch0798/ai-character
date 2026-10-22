@@ -1,4 +1,7 @@
 mod alerts;
+mod pasted_image;
+mod system_features;
+mod workspace_guard;
 mod login_status;
 mod cmd_shim;
 mod codex_model;
@@ -358,6 +361,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .setup(|app| {
+            crate::system_features::init_diagnostics(app.handle());
             crate::alerts::init(app.handle().clone());
             // 외장 볼륨 keys는 시작 시 자동 접근하지 않음(TCC 대화로 UI가 막히는 것 방지).
             // 키가 필요하면 Application Support 또는 사용자가 허용한 뒤 설정에서 연다.
@@ -367,10 +371,9 @@ pub fn run() {
                 use tauri::Manager;
                 use tauri_plugin_global_shortcut::ShortcutState;
 
+                // The shortcut itself is registered after the plugin is in place, from settings
+                // (설정 → 기본 → 숨기기 단축키), so the user can change it.
                 let shortcut = tauri_plugin_global_shortcut::Builder::new()
-                    .with_shortcuts(["ctrl+shift+space"])
-                    .map(|builder| {
-                        builder
                             .with_handler(|app, _shortcut, event| {
                                 if event.state != ShortcutState::Pressed {
                                     return;
@@ -397,17 +400,10 @@ pub fn run() {
                                     }
                                 }
                             })
-                            .build()
-                    });
-                match shortcut {
-                    Ok(plugin) => {
-                        if let Err(error) = app.handle().plugin(plugin) {
-                            eprintln!("전역 단축키를 건너뜁니다: {error}");
-                        }
-                    }
-                    Err(error) => {
-                        eprintln!("전역 단축키를 건너뜁니다: {error}");
-                    }
+                            .build();
+                match app.handle().plugin(shortcut) {
+                    Ok(()) => crate::system_features::register_toggle_shortcut(app.handle()),
+                    Err(error) => eprintln!("전역 단축키를 건너뜁니다: {error}"),
                 }
                 match app
                     .handle()
@@ -444,6 +440,7 @@ pub fn run() {
             get_conversation_dir,
             set_conversation_dir,
             login_status::get_agent_logins,
+            login_status::get_last_agent_logins,
             set_agent_path,
             detect_agent,
             detect_agent_runtime,
@@ -560,7 +557,16 @@ pub fn run() {
             scheduled_jobs::save_scheduled_job,
             scheduled_jobs::delete_scheduled_job,
             scheduled_jobs::run_scheduled_job_now,
-            scheduled_jobs::open_reports_folder
+            scheduled_jobs::open_reports_folder,
+            pasted_image::save_pasted_image,
+            system_features::get_toggle_shortcut,
+            system_features::set_toggle_shortcut,
+            system_features::get_autostart,
+            system_features::set_autostart,
+            system_features::log_frontend_error,
+            system_features::open_log_folder,
+            system_features::get_diagnostics,
+            system_features::start_voice_typing
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

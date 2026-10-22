@@ -70,18 +70,73 @@ export type Composer = {
   restoreText(text: string): void;
   fill(text: string): void;
   remember(text: string): void;
+  /** Every "add to the current task" note, removed from the waiting list (oldest first). */
+  takeAdditions(): string[];
+  /** The oldest separate next question, removed from the waiting list. */
+  takeQueued(): string | undefined;
+  /** After a stop: puts everything waiting back into the input instead of sending it. */
+  returnQueuedToInput(): void;
+};
+
+/**
+ * Typed while an answer runs. "add" belongs to the running task (Enter): it is folded into it.
+ * "next" is a separate question (Ctrl+Enter), sent on its own afterwards.
+ */
+export type QueuedKind = "add" | "next";
+export type QueuedItem = { kind: QueuedKind; text: string };
+export const QUEUE_LIMIT = 5;
+
+export function enqueue(queue: QueuedItem[], text: string, kind: QueuedKind = "next"): QueuedItem[] {
+  const clean = text.trim();
+  if (!clean || queue.length >= QUEUE_LIMIT) {
+    return queue;
+  }
+  return [...queue, { kind, text: clean }];
+}
+
+/** The follow-up that carries notes added while a task ran, once that task has finished. */
+export function additionsPrompt(additions: string[]): string {
+  return [
+    "[추가 지시] 방금 진행한 요청에 이어지는 내용입니다. 새 질문이 아니라, 앞의 답변이나 작업 결과에 아래 내용을 더 반영해 주세요.",
+    ...additions.map((text) => `- ${text}`),
+  ].join("\n");
+}
+
+/** A task restarted before it answered anything: the original question plus the added notes. */
+export function mergedPrompt(original: string, additions: string[]): string {
+  return [
+    original.trim(),
+    "",
+    "[추가 지시] 위 질문을 보낸 직후에 덧붙인 내용입니다. 함께 반영해서 한 번에 답해 주세요.",
+    ...additions.map((text) => `- ${text}`),
+  ].join("\n");
+}
+
+export type ComposerOptions = {
+  onStop: () => void;
+  /**
+   * A note for the running task. Return true when it was taken in right away (the task restarted
+   * with it); otherwise it waits and goes out as a follow-up when the task finishes.
+   */
+  onAdd?: (text: string) => boolean;
 };
 
 export function setupComposer(
   form: HTMLFormElement,
   input: HTMLTextAreaElement,
-  onStop: () => void
+  options: ComposerOptions
 ): Composer {
+  const { onStop, onAdd } = options;
   const submit = form.querySelector<HTMLButtonElement>("button[type='submit']");
   let busy = false;
   let sent = readJson<string[]>(SENT_KEY, []).filter((item) => typeof item === "string");
   let historyIndex = sent.length;
   let draftBeforeRecall = "";
+  let queue: QueuedItem[] = [];
+  const queueBox = document.createElement("div");
+  queueBox.id = "chat-queue";
+  queueBox.hidden = true;
+  form.before(queueBox);
 
   const resize = () => {
     input.style.height = "auto";
@@ -106,15 +161,71 @@ export function setupComposer(
     input.setSelectionRange(text.length, text.length);
     resize();
     saveDraft();
+    paintSubmit();
   };
 
   const paintSubmit = () => {
     if (!submit) return;
-    submit.textContent = busy ? "중지" : "전송";
-    submit.title = busy ? "진행 중인 답변을 멈춥니다 (Esc)" : "보내기 (Enter) · 줄바꿈 (Shift+Enter)";
-    submit.classList.toggle("is-stop", busy);
+    // While busy, typed text is added to the running task; an empty input means "stop".
+    const adds = busy && input.value.trim() !== "";
+    const stops = busy && !adds;
+    submit.textContent = adds ? "추가" : stops ? "중지" : "전송";
+    submit.title = adds
+      ? "지금 작업에 이 내용을 더 반영합니다 (Enter) · 따로 다음 질문으로 보내기 (Ctrl+Enter)"
+      : stops
+        ? "진행 중인 답변을 멈춥니다 (Esc)"
+        : "보내기 (Enter) · 줄바꿈 (Shift+Enter)";
+    submit.classList.toggle("is-stop", stops);
   };
 
+  const paintQueue = () => {
+    queueBox.replaceChildren();
+    queueBox.hidden = queue.length === 0;
+    if (!queue.length) return;
+    const title = document.createElement("div");
+    title.className = "chat-queue-title";
+    title.textContent = "답변 중에 넣은 내용 · 지금 작업이 끝나면 차례로 보냅니다";
+    queueBox.append(title);
+    queue.forEach((item, index) => {
+      const row = document.createElement("div");
+      row.className = `chat-queue-item is-${item.kind}`;
+      const tag = document.createElement("em");
+      tag.textContent = item.kind === "add" ? "지금 작업에 반영" : "다음 질문";
+      const label = document.createElement("span");
+      label.textContent = item.text;
+      label.title = item.text;
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.textContent = "×";
+      remove.title = "이 내용은 보내지 않습니다";
+      remove.addEventListener("click", () => {
+        queue = queue.filter((_, i) => i !== index);
+        paintQueue();
+      });
+      row.append(tag, label, remove);
+      queueBox.append(row);
+    });
+  };
+
+  const addToQueue = (kind: QueuedKind) => {
+    const text = input.value.trim();
+    if (!text) return;
+    // A note for the running task may be taken in right away (the task restarts with it).
+    if (kind === "add" && onAdd?.(text)) {
+      setValue("");
+      return;
+    }
+    if (queue.length >= QUEUE_LIMIT) {
+      input.classList.add("is-waiting");
+      window.setTimeout(() => input.classList.remove("is-waiting"), 900);
+      return;
+    }
+    queue = enqueue(queue, text, kind);
+    setValue("");
+    paintQueue();
+  };
+
+  const idlePlaceholder = input.placeholder;
   input.value = localStorage.getItem(DRAFT_KEY) ?? "";
   resize();
   paintSubmit();
@@ -123,6 +234,7 @@ export function setupComposer(
     historyIndex = sent.length;
     resize();
     saveDraft();
+    paintSubmit();
   });
 
   input.addEventListener("keydown", (event) => {
@@ -139,8 +251,7 @@ export function setupComposer(
     if (intent === "submit") {
       event.preventDefault();
       if (busy) {
-        input.classList.add("is-waiting");
-        window.setTimeout(() => input.classList.remove("is-waiting"), 900);
+        addToQueue(event.ctrlKey || event.metaKey ? "next" : "add");
         return;
       }
       form.requestSubmit();
@@ -167,7 +278,11 @@ export function setupComposer(
       if (busy) {
         event.preventDefault();
         event.stopImmediatePropagation();
-        onStop();
+        if (input.value.trim()) {
+          addToQueue("add");
+        } else {
+          onStop();
+        }
       }
     },
     { capture: true }
@@ -177,6 +292,7 @@ export function setupComposer(
     setBusy(next) {
       busy = next;
       form.classList.toggle("is-busy", next);
+      input.placeholder = next ? "답변 중에도 입력하면 지금 작업에 반영합니다 (Ctrl+Enter: 다음 질문)" : idlePlaceholder;
       paintSubmit();
     },
     isBusy: () => busy,
@@ -193,6 +309,26 @@ export function setupComposer(
     fill(text) {
       setValue(text);
       input.focus();
+    },
+    takeAdditions() {
+      const additions = queue.filter((item) => item.kind === "add").map((item) => item.text);
+      queue = queue.filter((item) => item.kind !== "add");
+      paintQueue();
+      return additions;
+    },
+    takeQueued() {
+      const index = queue.findIndex((item) => item.kind === "next");
+      if (index < 0) return undefined;
+      const [item] = queue.splice(index, 1);
+      paintQueue();
+      return item.text;
+    },
+    returnQueuedToInput() {
+      if (!queue.length) return;
+      setValue([input.value.trim(), ...queue.map((item) => item.text)].filter(Boolean).join("\n\n"));
+      queue = [];
+      paintQueue();
+      paintSubmit();
     },
     remember(text) {
       sent = rememberSent(sent, text);
@@ -255,10 +391,10 @@ export function setupScrollFollow(messages: HTMLElement, host: HTMLElement): Scr
 }
 
 export const WELCOME_SUGGESTIONS = [
-  "이 프로젝트 구조를 설명해줘",
-  "최근 변경 내용을 요약해줘",
-  "테스트를 돌려서 실패 원인을 찾아줘",
-  "이 오류를 고쳐줘: ",
+  "오늘 할 일을 정리해 줘",
+  "이 글을 쉽게 요약해 줘: ",
+  "작업 폴더에 무엇이 있는지 알려 줘",
+  "이메일 답장을 공손하게 써 줘: ",
 ];
 
 export function renderWelcome(messages: HTMLElement, onPick: (text: string) => void): void {
@@ -269,7 +405,7 @@ export function renderWelcome(messages: HTMLElement, onPick: (text: string) => v
   title.textContent = "무엇을 도와드릴까요?";
   const hint = document.createElement("div");
   hint.className = "chat-welcome-hint";
-  hint.textContent = "Enter 보내기 · Shift+Enter 줄바꿈 · ↑ 이전 질문 · 파일은 끌어다 놓기";
+  hint.textContent = "Enter 보내기 · Shift+Enter 줄바꿈 · ↑ 이전 질문 · 파일은 끌어다 놓기 · 그림은 Ctrl+V · 🎤 말로 입력";
   const chips = document.createElement("div");
   chips.className = "chat-welcome-chips";
   for (const suggestion of WELCOME_SUGGESTIONS) {

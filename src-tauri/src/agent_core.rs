@@ -9,6 +9,8 @@ use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use crate::process_util::{collect_until, kill_tree, SharedOutput, PIPE_GRACE};
+
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum AgentKind {
     Claude,
@@ -167,6 +169,15 @@ pub fn args_for_with_options(
     args
 }
 
+/// Saved keys an agent must not see. Claude keeps GITHUB_TOKEN only because its GitHub
+/// connection (MCP) expands `${GITHUB_TOKEN}` from its own environment.
+pub fn agent_hidden_secrets(agent: AgentKind) -> impl Iterator<Item = &'static str> {
+    crate::policy_engine::SECRET_ENV_NAMES
+        .iter()
+        .copied()
+        .filter(move |name| !(agent == AgentKind::Claude && *name == "GITHUB_TOKEN"))
+}
+
 pub fn managed_workspace_permission_args(agent: AgentKind) -> Vec<String> {
     match agent {
         AgentKind::Claude => vec![
@@ -177,6 +188,26 @@ pub fn managed_workspace_permission_args(agent: AgentKind) -> Vec<String> {
         AgentKind::Cursor => vec!["--force".to_string()],
         AgentKind::Antigravity => Vec::new(),
     }
+}
+
+/// Claude in the managed workspace has every permission, so the project's own settings (hooks,
+/// env, helper commands) and MCP servers must not load: only the user's settings and the app's
+/// own --mcp-config. Replaces any --setting-sources the user configured.
+pub fn isolate_claude_from_project(args: &[String]) -> Vec<String> {
+    let mut out = Vec::with_capacity(args.len() + 3);
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        if arg == "--setting-sources" {
+            iter.next();
+            continue;
+        }
+        if arg.starts_with("--setting-sources=") || arg == "--strict-mcp-config" {
+            continue;
+        }
+        out.push(arg.clone());
+    }
+    out.extend(["--setting-sources", "user", "--strict-mcp-config"].map(String::from));
+    out
 }
 
 pub fn merge_extra_args(existing: &[String], extra: &[String]) -> Vec<String> {
@@ -262,12 +293,16 @@ pub fn merge_plugin_dir_args(existing: &[String], extra: &[String]) -> Vec<Strin
 }
 
 pub fn claude_plugin_dir_args(project_dir: &Path, working_dir: &Path) -> Vec<String> {
-    claude_plugin_dir_args_with_home(project_dir, working_dir, user_home_dir().as_deref())
+    claude_plugin_dir_args_with_home(Some((project_dir, working_dir)), user_home_dir().as_deref())
+}
+
+/// Only the plugins under the user's own ~/.claude, none from the project.
+pub fn user_claude_plugin_dir_args() -> Vec<String> {
+    claude_plugin_dir_args_with_home(None, user_home_dir().as_deref())
 }
 
 fn claude_plugin_dir_args_with_home(
-    project_dir: &Path,
-    working_dir: &Path,
+    project: Option<(&Path, &Path)>,
     home: Option<&Path>,
 ) -> Vec<String> {
     let mut dirs = Vec::new();
@@ -282,9 +317,11 @@ fn claude_plugin_dir_args_with_home(
         consider(home.join(".claude").join("plugins").join("local"));
         consider(home.join(".claude").join("skills"));
     }
-    consider(project_dir.join(".claude").join("plugins"));
-    if working_dir != project_dir {
-        consider(working_dir.join(".claude").join("plugins"));
+    if let Some((project_dir, working_dir)) = project {
+        consider(project_dir.join(".claude").join("plugins"));
+        if working_dir != project_dir {
+            consider(working_dir.join(".claude").join("plugins"));
+        }
     }
 
     let mut args = Vec::new();
@@ -613,10 +650,11 @@ fn read_pipe_streaming<R: Read + Send + 'static>(
     reader: R,
     kind: AgentStreamKind,
     tx: mpsc::Sender<AgentStreamChunk>,
-) -> thread::JoinHandle<Vec<u8>> {
-    thread::spawn(move || {
+) -> (SharedOutput, thread::JoinHandle<()>) {
+    let all = SharedOutput::default();
+    let sink = all.clone();
+    let handle = thread::spawn(move || {
         let mut reader = BufReader::new(reader);
-        let mut all = Vec::new();
         let mut chunk = Vec::new();
 
         loop {
@@ -624,7 +662,7 @@ fn read_pipe_streaming<R: Read + Send + 'static>(
             match reader.read_until(b'\n', &mut chunk) {
                 Ok(0) => break,
                 Ok(_) => {
-                    all.extend_from_slice(&chunk);
+                    sink.lock().unwrap_or_else(|e| e.into_inner()).extend_from_slice(&chunk);
                     let text = String::from_utf8_lossy(&chunk).into_owned();
                     if !text.is_empty() {
                         let _ = tx.send(AgentStreamChunk { kind, text });
@@ -633,13 +671,8 @@ fn read_pipe_streaming<R: Read + Send + 'static>(
                 Err(_) => break,
             }
         }
-
-        all
-    })
-}
-
-fn join_output(handle: thread::JoinHandle<Vec<u8>>) -> Vec<u8> {
-    handle.join().unwrap_or_default()
+    });
+    (all, handle)
 }
 
 fn drain_stream<F>(
@@ -692,16 +725,14 @@ where
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    // Subscription CLIs must not silently switch to metered API billing.
-    match request.agent {
-        AgentKind::Claude => {
-            child_cmd.env_remove("ANTHROPIC_API_KEY");
-        }
-        AgentKind::Codex => {
-            child_cmd.env_remove("OPENAI_API_KEY");
-        }
-        _ => {}
+    // Agents read web pages and files that may carry injected instructions, and run commands
+    // freely, so they get none of the user's saved keys: a hidden "send me your environment"
+    // would otherwise leak every one. This also keeps subscription CLIs off metered API billing.
+    for name in agent_hidden_secrets(request.agent) {
+        child_cmd.env_remove(name);
     }
+    // Claude's PreToolUse guard (workspace_guard) keeps every tool inside this folder.
+    child_cmd.env(crate::workspace_guard::WORKSPACE_ENV, &request.working_dir);
     if request.agent == AgentKind::Claude {
         if env::var_os("HOME").is_none() {
             if let Some(profile) = env::var_os("USERPROFILE") {
@@ -738,7 +769,8 @@ where
 
         if is_cancelled(request.task_id.as_deref()) {
             cancelled = true;
-            let _ = child.kill();
+            // The npm/Cursor launchers start node, and node starts the real agent: kill them all.
+            kill_tree(&mut child);
             break child
                 .wait()
                 .map_err(|error| format!("Agent 종료 확인 실패: {error}"))?;
@@ -746,7 +778,7 @@ where
 
         if started.elapsed() >= request.timeout {
             timed_out = true;
-            let _ = child.kill();
+            kill_tree(&mut child);
             break child
                 .wait()
                 .map_err(|error| format!("Agent timeout 종료 확인 실패: {error}"))?;
@@ -761,8 +793,9 @@ where
         }
     };
 
-    let stdout = stdout_reader.map(join_output).unwrap_or_default();
-    let stderr = stderr_reader.map(join_output).unwrap_or_default();
+    let deadline = Instant::now() + PIPE_GRACE;
+    let stdout = stdout_reader.map(|(all, handle)| collect_until(&all, handle, deadline)).unwrap_or_default();
+    let stderr = stderr_reader.map(|(all, handle)| collect_until(&all, handle, deadline)).unwrap_or_default();
     drain_stream(&rx, &mut on_chunk);
     clear_cancel(request.task_id.as_deref());
 
@@ -890,6 +923,17 @@ mod tests {
     }
 
     #[test]
+    fn managed_claude_ignores_project_settings_and_mcp() {
+        let args = isolate_claude_from_project(&[
+            "--setting-sources".to_string(),
+            "project,local".to_string(),
+            "--model".to_string(),
+            "x".to_string(),
+        ]);
+        assert_eq!(args, ["--model", "x", "--setting-sources", "user", "--strict-mcp-config"].map(String::from));
+    }
+
+    #[test]
     fn sanitize_claude_strips_bare_mode() {
         let cleaned = sanitize_claude_extra_args(&[
             "--bare".to_string(),
@@ -935,7 +979,7 @@ mod tests {
             .join("demo-plugin");
         fs::create_dir_all(&plugin).unwrap();
         fs::write(plugin.join("plugin.json"), "{}").unwrap();
-        let args = claude_plugin_dir_args_with_home(tmp.path(), tmp.path(), None);
+        let args = claude_plugin_dir_args_with_home(Some((tmp.path(), tmp.path())), None);
         assert_eq!(args.len(), 2);
         assert_eq!(args[0], "--plugin-dir");
         assert!(args[1].replace('\\', "/").ends_with(".claude/plugins"));
@@ -951,7 +995,7 @@ mod tests {
             .join("nested");
         fs::create_dir_all(plugin.join(".claude-plugin")).unwrap();
         fs::write(plugin.join(".claude-plugin").join("plugin.json"), r#"{"name":"nested"}"#).unwrap();
-        let args = claude_plugin_dir_args_with_home(tmp.path(), tmp.path(), None);
+        let args = claude_plugin_dir_args_with_home(Some((tmp.path(), tmp.path())), None);
         assert!(args.windows(2).any(|window| {
             window[0] == "--plugin-dir" && window[1].replace('\\', "/").ends_with(".claude/plugins")
         }));

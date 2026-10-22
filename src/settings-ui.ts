@@ -6,6 +6,7 @@ import { createUpdateSection } from "./update-ui";
 import { openSetupWeb } from "./setup-web-client";
 import { createScheduledJobsSection } from "./scheduled-jobs-ui";
 import { createAlertsSection } from "./alerts-ui";
+import { createAppPreferencesSections } from "./app-preferences-ui";
 import {
   chooseAgentExecutable,
   chooseProjectDirectory,
@@ -35,6 +36,7 @@ import {
   setAppPreferences,
   getUsageSnapshot,
   getAgentLogins,
+  getLastAgentLogins,
   type AgentLogin,
   type AgentKind,
   type AgentRunRecord,
@@ -154,7 +156,7 @@ export function initializeSettingsUi(): void {
   const environmentSection = document.createElement("section");
   environmentSection.className = "ai-settings-section";
   const environmentTitle = document.createElement("h3");
-  environmentTitle.textContent = "CRADLE 환경 준비";
+  environmentTitle.textContent = "AI 작업 환경 준비";
   const environmentStatus = document.createElement("div");
   environmentStatus.className = "ai-settings-help";
   environmentStatus.textContent = "Git과 작업 환경을 확인하는 중…";
@@ -357,10 +359,10 @@ export function initializeSettingsUi(): void {
   const closeWhenDoneCheckbox = document.createElement("input");
   closeWhenDoneCheckbox.type = "checkbox";
   const closeWhenDoneText = document.createElement("span");
-  closeWhenDoneText.textContent = "CRADLE 끝나면 남은 계정 창 닫기";
+  closeWhenDoneText.textContent = "협업 작업이 끝나면 남은 계정 창 닫기";
   const closeWhenDoneHelp = document.createElement("small");
   closeWhenDoneHelp.className = "ai-settings-help";
-  closeWhenDoneHelp.textContent = "설정에서 미리 연 로그인 창까지 닫지 않고, 이번 CRADLE에서 연 창만 정리합니다.";
+  closeWhenDoneHelp.textContent = "설정에서 미리 연 로그인 창까지 닫지 않고, 이번 협업 작업에서 연 창만 정리합니다.";
   const closeWhenDoneCopy = document.createElement("span");
   closeWhenDoneCopy.className = "ai-settings-checkbox-copy";
   closeWhenDoneCopy.append(closeWhenDoneText, closeWhenDoneHelp);
@@ -386,7 +388,7 @@ export function initializeSettingsUi(): void {
   const cradleCheckbox = document.createElement("input");
   cradleCheckbox.type = "checkbox";
   const cradleText = document.createElement("span");
-  cradleText.textContent = "무료 자동 모드 (CRADLE)";
+  cradleText.textContent = "무료 자동 모드 (여러 AI 협업)";
   const cradleHelp = document.createElement("small");
   cradleHelp.className = "ai-settings-help";
   cradleHelp.textContent =
@@ -432,7 +434,7 @@ export function initializeSettingsUi(): void {
   openAiApiText.textContent = "유료 OpenAI API 허용 (요금 발생)";
   const openAiApiHelp = document.createElement("small");
   openAiApiHelp.className = "ai-settings-help";
-  openAiApiHelp.textContent = "기본은 꺼짐. 켜도 호출마다 승인을 받고, 하루 비용 한도를 넘으면 막힙니다.";
+  openAiApiHelp.textContent = "기본은 꺼짐. 켜도 호출마다 승인을 받습니다. 하루 한도가 0달러면 아예 쓰지 않고, '한도에 닿으면 유료 호출 막기'를 켜 두면 한도에서 멈춥니다.";
   const openAiApiCopy = document.createElement("span");
   openAiApiCopy.className = "ai-settings-checkbox-copy";
   openAiApiCopy.append(openAiApiText, openAiApiHelp);
@@ -440,7 +442,7 @@ export function initializeSettingsUi(): void {
 
   const providerStatusBox = document.createElement("div");
   providerStatusBox.className = "ai-settings-help";
-  providerStatusBox.textContent = "자동 Provider 상태 확인 중…";
+  providerStatusBox.textContent = "AI 연결 상태 확인 중…";
 
   const defaultAgentLabel = document.createElement("label");
   defaultAgentLabel.className = "ai-settings-field";
@@ -527,7 +529,7 @@ export function initializeSettingsUi(): void {
   const runHistoryHeader = document.createElement("div");
   runHistoryHeader.className = "ai-agent-run-history-header";
   const runHistoryTitle = document.createElement("h3");
-  runHistoryTitle.textContent = "최근 Agent 실행";
+  runHistoryTitle.textContent = "최근 AI 프로그램 실행";
   const refreshRunHistoryButton = makeButton("새로고침", "ai-settings-action");
   runHistoryHeader.append(runHistoryTitle, refreshRunHistoryButton);
   const runHistoryList = document.createElement("div");
@@ -560,7 +562,7 @@ export function initializeSettingsUi(): void {
   for (const text of [
     "원본 변경은 적용 버튼을 눌러야 반영됩니다.",
     "충돌이 있으면 원본 적용을 차단합니다.",
-    "Agent는 대화별 작업 복사본에서 실행됩니다.",
+    "AI 프로그램은 대화별 작업 복사본에서 실행됩니다.",
   ]) {
     const item = document.createElement("div");
     item.className = "ai-settings-safety-item";
@@ -677,7 +679,17 @@ export function initializeSettingsUi(): void {
   const moreKeysSummary = document.createElement("summary");
   moreKeysSummary.textContent = "다른 AI 키 (안 넣어도 됩니다)";
   moreKeys.append(moreKeysSummary, apiKeys.section);
-  basicPane.append(easySection, projectSection, simpleSection, orderSection, moreKeys);
+  const appPreferences = createAppPreferencesSections(makeButton, setMessage);
+  basicPane.append(
+    easySection,
+    projectSection,
+    simpleSection,
+    appPreferences.screen,
+    foldCard(appPreferences.persona),
+    foldCard(appPreferences.system),
+    orderSection,
+    moreKeys
+  );
 
   const accountsPane = document.createElement("div");
   accountsPane.className = "ai-settings-pane";
@@ -750,6 +762,7 @@ export function initializeSettingsUi(): void {
   advancedPane.dataset.pane = "advanced";
   advancedPane.hidden = true;
   advancedPane.append(
+    appPreferences.diagnostics,
     policySection.section,
     agentsSection,
     foldCard(runtimeSection),
@@ -997,7 +1010,7 @@ export function initializeSettingsUi(): void {
     argsText.textContent = "추가 CLI 인자";
     const argsHelp = document.createElement("span");
     argsHelp.className = "ai-agent-args-help";
-    argsHelp.textContent = "보통은 비워두세요. 해당 Agent CLI에 별도 옵션이 필요할 때만 사용합니다.";
+    argsHelp.textContent = "보통은 비워두세요. 해당 AI 프로그램에 별도 옵션이 필요할 때만 사용합니다.";
     const argsInput = document.createElement("textarea");
     argsInput.className = "ai-agent-args-input";
     argsInput.rows = 2;
@@ -1397,12 +1410,12 @@ export function initializeSettingsUi(): void {
         : "Git ✗ 설치 필요";
       const workspaceLabel = status.workspaceGitReady
         ? "Workspace Git ✓"
-        : "Workspace Git: 첫 CRADLE 코드 작업 시 자동 준비";
+        : "작업 기록(Git): 첫 코드 작업 때 자동 준비";
       environmentStatus.textContent = `${gitLabel} / ${workspaceLabel} — ${status.message}`;
       installGitButton.hidden = status.gitInstalled || !status.installSupported;
       prepareEnvironmentButton.disabled = !status.gitInstalled;
     } catch (error) {
-      environmentStatus.textContent = `CRADLE 환경 상태를 읽지 못했습니다: ${errorText(error)}`;
+      environmentStatus.textContent = `AI 작업 환경 상태를 읽지 못했습니다: ${errorText(error)}`;
       installGitButton.hidden = false;
     } finally {
       refreshEnvironmentButton.disabled = false;
@@ -1412,11 +1425,23 @@ export function initializeSettingsUi(): void {
     }
   }
 
-  async function refreshLoginStatus(): Promise<void> {
+  let lastLoginSnapshot: Parameters<typeof renderLoginStatus>[0] = {};
+
+  async function refreshLoginStatus(force = false): Promise<void> {
     try {
+      // Show the last answer at once; asking Cursor and Antigravity again can take seconds.
+      const last = await getLastAgentLogins().catch(() => null);
+      if (last) {
+        renderLoginStatus(lastLoginSnapshot, last);
+      } else if (!loginStatusList.childElementCount) {
+        const checking = document.createElement("div");
+        checking.className = "ai-settings-help";
+        checking.textContent = "로그인 상태를 확인하는 중…";
+        loginStatusList.append(checking);
+      }
       // Sign-in state is read directly by the app; API key rows still come from the usage snapshot.
       const [logins, snapshotOrNull] = await Promise.all([
-        getAgentLogins(),
+        getAgentLogins(force),
         getUsageSnapshot().catch(() => null),
       ]);
       const snapshot = (snapshotOrNull ?? {}) as {
@@ -1440,6 +1465,7 @@ export function initializeSettingsUi(): void {
           hint?: string | null;
         }>;
       };
+      lastLoginSnapshot = snapshot;
       renderLoginStatus(snapshot, logins);
     } catch (error) {
       loginStatusList.replaceChildren();
@@ -1562,7 +1588,7 @@ export function initializeSettingsUi(): void {
       message.textContent = `${await launchAgentLogin(agent)} 완료되면 아래 상태가 연결됨으로 바뀝니다.`;
       for (let i = 0; i < 12; i += 1) {
         await new Promise((resolve) => window.setTimeout(resolve, 2500));
-        await refreshLoginStatus();
+        await refreshLoginStatus(true);
       }
     } catch (error) {
       message.textContent = errorText(error);
@@ -1665,7 +1691,7 @@ export function initializeSettingsUi(): void {
         return `${label}: ${state}`;
       }).join(" / ");
     } catch (error) {
-      providerStatusBox.textContent = `자동 Provider 상태를 읽지 못했습니다: ${errorText(error)}`;
+      providerStatusBox.textContent = `AI 연결 상태를 읽지 못했습니다: ${errorText(error)}`;
     }
   }
 
@@ -1844,6 +1870,7 @@ export function initializeSettingsUi(): void {
             ensurePreferences(),
             refreshFreeAutoReadiness(),
             apiKeys.refresh(),
+            appPreferences.refresh(),
           ]);
           break;
         case "accounts":
@@ -2088,7 +2115,7 @@ export function initializeSettingsUi(): void {
 
   refreshAccountsButton.addEventListener("click", () => {
     void refreshWebAccounts();
-    void refreshLoginStatus();
+    void refreshLoginStatus(true);
   });
 
   openAllAccountsButton.addEventListener("click", async () => {
@@ -2181,7 +2208,7 @@ export function initializeSettingsUi(): void {
       const okCount = steps.filter((step) => step.ok).length;
       message.textContent =
         failed.length === 0
-          ? `설치 완료 (${okCount}개). Agent는 각 앱에서 한 번 로그인하세요.`
+          ? `설치 완료 (${okCount}개). AI 프로그램은 각 앱에서 한 번 로그인하세요.`
           : `일부 완료 (${okCount}/${steps.length}). ${failed
               .map((step) => step.message)
               .join(" / ")}`;
@@ -2201,7 +2228,7 @@ export function initializeSettingsUi(): void {
 
   prepareEnvironmentButton.addEventListener("click", async () => {
     prepareEnvironmentButton.disabled = true;
-    message.textContent = "CRADLE 환경을 확인하고 준비합니다…";
+    message.textContent = "AI 작업 환경을 확인하고 준비합니다…";
     try {
       const status = await prepareCradleEnvironment();
       message.textContent = status.message;
@@ -2239,7 +2266,7 @@ export function initializeSettingsUi(): void {
     try {
       const selected = await chooseProjectDirectory();
       projectPath.textContent = selected;
-      message.textContent = "프로젝트 폴더를 변경했습니다. 새 Agent 작업부터 새 경로를 사용합니다.";
+      message.textContent = "프로젝트 폴더를 변경했습니다. 새 AI 작업부터 새 경로를 사용합니다.";
     } catch (error) {
       message.textContent = errorText(error);
     } finally {
