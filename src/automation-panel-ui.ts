@@ -157,7 +157,7 @@ export function initializeAutomationPanel(options: { setChatOpen(open: boolean):
     }
     section.append(heading);
     const meters: Array<[string, number, number, string]> = [
-      ["유료 비용", usage.costUsd, usage.dailyCostLimitUsd, `$${usage.costUsd.toFixed(2)} / $${usage.dailyCostLimitUsd.toFixed(2)}`],
+      ["유료 비용", usage.costUsd, usage.dailyCostLimitUsd, usage.dailyCostLimitUsd > 0 ? `$${usage.costUsd.toFixed(2)} / $${usage.dailyCostLimitUsd.toFixed(2)}` : "유료 사용 안 함 (한도 $0)"],
       ["AI 호출", usage.calls, usage.dailyCallWarn, `${usage.calls}회 / ${usage.dailyCallWarn}회`],
     ];
     const list = el("div", "auto-list");

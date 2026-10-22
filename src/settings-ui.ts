@@ -135,7 +135,7 @@ export function initializeSettingsUi(): void {
   const projectSection = document.createElement("section");
   projectSection.className = "ai-settings-section";
   const projectTitle = document.createElement("h3");
-  projectTitle.textContent = "프로젝트";
+  projectTitle.textContent = "기본 작업 폴더";
   const projectPath = document.createElement("div");
   projectPath.className = "ai-settings-path";
   projectPath.textContent = "프로젝트 폴더 확인 중…";
@@ -144,7 +144,10 @@ export function initializeSettingsUi(): void {
   const projectRow = document.createElement("div");
   projectRow.className = "ai-settings-row";
   projectRow.append(projectPath, projectButton);
-  projectSection.append(projectTitle, projectRow);
+  const projectHelp = document.createElement("div");
+  projectHelp.className = "ai-settings-help";
+  projectHelp.textContent = "새 대화가 처음 쓰는 폴더입니다. 대화마다 대화창 위 📁 '바꾸기'로 다른 폴더를 쓸 수 있습니다.";
+  projectSection.append(projectTitle, projectRow, projectHelp);
 
   const environmentSection = document.createElement("section");
   environmentSection.className = "ai-settings-section";
@@ -204,19 +207,26 @@ export function initializeSettingsUi(): void {
   easyMore.append(easyMoreSummary, easyChecklist, easyActions);
   const resetSettingsButton = makeButton("설정 초기화", "ai-settings-ghost");
   resetSettingsButton.title = "동작 스위치와 웹 설정의 단계 체크를 모두 풉니다. 키와 작업 폴더는 지우지 않습니다.";
+  easyActions.append(resetSettingsButton);
+  const easyTitle = document.createElement("h3");
+  easyTitle.textContent = "한 번에 쓰기 (추천)";
+  const easyLead = document.createElement("div");
+  easyLead.className = "ai-settings-help";
+  easyLead.textContent = "처음이면 '웹에서 설정 보기'를 눌러 안내를 따라 하세요. 키 넣기·폴더 고르기·로그인을 한 화면에서 합니다.";
   easySection.append(
+    easyTitle,
+    easyLead,
     setupWebButton,
     easyStatus,
     easyNext,
     enableFreeAutoButton,
-    resetSettingsButton,
     easyMore
   );
 
   const orderSection = document.createElement("section");
   orderSection.className = "ai-settings-section";
   const orderTitle = document.createElement("h3");
-  orderTitle.textContent = "누가 먼저 하나요";
+  orderTitle.textContent = "질문하면 누가 답하나요?";
   const orderList = document.createElement("ol");
   orderList.className = "ai-settings-order";
   const orderItems: Array<[string, string]> = [
@@ -338,7 +348,7 @@ export function initializeSettingsUi(): void {
   closeAfterHandoffHelp.textContent = "전송/수집은 사람이 하고, 앱은 창만 정리합니다. (기본 켜짐)";
   const closeAfterHandoffCopy = document.createElement("span");
   closeAfterHandoffCopy.className = "ai-settings-checkbox-copy";
-  closeAfterHandoffCopy.append(closeAfterHandoffText);
+  closeAfterHandoffCopy.append(closeAfterHandoffText, closeAfterHandoffHelp);
   closeAfterHandoffLabel.append(closeAfterHandoffCheckbox, closeAfterHandoffCopy);
   const closeWhenDoneLabel = document.createElement("label");
   closeWhenDoneLabel.className = "ai-settings-checkbox";
@@ -351,7 +361,7 @@ export function initializeSettingsUi(): void {
   closeWhenDoneHelp.textContent = "설정에서 미리 연 로그인 창까지 닫지 않고, 이번 CRADLE에서 연 창만 정리합니다.";
   const closeWhenDoneCopy = document.createElement("span");
   closeWhenDoneCopy.className = "ai-settings-checkbox-copy";
-  closeWhenDoneCopy.append(closeWhenDoneText);
+  closeWhenDoneCopy.append(closeWhenDoneText, closeWhenDoneHelp);
   closeWhenDoneLabel.append(closeWhenDoneCheckbox, closeWhenDoneCopy);
   const webFold = document.createElement("details");
   webFold.className = "ai-settings-fold";
@@ -374,14 +384,14 @@ export function initializeSettingsUi(): void {
   const cradleCheckbox = document.createElement("input");
   cradleCheckbox.type = "checkbox";
   const cradleText = document.createElement("span");
-  cradleText.textContent = "CRADLE 자동 분배";
+  cradleText.textContent = "무료 자동 모드 (CRADLE)";
   const cradleHelp = document.createElement("small");
   cradleHelp.className = "ai-settings-help";
   cradleHelp.textContent =
-    "질문은 바로 답하고, 파일 작업은 Cursor·Codex·Claude·Antigravity 등 설치된 Agent에 나눕니다.";
+    "질문에 맞는 AI를 알아서 고릅니다. 질문은 바로 답하고, 파일 작업은 설치된 Claude·Codex·Cursor 등에 나눕니다. 켜 두는 것을 추천합니다.";
   const cradleCopy = document.createElement("span");
   cradleCopy.className = "ai-settings-checkbox-copy";
-  cradleCopy.append(cradleText);
+  cradleCopy.append(cradleText, cradleHelp);
   cradleLabel.append(cradleCheckbox, cradleCopy);
 
   const webSearchLabel = document.createElement("label");
@@ -389,13 +399,13 @@ export function initializeSettingsUi(): void {
   const webSearchCheckbox = document.createElement("input");
   webSearchCheckbox.type = "checkbox";
   const webSearchText = document.createElement("span");
-  webSearchText.textContent = "웹 자동검색";
+  webSearchText.textContent = "필요하면 웹 검색";
   const webSearchHelp = document.createElement("small");
   webSearchHelp.className = "ai-settings-help";
-  webSearchHelp.textContent = "최신/조사 요청일 때만 검색합니다.";
+  webSearchHelp.textContent = "최신 정보가 필요한 질문일 때만 인터넷을 찾아봅니다. Jina 키가 필요합니다.";
   const webSearchCopy = document.createElement("span");
   webSearchCopy.className = "ai-settings-checkbox-copy";
-  webSearchCopy.append(webSearchText);
+  webSearchCopy.append(webSearchText, webSearchHelp);
   webSearchLabel.append(webSearchCheckbox, webSearchCopy);
 
   const geminiApiLabel = document.createElement("label");
@@ -403,13 +413,13 @@ export function initializeSettingsUi(): void {
   const geminiApiCheckbox = document.createElement("input");
   geminiApiCheckbox.type = "checkbox";
   const geminiApiText = document.createElement("span");
-  geminiApiText.textContent = "Gemini 공식 API 자동 사용";
+  geminiApiText.textContent = "무료 Gemini 키 사용";
   const geminiApiHelp = document.createElement("small");
   geminiApiHelp.className = "ai-settings-help";
-  geminiApiHelp.textContent = "가능할 때 공식 API로 바로 답합니다.";
+  geminiApiHelp.textContent = "조사·정리처럼 정확한 정보가 필요한 일을 무료 Gemini가 먼저 처리합니다.";
   const geminiApiCopy = document.createElement("span");
   geminiApiCopy.className = "ai-settings-checkbox-copy";
-  geminiApiCopy.append(geminiApiText);
+  geminiApiCopy.append(geminiApiText, geminiApiHelp);
   geminiApiLabel.append(geminiApiCheckbox, geminiApiCopy);
 
   const openAiApiLabel = document.createElement("label");
@@ -417,13 +427,13 @@ export function initializeSettingsUi(): void {
   const openAiApiCheckbox = document.createElement("input");
   openAiApiCheckbox.type = "checkbox";
   const openAiApiText = document.createElement("span");
-  openAiApiText.textContent = "OpenAI 유료 API 사용 허용";
+  openAiApiText.textContent = "유료 OpenAI API 허용 (요금 발생)";
   const openAiApiHelp = document.createElement("small");
   openAiApiHelp.className = "ai-settings-help";
-  openAiApiHelp.textContent = "기본 OFF. OPENAI_API_KEY가 있어도 이 옵션을 직접 켜기 전에는 호출하지 않습니다.";
+  openAiApiHelp.textContent = "기본은 꺼짐. 켜도 호출마다 승인을 받고, 하루 비용 한도를 넘으면 막힙니다.";
   const openAiApiCopy = document.createElement("span");
   openAiApiCopy.className = "ai-settings-checkbox-copy";
-  openAiApiCopy.append(openAiApiText);
+  openAiApiCopy.append(openAiApiText, openAiApiHelp);
   openAiApiLabel.append(openAiApiCheckbox, openAiApiCopy);
 
   const providerStatusBox = document.createElement("div");
@@ -433,7 +443,7 @@ export function initializeSettingsUi(): void {
   const defaultAgentLabel = document.createElement("label");
   defaultAgentLabel.className = "ai-settings-field";
   const defaultAgentText = document.createElement("span");
-  defaultAgentText.textContent = "기본 Agent (CRADLE OFF)";
+  defaultAgentText.textContent = "기본 프로그램 (자동 모드 끔일 때)";
   const defaultAgentSelect = document.createElement("select");
   defaultAgentSelect.className = "ai-settings-select";
   for (const row of AGENTS) {
@@ -447,7 +457,7 @@ export function initializeSettingsUi(): void {
   const timeoutLabel = document.createElement("label");
   timeoutLabel.className = "ai-settings-field";
   const timeoutText = document.createElement("span");
-  timeoutText.textContent = "Timeout (초)";
+  timeoutText.textContent = "최대 대기 시간 (초)";
   const timeoutInput = document.createElement("input");
   timeoutInput.className = "ai-settings-number";
   timeoutInput.type = "number";
@@ -461,22 +471,24 @@ export function initializeSettingsUi(): void {
   const sensitiveCheckbox = document.createElement("input");
   sensitiveCheckbox.type = "checkbox";
   const sensitiveText = document.createElement("span");
-  sensitiveText.textContent = "민감 파일 접근 전 경고";
+  sensitiveText.textContent = "비밀 파일 경고";
   const sensitiveHelp = document.createElement("div");
   sensitiveHelp.className = "ai-settings-help";
   sensitiveHelp.textContent =
     "대화별 복사본에는 키 파일이 들어가지 않으며, 이 경고 때문에 작업이 멈추지는 않습니다.";
-  sensitiveLabel.append(sensitiveCheckbox, sensitiveText);
+  const sensitiveCopy = document.createElement("span");
+  sensitiveCopy.className = "ai-settings-checkbox-copy";
+  sensitiveCopy.append(sensitiveText, sensitiveHelp);
+  sensitiveLabel.append(sensitiveCheckbox, sensitiveCopy);
 
-  const saveRuntimeButton = makeButton("실행 설정 저장", "ai-settings-action");
+  const saveRuntimeButton = makeButton("저장", "ai-settings-action");
   const simpleSection = document.createElement("section");
   simpleSection.className = "ai-settings-section";
   const simpleTitle = document.createElement("h3");
-  simpleTitle.textContent = "답변";
+  simpleTitle.textContent = "답변 방식";
   const simpleLead = document.createElement("div");
   simpleLead.className = "ai-settings-help";
-  simpleLead.textContent = "보통은 건드리지 않아도 됩니다.";
-  simpleLead.hidden = true;
+  simpleLead.textContent = "스위치를 바꾸면 바로 저장됩니다. 잘 모르겠으면 그대로 두세요.";
   simpleSection.append(
     simpleTitle,
     simpleLead,
@@ -492,8 +504,7 @@ export function initializeSettingsUi(): void {
     providerStatusBox,
     defaultAgentLabel,
     timeoutLabel,
-    sensitiveLabel,
-    sensitiveHelp
+    sensitiveLabel
   );
 
   const agentsSection = document.createElement("section");
@@ -664,7 +675,7 @@ export function initializeSettingsUi(): void {
   const moreKeysSummary = document.createElement("summary");
   moreKeysSummary.textContent = "다른 AI 키 (안 넣어도 됩니다)";
   moreKeys.append(moreKeysSummary, apiKeys.section);
-  basicPane.append(orderSection, easySection, projectSection, moreKeys);
+  basicPane.append(easySection, projectSection, simpleSection, orderSection, moreKeys);
 
   const accountsPane = document.createElement("div");
   accountsPane.className = "ai-settings-pane";
@@ -737,7 +748,6 @@ export function initializeSettingsUi(): void {
   advancedPane.dataset.pane = "advanced";
   advancedPane.hidden = true;
   advancedPane.append(
-    simpleSection,
     policySection.section,
     agentsSection,
     foldCard(runtimeSection),
@@ -751,8 +761,8 @@ export function initializeSettingsUi(): void {
     id: "basic" | "accounts" | "claude" | "updates" | "character" | "advanced";
     label: string;
   }> = [
-    { id: "basic", label: "시작" },
-    { id: "accounts", label: "로그인" },
+    { id: "basic", label: "기본" },
+    { id: "accounts", label: "계정 · 로그인" },
     { id: "claude", label: "Claude" },
     { id: "updates", label: "자동화" },
     { id: "character", label: "캐릭터" },
@@ -804,30 +814,13 @@ export function initializeSettingsUi(): void {
     }
   };
 
-  const moreTabsButton = makeButton("다른 설정", "ai-settings-tab");
-  moreTabsButton.type = "button";
   for (const def of tabDefs) {
     const button = makeButton(def.label, "ai-settings-tab");
     button.dataset.tab = def.id;
     button.setAttribute("role", "tab");
-    if (def.id !== "basic") {
-      button.hidden = true;
-    }
     button.addEventListener("click", () => setActiveTab(def.id));
     tabs.append(button);
   }
-  moreTabsButton.addEventListener("click", () => {
-    const open = moreTabsButton.dataset.open === "1";
-    moreTabsButton.dataset.open = open ? "0" : "1";
-    moreTabsButton.textContent = open ? "다른 설정" : "간단히";
-    for (const def of tabDefs) {
-      if (def.id === "basic") continue;
-      const button = tabs.querySelector<HTMLButtonElement>(`[data-tab="${def.id}"]`);
-      if (button) button.hidden = open;
-    }
-    if (open) setActiveTab("basic");
-  });
-  tabs.append(moreTabsButton);
   setActiveTab("basic");
 
   overlay.append(
@@ -873,6 +866,15 @@ export function initializeSettingsUi(): void {
     );
     scheduleTabRefresh(currentTab);
   };
+
+  // Settings may have changed in the web setup page meanwhile; reload so a save here
+  // does not write the old values back over them.
+  window.addEventListener("focus", () => {
+    invalidateSettings();
+    if (!overlay.hidden) {
+      scheduleTabRefresh(currentTab, true);
+    }
+  });
 
   const pathNodes = new Map<AgentKind, HTMLElement>();
   const statusNodes = new Map<AgentKind, HTMLElement>();
@@ -1955,15 +1957,33 @@ export function initializeSettingsUi(): void {
     }
   });
 
+  for (const control of [
+    cradleCheckbox,
+    webSearchCheckbox,
+    geminiApiCheckbox,
+    openAiApiCheckbox,
+    closeAfterHandoffCheckbox,
+    closeWhenDoneCheckbox,
+    sensitiveCheckbox,
+    defaultAgentSelect,
+    timeoutInput,
+  ]) {
+    control.addEventListener("change", () => {
+      if (timeoutInput.value !== "" && !saveRuntimeButton.disabled) {
+        saveRuntimeButton.click();
+      }
+    });
+  }
+
   saveRuntimeButton.addEventListener("click", async () => {
     const timeoutSeconds = Number(timeoutInput.value);
     if (!Number.isInteger(timeoutSeconds) || timeoutSeconds < 10 || timeoutSeconds > 3600) {
-      message.textContent = "Timeout은 10초에서 3600초 사이의 정수여야 합니다.";
+      message.textContent = "최대 대기 시간은 10초에서 3600초 사이의 정수로 넣어 주세요.";
       return;
     }
 
     saveRuntimeButton.disabled = true;
-    message.textContent = "실행 설정 저장 중…";
+    message.textContent = "저장 중…";
     try {
       const agentExtraArgs: Partial<Record<AgentKind, string[]>> = {};
       const agentModels: Partial<Record<AgentKind, string>> = {};
@@ -2025,7 +2045,7 @@ export function initializeSettingsUi(): void {
       window.dispatchEvent(
         new CustomEvent("ai-character:preferences-updated", { detail: saved })
       );
-      message.textContent = "CRADLE/Agent 실행 설정을 저장했습니다.";
+      message.textContent = "설정을 저장했습니다.";
     } catch (error) {
       message.textContent = errorText(error);
     } finally {
@@ -2163,7 +2183,7 @@ export function initializeSettingsUi(): void {
     }
   });
 
-  // 시작 때 설치/경로 검사를 돌리지 않는다. 설정 → 시작의 필수 프로그램 설치만 사용.
+  // 시작 때 설치/경로 검사를 돌리지 않는다. 설정 → 기본의 필수 프로그램 설치만 사용.
   // 없는 프로그램을 자동 설치합니다 — 첫 실행 자동 설치는 창을 멈추게 해서 제거함.
 
   prepareEnvironmentButton.addEventListener("click", async () => {

@@ -200,16 +200,48 @@ fn configured_project_dir() -> Result<PathBuf, String> {
         })
 }
 
-#[tauri::command]
-pub fn get_project_dir() -> Result<Option<String>, String> {
-    Ok(load_settings()?
-        .project_dir
-        .map(|path| path.to_string_lossy().into_owned()))
+/// Each conversation may work in its own folder (like a Claude Code session); conversations
+/// without one use the default folder from settings.
+const CONVERSATION_DIR_PREFIX: &str = "conversation_dir.";
+const RECENT_DIRS_KEY: &str = "recent_project_dirs";
+const RECENT_DIRS_MAX: usize = 8;
+
+fn conversation_dir_key(conversation_id: &str) -> Option<String> {
+    let id = conversation_id.trim();
+    crate::workspace::validate_conversation_id(id).ok()?;
+    Some(format!("{CONVERSATION_DIR_PREFIX}{id}"))
 }
 
-#[tauri::command]
-pub fn set_project_dir(path: String) -> Result<String, String> {
-    let canonical = canonical_existing_dir(PathBuf::from(path.trim()).as_path())?;
+pub fn project_dir_for(settings: &crate::settings::AppSettings, conversation_id: Option<&str>) -> Option<PathBuf> {
+    conversation_id
+        .and_then(conversation_dir_key)
+        .and_then(|key| settings.extra(&key).map(PathBuf::from))
+        .or_else(|| settings.project_dir.clone())
+}
+
+pub fn configured_project_dir_for(conversation_id: Option<&str>) -> Result<PathBuf, String> {
+    project_dir_for(&load_settings()?, conversation_id).ok_or_else(|| {
+        "작업 폴더가 지정되지 않았습니다. 먼저 작업 폴더를 선택해주세요.".to_string()
+    })
+}
+
+fn remember_recent_dir(settings: &mut crate::settings::AppSettings, dir: &Path) {
+    let dir = dir.to_string_lossy().into_owned();
+    let mut recent: Vec<String> = settings
+        .extra(RECENT_DIRS_KEY)
+        .unwrap_or_default()
+        .lines()
+        .filter(|line| !line.trim().is_empty() && *line != dir)
+        .map(str::to_string)
+        .collect();
+    recent.insert(0, dir);
+    recent.truncate(RECENT_DIRS_MAX);
+    settings.set_extra(RECENT_DIRS_KEY, Some(recent.join("\n")));
+}
+
+/// Checks a folder can be used as a work folder and prepares its `.ai-character` space.
+fn prepare_project_dir(path: &str) -> Result<PathBuf, String> {
+    let canonical = crate::path_guard::without_verbatim_drive_prefix(canonical_existing_dir(PathBuf::from(path.trim()).as_path())?);
     crate::path_guard::assert_project_dir_allowed(&canonical)?;
     let app_dir = canonical.join(".ai-character");
     std::fs::create_dir_all(&app_dir).map_err(|error| {
@@ -226,9 +258,80 @@ pub fn set_project_dir(path: String) -> Result<String, String> {
         )
     })?;
     let _ = std::fs::remove_file(&probe);
+    Ok(canonical)
+}
 
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationDir {
+    /// The folder this conversation works in (its own, or the default one).
+    pub path: Option<String>,
+    /// True when the conversation picked its own folder instead of the default.
+    pub custom: bool,
+    pub default_path: Option<String>,
+    pub recent: Vec<String>,
+}
+
+fn conversation_dir_status(settings: &crate::settings::AppSettings, conversation_id: Option<&str>) -> ConversationDir {
+    let own = conversation_id
+        .and_then(conversation_dir_key)
+        .and_then(|key| settings.extra(&key).map(str::to_string));
+    let default_path = settings.project_dir.as_ref().map(|dir| dir.to_string_lossy().into_owned());
+    ConversationDir {
+        custom: own.is_some(),
+        path: own.or_else(|| default_path.clone()),
+        default_path,
+        recent: settings
+            .extra(RECENT_DIRS_KEY)
+            .unwrap_or_default()
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(str::to_string)
+            .collect(),
+    }
+}
+
+#[tauri::command]
+pub fn get_conversation_dir(conversation_id: Option<String>) -> Result<ConversationDir, String> {
+    Ok(conversation_dir_status(&load_settings()?, conversation_id.as_deref()))
+}
+
+/// `path: None` makes the conversation follow the default folder again.
+#[tauri::command]
+pub fn set_conversation_dir(conversation_id: String, path: Option<String>) -> Result<ConversationDir, String> {
+    let key = conversation_dir_key(&conversation_id).ok_or("대화 ID가 올바르지 않습니다.")?;
+    let chosen = match path.as_deref().map(str::trim).filter(|value| !value.is_empty()) {
+        Some(path) => Some(prepare_project_dir(path)?),
+        None => None,
+    };
+    let mut settings = load_settings()?;
+    match &chosen {
+        Some(dir) => {
+            settings.set_extra(&key, Some(dir.to_string_lossy().into_owned()));
+            remember_recent_dir(&mut settings, dir);
+            if settings.project_dir.is_none() {
+                settings.project_dir = Some(dir.clone());
+            }
+        }
+        None => settings.set_extra(&key, None),
+    }
+    save_settings(&settings)?;
+    Ok(conversation_dir_status(&settings, Some(&conversation_id)))
+}
+
+#[tauri::command]
+pub fn get_project_dir() -> Result<Option<String>, String> {
+    Ok(load_settings()?
+        .project_dir
+        .map(|path| path.to_string_lossy().into_owned()))
+}
+
+#[tauri::command]
+pub fn set_project_dir(path: String) -> Result<String, String> {
+    let canonical = prepare_project_dir(&path)?;
     let mut settings = load_settings()?;
     settings.project_dir = Some(canonical.clone());
+    remember_recent_dir(&mut settings, &canonical);
     save_settings(&settings)?;
     if let Err(error) = crate::local_env::ensure_keys_env_file() {
         eprintln!("키 파일 준비 경고: {error}");
@@ -655,8 +758,8 @@ where
 
     let started = std::time::Instant::now();
     let result = (|| {
-        let configured_project = settings.project_dir.clone().ok_or_else(|| {
-            "프로젝트 폴더가 지정되지 않았습니다. 먼저 프로젝트 폴더를 선택해주세요.".to_string()
+        let configured_project = project_dir_for(&settings, conversation_id.as_deref()).ok_or_else(|| {
+            "작업 폴더가 지정되지 않았습니다. 먼저 작업 폴더를 선택해주세요.".to_string()
         })?;
         let configured_project = canonical_existing_dir(&configured_project)?;
 
@@ -876,13 +979,13 @@ pub fn cancel_agent(task_id: String) -> Result<(), String> {
 
 #[tauri::command]
 pub fn get_workspace_changes(conversation_id: String) -> Result<Vec<WorkspaceChange>, String> {
-    let project_dir = configured_project_dir()?;
+    let project_dir = configured_project_dir_for(Some(&conversation_id))?;
     workspace_changes::list_workspace_changes(&project_dir, conversation_id.trim())
 }
 
 #[tauri::command]
 pub fn get_workspace_diff(conversation_id: String, path: String) -> Result<String, String> {
-    let project_dir = configured_project_dir()?;
+    let project_dir = configured_project_dir_for(Some(&conversation_id))?;
     workspace_changes::workspace_file_diff(&project_dir, conversation_id.trim(), path.trim())
 }
 
@@ -894,7 +997,7 @@ pub async fn apply_workspace_changes(
     conversation_id: String,
 ) -> Result<ApplyWorkspaceResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let project_dir = configured_project_dir()?;
+        let project_dir = configured_project_dir_for(Some(&conversation_id))?;
         let conversation_id = conversation_id.trim();
         let deleted_paths = |project_dir: &std::path::Path| -> Result<Vec<String>, String> {
             Ok(workspace_changes::list_workspace_changes(project_dir, conversation_id)?
@@ -926,7 +1029,7 @@ pub async fn apply_workspace_changes(
 
 #[tauri::command]
 pub fn discard_workspace_changes(conversation_id: String) -> Result<(), String> {
-    let project_dir = configured_project_dir()?;
+    let project_dir = configured_project_dir_for(Some(&conversation_id))?;
     workspace_changes::discard_workspace_changes(&project_dir, conversation_id.trim())
 }
 

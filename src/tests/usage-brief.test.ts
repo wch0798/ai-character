@@ -17,11 +17,11 @@ describe("usage brief", () => {
     expect(lines[1].value).toBe("12회 (유료 2)");
   });
 
-  it("marks a blocked day as over and handles no limit", () => {
+  it("marks a blocked day as over and shows a $0 limit as no paid use", () => {
     expect(usageBrief({ ...base, alerts: { calls: 1, paidCalls: 0, costUsd: 0, dailyCostLimitUsd: 1, level: "ok", paidBlocked: true } })[0].tone).toBe("over");
-    const unlimited = usageBrief({ ...base, alerts: { calls: 0, paidCalls: 0, costUsd: 0, dailyCostLimitUsd: 0, level: "ok" } })[0];
-    expect(unlimited.value).toContain("한도 없음");
-    expect(unlimited.pct).toBeUndefined();
+    const noPaid = usageBrief({ ...base, alerts: { calls: 0, paidCalls: 0, costUsd: 0, dailyCostLimitUsd: 0, level: "ok" } })[0];
+    expect(noPaid.value).toContain("유료 사용 안 함");
+    expect(noPaid.pct).toBeUndefined();
   });
 
   it("lists the busiest providers, Claude today and Codex limits", () => {

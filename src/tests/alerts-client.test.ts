@@ -39,5 +39,6 @@ describe("alerts", () => {
     expect(parseCostLimit("2.345", 1)).toBe(2.35);
     expect(parseCostLimit("abc", 1)).toBe(1);
     expect(parseCostLimit("-3", 1)).toBe(0);
+    expect(parseCostLimit("0", 1)).toBe(0);
   });
 });

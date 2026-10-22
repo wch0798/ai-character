@@ -75,7 +75,7 @@ mod updates;
 
 use agent_commands::{
     ask_claude, cancel_agent, detect_agent, detect_agent_runtime, get_project_dir, run_agent,
-    set_agent_path, set_project_dir,
+    set_agent_path, set_project_dir, get_conversation_dir, set_conversation_dir,
 };
 use usage_dashboard::{get_usage_snapshot, open_usage_dashboard};
 
@@ -436,6 +436,8 @@ pub fn run() {
             cancel_agent,
             get_project_dir,
             set_project_dir,
+            get_conversation_dir,
+            set_conversation_dir,
             set_agent_path,
             detect_agent,
             detect_agent_runtime,

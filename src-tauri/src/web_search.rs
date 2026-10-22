@@ -54,7 +54,7 @@ pub async fn search_web_background(
     }
 
     let api_key = crate::process_util::secret_value("JINA_API_KEY")
-        .ok_or_else(|| "JINA_API_KEY가 없습니다. 설정 → 시작 → API 키에서 무료 Jina 키를 저장하면 자동 검색을 쓸 수 있습니다.".to_string())?;
+        .ok_or_else(|| "JINA_API_KEY가 없습니다. 설정 → 기본 → 다른 AI 키에서 무료 Jina 키를 저장하면 자동 검색을 쓸 수 있습니다.".to_string())?;
 
     let max_chars = max_chars.unwrap_or(DEFAULT_MAX_CHARS).clamp(4_000, 32_000);
     let client = reqwest::Client::builder()

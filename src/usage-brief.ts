@@ -75,7 +75,7 @@ export function usageBrief(report: UsageReport): BriefLine[] {
     const pct = limit > 0 ? Math.min(100, (alerts.costUsd / limit) * 100) : undefined;
     lines.push({
       label: "오늘 유료 비용",
-      value: limit > 0 ? `$${alerts.costUsd.toFixed(2)} / $${limit}` : `$${alerts.costUsd.toFixed(2)} (한도 없음)`,
+      value: limit > 0 ? `$${alerts.costUsd.toFixed(2)} / $${limit}` : `$${alerts.costUsd.toFixed(2)} (유료 사용 안 함)`,
       tone: alerts.paidBlocked ? "over" : alerts.level,
       pct,
     });

@@ -4,9 +4,9 @@ const REPO = "wch0798/ai-character";
 const REPO_URL = `https://github.com/${REPO}`;
 
 const SECTIONS = [
-  { id: "welcome", title: "시작하기" },
-  { id: "folder", title: "작업 폴더" },
-  { id: "keys", title: "Gemini 키" },
+  { id: "welcome", title: "시작하기", essential: true },
+  { id: "folder", title: "기본 작업 폴더", essential: true },
+  { id: "keys", title: "AI 키 연결", essential: true },
   { id: "accounts", title: "프로그램 · 로그인" },
   { id: "behavior", title: "동작 방식" },
   { id: "alerts", title: "알림 · 비용 한도" },
@@ -234,7 +234,8 @@ function setOffline(offline) {
         reconnectTimer = null;
         banner.hidden = true;
         toast("앱과 다시 연결되었습니다. 방금 하던 저장을 다시 눌러 주세요.", "ok");
-        renderNav();
+        if (dirty.has(current)) renderNav();
+        else render();
       } catch {
         // still offline
       }
@@ -253,7 +254,7 @@ async function request(path, options) {
   setOffline(false);
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
-    if (response.status === 401) showFatal("이 브라우저의 로그인이 만료되었습니다. 메뉴 막대의 AI Character 아이콘 → '처음 설정 (웹)'을 누르면 다시 열립니다.");
+    if (response.status === 401) showFatal("이 페이지의 접속이 만료되었습니다. 작업 표시줄(Windows) 또는 메뉴 막대(Mac)의 AI Character 아이콘 → '처음 설정 (웹)'을 누르거나, 앱 설정의 '웹에서 설정 보기'를 누르면 다시 열립니다.");
     throw new Error(data.error || `요청 실패 (${response.status})`);
   }
   return data;
@@ -341,11 +342,16 @@ function numberField(id, title, desc, value, min, max, step) {
   return h("div", { class: "field" }, h("div", {}, h("strong", { text: title }), h("span", { class: "desc", text: desc })), input);
 }
 
+/** An emptied number box keeps the old value instead of silently becoming 0 ("no limit"). */
+function numberOr(value, fallback) {
+  return typeof value === "number" && Number.isFinite(value) ? Math.max(0, value) : fallback;
+}
+
 function readField(id) {
   const el = document.getElementById(id);
   if (!el) return undefined;
   if (el.type === "checkbox") return el.checked;
-  if (el.type === "number") return Number(el.value);
+  if (el.type === "number") return el.value.trim() === "" ? NaN : Number(el.value);
   return el.value;
 }
 
@@ -463,7 +469,9 @@ function renderNav() {
       )
     );
   };
-  nav.replaceChildren(...SECTIONS.map((section, index) => item(section, index)));
+  const indexed = SECTIONS.map((section, index) => [section, index]);
+  nav.replaceChildren(...indexed.filter(([section]) => section.essential).map(([section, index]) => item(section, index)));
+  document.getElementById("nav-more").replaceChildren(...indexed.filter(([section]) => !section.essential).map(([section, index]) => item(section, index)));
   document.getElementById("nav-usage").classList.toggle("active", current === "usage");
   for (const id of ["local", "remote", "help"]) document.getElementById(`nav-${id}`).classList.toggle("active", current === id);
   const count = SECTIONS.filter((s) => done[s.id]).length;
@@ -505,7 +513,16 @@ function footer(id, save) {
 
 function header(id, title, lead) {
   const index = SECTIONS.findIndex((s) => s.id === id);
-  return [h("div", { class: "eyebrow", text: `${index + 1}단계 / ${SECTIONS.length}` }), h("h2", { text: title }), h("p", { class: "lead", text: lead })];
+  const optional = !SECTIONS[index].essential && id !== "finish";
+  return [
+    h("div", { class: "eyebrow" }, `${index + 1}단계 / ${SECTIONS.length}`, optional ? h("span", { class: "badge", style: "margin-left:8px", text: "선택 · 건너뛰어도 됩니다" }) : null),
+    h("h2", { text: title }),
+    h("p", { class: "lead", text: lead }),
+  ];
+}
+
+function keyTestFailed(message) {
+  return /실패|거부|오류/.test(String(message || ""));
 }
 
 function keyConfigured(name) {
@@ -525,7 +542,7 @@ function inlineKey(name, placeholder) {
       const status = (state.apiKeys || []).find((k) => k.name === name);
       if (status && status.testable) {
         const result = await api.post("/api/key/test", { name }).catch((error) => ({ message: `저장은 됐지만 연결 확인 실패: ${error.message}` }));
-        toast(result.message, /실패|거부|오류/.test(result.message) ? "bad" : "ok");
+        toast(result.message, keyTestFailed(result.message) ? "bad" : "ok");
       } else {
         toast("저장했습니다.", "ok");
       }
@@ -563,13 +580,13 @@ function quickSetup() {
   return h(
     "div",
     { class: "card" },
-    h("h3", { text: "3분 빠른 설정 — 이 화면에서 끝납니다" }),
+    h("h3", { text: "3분 빠른 설정" }),
     h("p", { class: "muted small", text: "아래 세 가지만 하면 바로 쓸 수 있어요. 나머지 단계는 나중에 필요할 때 하면 됩니다." }),
     h(
       "div",
       { class: "quick", style: "margin-top:12px" },
       step(recommendedDone, 1, "추천 설정 켜기", "무료 AI 자동 선택 · 필요할 때 웹 검색 · 유료 API 차단 · 하루 1달러 한도 · 알림을 한 번에 켭니다.", h("div", { class: "row" }, apply)),
-      step(s.folder, 2, "작업 폴더 고르기", s.folder ? `현재: ${state.projectDir}` : "AI가 읽고 고칠 프로젝트 폴더입니다. 원본은 확인 후에만 바뀝니다.", h("div", { class: "row" }, pick)),
+      step(s.folder, 2, "기본 작업 폴더 고르기", s.folder ? `현재: ${state.projectDir} — 대화마다 대화창 위 📁 '바꾸기'로 다른 폴더를 쓸 수 있어요.` : "새 대화가 처음 쓰는 폴더입니다. 대화마다 나중에 다른 폴더로 바꿀 수 있어요.", h("div", { class: "row" }, pick)),
       step(
         keyConfigured("GEMINI_API_KEY"),
         3,
@@ -616,23 +633,23 @@ function usingNow() {
     usingRow("무료 자동 모드 (CRADLE)", "조사·검토·계획처럼 두뇌가 처리할 일은 무료 AI가 자동으로 합니다. 일반 대화는 ChatGPT(Codex)가 답합니다.", r.cradleEnabled ? true : "warn", r.cradleEnabled ? "켜짐" : "꺼짐", r.handsFreeReady ? "대화는 ChatGPT, 정보 처리는 무료 Gemini" : r.message),
     usingRow("Google Gemini", "정확한 정보와 조사의 담당입니다. 무료 모델을 순서대로 시도합니다.", gemini.available ? true : "warn", gemini.available ? "정보 담당" : "안 씀", gemini.available ? `모델: ${gemini.model}` : gemini.reason),
     usingRow("OpenRouter", "Gemini가 막힐 때의 무료 대체입니다. 코드·음악 전용 모델은 정보 답변에 쓰지 않습니다.", openrouter.available ? true : "", openrouter.available ? "대기" : "안 씀", openrouter.available ? `모델: ${openrouter.model}` : openrouter.reason),
-    usingRow("추가 무료 AI", `Gemini·OpenRouter까지 막히면 ${FREE_ORDER_TEXT} 순서로 준비된 곳을 대신 씁니다. 모두 무료 등급만 사용합니다.`, freePool.available ? true : "", freePool.available ? "대기 중" : "안 씀", freePool.available ? `순서: ${freePool.model}` : "'AI 연결'에서 키를 넣거나 '내 컴퓨터 AI'에서 설치하면 사용합니다."),
+    usingRow("추가 무료 AI", `Gemini·OpenRouter까지 막히면 ${FREE_ORDER_TEXT} 순서로 준비된 곳을 대신 씁니다. 모두 무료 등급만 사용합니다.`, freePool.available ? true : "", freePool.available ? "대기 중" : "안 씀", freePool.available ? `순서: ${freePool.model}` : "'AI 키 연결'에서 키를 넣거나 '내 컴퓨터 AI'에서 설치하면 사용합니다."),
     usingRow("Jina 웹 검색", "최신 정보가 필요한 질문이면 인터넷을 검색해 결과를 AI에게 넘깁니다.", r.jinaApiConfigured && r.autoWebSearch ? true : "warn", r.jinaApiConfigured ? (r.autoWebSearch ? "사용 중" : "꺼짐") : "키 없음", r.jinaApiConfigured ? (r.autoWebSearch ? "필요할 때 자동 검색" : "'동작 방식'에서 웹 검색을 켜세요.") : "키가 없어 웹 검색을 못 합니다. 3단계에서 넣을 수 있어요."),
     usingRow("Claude (구독형 프로그램)", "파일 작업의 계획과 수정 담당입니다. Cursor도 파일을 고칠 수 있고, 플러그인은 Claude에 붙습니다.", r.claudeCliReady ? true : "", r.claudeCliReady ? "파일 작업" : "없음", r.claudeCliReady ? "구독 사용 한도(5시간·주간) 안에서 사용" : "없어도 Cursor나 무료 AI로 일부 작업은 됩니다."),
     usingRow("OpenAI (유료)", "호출마다 요금이 나가는 API. 허용해도 매번 승인을 받고, 하루 한도를 넘으면 막힙니다.", openai.enabled ? "warn" : "", openai.enabled ? "허용됨" : "차단", openai.reason),
   ];
   if (usage) {
-    const limit = usage.dailyCostLimitUsd > 0 ? ` / 한도 $${usage.dailyCostLimitUsd}` : " (한도 없음)";
+    const limit = usage.dailyCostLimitUsd > 0 ? ` / 한도 $${usage.dailyCostLimitUsd}` : " (유료 사용 안 함)";
     rows.push(usingRow("오늘 사용량", "앱이 오늘 AI를 부른 횟수와 유료 비용입니다. 구독형 Claude 사용은 비용 0으로 셉니다.", usage.level === "ok" ? true : "warn", usage.level === "over" ? "한도 초과" : usage.level === "warn" ? "주의" : "정상", `호출 ${usage.calls}회 · 유료 ${usage.paidCalls}회 · $${Number(usage.costUsd || 0).toFixed(2)}${limit}`));
   }
   rows.push(usingRow("앱 자동 업데이트", "새 버전이 나오면 서명을 확인한 뒤 받아 둡니다.", build.signed && build.updaterReady ? true : "", build.signed ? "켜짐" : build.sourceRun ? "git 업데이트" : "서명 없음", `현재 v${build.version}`));
   const paths = state.paths || {};
   return h(
-    "div",
+    "details",
     { class: "card" },
-    h("h3", { text: "지금 무엇을 쓰고 있나요?" }),
+    h("summary", { text: "🔍 자세히 보기: 지금 어떤 AI를 쓰고 있나요?" }),
     h("p", { class: "muted small", text: "이 앱이 실제로 쓰는 서비스와 상태입니다. 다른 단계에서 바꾸면 여기도 바로 바뀝니다." }),
-    h("table", { class: "using" }, h("thead", {}, h("tr", {}, h("th", { text: "구성 요소" }), h("th", { text: "상태" }), h("th", { text: "설명" }))), h("tbody", {}, ...rows)),
+    h("div", { class: "table-wrap" }, h("table", { class: "using" }, h("thead", {}, h("tr", {}, h("th", { text: "구성 요소" }), h("th", { text: "상태" }), h("th", { text: "설명" }))), h("tbody", {}, ...rows))),
     h(
       "details",
       { class: "explain", style: "margin-top:12px" },
@@ -658,7 +675,7 @@ function workOrder() {
   return h(
     "div",
     { class: "card" },
-    h("h3", { text: "누가 하나요" }),
+    h("h3", { text: "질문하면 누가 답하나요?" }),
     h("ol", { class: "steps" }, ...items.map(([title, body]) => h("li", {}, h("h4", { text: title }), h("p", { text: body })))),
     h("p", { class: "muted small", text: "유료 API는 꺼져 있습니다. 사용량을 다 쓰면 채팅에 알려 줍니다." })
   );
@@ -698,12 +715,22 @@ function resetSettingsCard() {
   );
 }
 
+function readyBanner() {
+  const s = summary();
+  const recommended = Boolean(state.preferences && state.preferences.cradleEnabled);
+  const left = [!recommended && "추천 설정", !s.folder && "작업 폴더", !keyConfigured("GEMINI_API_KEY") && "Gemini 키"].filter(Boolean);
+  if (left.length === 0) {
+    return h("div", { class: "notice ok" }, h("strong", { text: "✓ 바로 쓸 수 있어요. " }), "화면의 캐릭터를 클릭해 대화창을 열고 말을 걸어 보세요. 아래 단계는 필요할 때만 하면 됩니다.");
+  }
+  return h("div", { class: "notice" }, h("strong", { text: `남은 필수 항목 ${left.length}개: ` }), `${left.join(" · ")} — 아래 카드에서 차례로 하면 됩니다.`);
+}
+
 function sectionWelcome() {
   return [
-    ...header("welcome", "AI Character 처음 설정", "아래 '빠른 설정' 세 가지만 하면 바로 쓸 수 있습니다. 저장 버튼을 누르는 즉시 앱에 반영되고, 언제든 다시 열어 고칠 수 있어요."),
-    workOrder(),
+    ...header("welcome", "AI Character 시작하기", "아래 세 가지만 하면 바로 쓸 수 있습니다. 버튼을 누르는 즉시 앱에 반영되고, 언제든 다시 열어 고칠 수 있어요."),
+    readyBanner(),
     quickSetup(),
-    resetSettingsCard(),
+    workOrder(),
     usingNow(),
     footer("welcome"),
   ];
@@ -733,7 +760,8 @@ function sectionFolder() {
     state.projectDir = result.projectDir;
   };
   return [
-    ...header("folder", "작업 폴더", "AI가 코드나 문서를 읽고 고칠 기본 폴더입니다. 대화마다 이 폴더의 복사본에서 작업하고, 원본은 확인 후에만 바뀝니다."),
+    ...header("folder", "기본 작업 폴더", "AI가 코드나 문서를 읽고 고칠 때 새 대화가 처음 쓰는 폴더입니다. 작업은 복사본에서 하고, 원본은 확인 후에만 바뀝니다."),
+    h("div", { class: "notice" }, h("strong", { text: "📁 대화마다 다른 폴더를 쓸 수 있어요. " }), "대화창 위의 폴더 표시에서 '바꾸기'를 누르면 그 대화만 다른 폴더로 작업합니다 (Claude Code처럼). 여기서 정하는 건 새 대화의 시작 폴더입니다."),
     h(
       "div",
       { class: "card stack" },
@@ -759,7 +787,7 @@ function keyRow(status) {
       toast(`${info.title} 키를 저장했습니다.`, "ok");
       if (status.testable) {
         const result = await api.post("/api/key/test", { name: status.name }).catch((error) => ({ message: `연결 확인 실패: ${error.message}` }));
-        toast(result.message, /실패|거부|오류/.test(result.message) ? "bad" : "ok");
+        toast(result.message, keyTestFailed(result.message) ? "bad" : "ok");
       }
       await refreshState();
       render();
@@ -783,7 +811,7 @@ function keyRow(status) {
     test.addEventListener("click", () =>
       busy(test, async () => {
         const result = await api.post("/api/key/test", { name: status.name });
-        toast(result.message, "ok");
+        toast(result.message, keyTestFailed(result.message) ? "bad" : "ok");
       }, "확인 중…")
     );
     actions.push(test);
@@ -794,6 +822,7 @@ function keyRow(status) {
         busy(button, async () => {
           state.apiKeys = await api.post("/api/key", { name: status.name, value: "" });
           toast(`${info.title} 키를 지웠습니다.`);
+          await refreshState();
           render();
         })
       )
@@ -862,12 +891,12 @@ function sectionKeys() {
     })
   );
   return [
-    ...header("keys", "Gemini 키", "정보 찾기에 쓰는 무료 키입니다. 대화는 ChatGPT 로그인, 파일 고치기는 Claude 로그인이 담당이라 여기 키와 별개입니다."),
+    ...header("keys", "AI 키 연결", "정보 찾기에 쓰는 무료 Gemini 키만 넣으면 됩니다. 대화는 ChatGPT 로그인, 파일 고치기는 Claude 로그인이 담당이라 여기 키와 별개입니다."),
     h("div", { class: "card" }, h("h3", { text: "Gemini (이것만 넣으면 됩니다)" }), ...free.filter((k) => k.name === "GEMINI_API_KEY").map(keyRow)),
     h(
       "details",
       { class: "card" },
-      h("summary", { text: "다른 키 (안 넣어도 됩니다)" }),
+      h("summary", { text: "다른 AI 키 더 보기 (안 넣어도 됩니다)" }),
       h("p", { class: "muted small", text: "Gemini가 막힐 때의 대체와 웹 검색, 유료 키입니다. 유료 키는 허용하고 매번 승인해야 쓰입니다." }),
       ...free.filter((k) => k.name !== "GEMINI_API_KEY").map(keyRow),
       ...extraFree.map(keyRow),
@@ -950,7 +979,8 @@ function renderRuntime(list) {
   const manual = runtime.platform !== "windows" && runtime.components.some((c) => !c.ready && !c.canAutoInstall)
     ? h("p", { class: "muted small", text: "macOS에서는 Claude/Codex를 터미널로 설치합니다: npm install -g @anthropic-ai/claude-code  ·  npm install -g @openai/codex (Node.js 필요: nodejs.org)" })
     : null;
-  list.replaceChildren(h("p", { class: "small", text: runtime.message }), ...rows, manual);
+  // replaceChildren turns a null argument into the text "null", so drop it here.
+  list.replaceChildren(...[h("p", { class: "small", text: runtime.message }), ...rows, manual].filter(Boolean));
 }
 
 function sectionBehavior() {
@@ -1012,19 +1042,19 @@ function sectionAlerts() {
   const save = async () => {
     state.alerts = await api.post("/api/alerts", {
       desktop: readField("desktop"),
-      dailyCostLimitUsd: Math.max(0, Number(readField("dailyCostLimitUsd")) || 0),
-      dailyCallWarn: Math.max(0, Math.round(Number(readField("dailyCallWarn")) || 0)),
+      dailyCostLimitUsd: Math.min(10000, numberOr(readField("dailyCostLimitUsd"), a.dailyCostLimitUsd ?? 1)),
+      dailyCallWarn: Math.round(numberOr(readField("dailyCallWarn"), a.dailyCallWarn ?? 300)),
       blockPaidOverLimit: readField("blockPaidOverLimit"),
     });
   };
   return [
-    ...header("alerts", "알림 · 비용 한도", "유료 API를 쓰더라도 하루에 쓸 수 있는 금액을 정해 두면 그 이상은 자동으로 막힙니다."),
+    ...header("alerts", "알림 · 비용 한도", "유료 API에 하루 얼마까지 쓸지 직접 정합니다. 0달러로 두면 유료 API를 아예 쓰지 않습니다."),
     h(
       "div",
       { class: "card" },
       toggle("desktop", "데스크톱 알림", "자리를 비운 사이 답변이 끝나거나 예약 작업이 실패하면 알려 줍니다.", a.desktop),
-      numberField("dailyCostLimitUsd", "하루 유료 한도 (달러)", "0이면 한도 없음. 처음엔 1달러를 추천합니다.", a.dailyCostLimitUsd ?? 1, 0, 10000, 0.5),
-      toggle("blockPaidOverLimit", "한도에 닿으면 유료 호출 막기", "한도를 넘으면 그날은 유료 API를 쓰지 않고 무료 AI만 씁니다.", a.blockPaidOverLimit ?? true),
+      numberField("dailyCostLimitUsd", "하루 유료 한도 (달러)", "0 = 유료 API를 아예 쓰지 않음. 금액을 넣으면 하루에 그 금액까지만 씁니다. 무제한은 없습니다.", a.dailyCostLimitUsd ?? 1, 0, 10000, 0.5),
+      toggle("blockPaidOverLimit", "한도에 닿으면 유료 호출 막기", "켜 두면 한도를 넘은 날은 유료 API를 쓰지 않고 무료 AI만 씁니다. 끄면 알림만 보내고 계속 씁니다. (한도가 0이면 이 스위치와 상관없이 유료를 쓰지 않습니다)", a.blockPaidOverLimit ?? true),
       numberField("dailyCallWarn", "하루 호출 경고 횟수", "이만큼 호출하면 알려 줍니다. 0이면 끔.", a.dailyCallWarn ?? 300, 0, 100000)
     ),
     footer("alerts", save),
@@ -1048,7 +1078,7 @@ function sectionUpdates() {
     ? h("div", { class: "notice ok", text: `자동 업데이트 켜짐 · v${build.version} — 서명된 새 버전을 자동으로 받습니다.` })
     : build.sourceRun
       ? h("div", { class: "notice", text: `소스(개발) 실행 중 · v${build.version} — 이 실행은 git으로 업데이트됩니다. 아래 서명 설정은 배포용 설치본을 위한 것입니다.` })
-      : h("div", { class: "notice warn", text: `이 설치본에는 서명 공개키가 없습니다 · v${build.version} — 아래 순서대로 한 번만 설정하세요.` });
+      : h("div", { class: "notice", text: `v${build.version} — 이 설치본은 앱 자체 자동 업데이트가 아직 준비되지 않았습니다. 새 버전은 GitHub의 Releases에서 설치 파일을 받으면 됩니다. AI 프로그램·플러그인·모델 업데이트는 아래 스위치대로 동작합니다.` });
 
   const steps = h(
     "ol",
@@ -1095,7 +1125,7 @@ function sectionUpdates() {
   };
 
   return [
-    ...header("updates", "자동 업데이트", "앱과 AI 프로그램을 알아서 최신으로 유지합니다. 문제가 생기면 이전 버전으로 되돌립니다."),
+    ...header("updates", "자동 업데이트", "앱과 AI 프로그램을 알아서 최신으로 유지합니다. 문제가 생기면 이전 버전으로 되돌립니다. 기본값 그대로 두면 됩니다."),
     statusNotice,
     h(
       "div",
@@ -1109,8 +1139,8 @@ function sectionUpdates() {
     ),
     h(
       "details",
-      { class: "card", open: !signed && !build.sourceRun },
-      h("summary", {}, h("strong", { text: "앱 자동 업데이트 서명 설정 (배포하는 사람만, 한 번)" })),
+      { class: "card" },
+      h("summary", {}, h("strong", { text: "🛠 개발자용: 앱 서명 설정 — 일반 사용자는 열지 않아도 됩니다" })),
       h("p", { class: "muted small", text: "서명 키를 이미 받았다면 아래 순서대로 GitHub에 등록하세요. 개인키(.key)는 비밀번호처럼 다루고, 이 페이지나 채팅에는 절대 붙여넣지 마세요. 공개키(.key.pub)는 남이 봐도 됩니다." }),
       steps,
       h("p", { class: "muted small", text: "다음 버전부터는 package.json과 src-tauri/tauri.conf.json의 version 숫자를 올리고 '서명된 설치본 만들기'만 다시 하면 됩니다." })
@@ -1253,6 +1283,7 @@ async function localAction(button, path, body, message) {
   await busy(button, async () => {
     const result = await api.post(path, body);
     toast(result.message || message, "ok");
+    dirty.delete("local");
     await loadLocal();
     scheduleLocal();
   }, "처리 중…");
@@ -1533,6 +1564,8 @@ async function remoteAction(button, path, body, message) {
   await busy(button, async () => {
     const result = await api.post(path, body);
     toast(result.message || message, "ok");
+    // The action changed what the cards show; redraw even if a field was half-typed.
+    dirty.delete("remote");
     await loadRemote();
     scheduleRemote();
   }, "처리 중…");
@@ -1828,13 +1861,13 @@ function sectionHelp() {
   return [
     h("div", { class: "eyebrow", text: "도움말" }),
     h("h2", { text: "사용 설명서 (처음 쓰는 분용)" }),
-    h("p", { class: "lead", text: "대화는 ChatGPT 구독, 정보 찾기는 무료 Gemini, 파일 고치기는 Claude가 합니다. 처음이면 왼쪽 1·2·3만 하세요." }),
+    h("p", { class: "lead", text: "대화는 ChatGPT 구독, 정보 찾기는 무료 Gemini, 파일 고치기는 Claude가 합니다. 처음이면 왼쪽 '꼭 필요한 설정' 1·2·3만 하세요." }),
     guide(
       "🚀 5분 만에 시작하기",
       [
-        ["'시작하기'에서 '추천 설정 한 번에 적용'", "왼쪽 메뉴 1번입니다. 무료로 안전하게 쓰는 설정이 한 번에 켜집니다."],
+        ["'시작하기'에서 '추천 설정 적용'", "왼쪽 메뉴 1번입니다. 무료로 안전하게 쓰는 설정이 한 번에 켜집니다."],
         ["'작업 폴더' 고르기", "AI가 읽고 고칠 폴더입니다. 문서·코드 작업을 안 한다면 아무 빈 폴더나 골라도 됩니다."],
-        ["'Gemini 키' 넣기", "정보 찾기에 씁니다. 키 받는 곳을 열고 키를 붙여넣은 뒤 저장하세요. 대화와 파일 작업은 다음 단계의 ChatGPT·Claude 로그인입니다."],
+        ["'AI 키 연결'에서 Gemini 키 넣기", "정보 찾기에 씁니다. 키 받는 곳을 열고 키를 붙여넣은 뒤 저장하세요. 대화와 파일 작업은 다음 단계의 ChatGPT·Claude 로그인입니다."],
         ["'마무리'에서 설정 완료", "이제 화면의 캐릭터를 클릭해 대화창을 열고 말을 걸면 됩니다."],
       ],
       { tip: "나머지 단계는 전부 '나중에 하기'를 눌러도 됩니다. 기본값이 안전하게 맞춰져 있어요." }
@@ -1844,7 +1877,7 @@ function sectionHelp() {
       [
         ["1. 시작하기", "지금 어떤 AI를 쓰고 있는지 한눈에 보고, 추천 설정을 한 번에 켭니다."],
         ["2. 작업 폴더", "AI가 파일을 읽고 고칠 폴더입니다. 원본은 내가 확인한 뒤에만 바뀝니다."],
-        ["3. AI 연결 (API 키)", "인터넷 AI 서비스를 연결합니다. 무료 서비스만으로 충분하고, 많이 연결할수록 '한도 초과'로 막힐 일이 줄어듭니다."],
+        ["3. AI 키 연결", "인터넷 AI 서비스를 연결합니다. 무료 서비스만으로 충분하고, 많이 연결할수록 '한도 초과'로 막힐 일이 줄어듭니다."],
         ["4. 프로그램 · 로그인", "Claude·Codex처럼 월 구독 중인 AI 프로그램이 있으면 연결합니다. 없으면 건너뛰세요."],
         ["5. 동작 방식", "웹 검색을 할지, 유료 AI를 허용할지 등을 정합니다. 기본값 그대로 두면 돈이 나가지 않습니다."],
         ["6. 알림 · 비용 한도", "하루 비용 한도(기본 1달러)와 알림을 정합니다. 유료 AI를 안 쓰면 신경 쓰지 않아도 됩니다."],
@@ -1876,9 +1909,9 @@ function sectionHelp() {
     ]),
     faq("자주 묻는 질문", [
       ["정말 돈이 안 드나요?", "기본 설정에서는 무료 AI만 씁니다. 유료 AI는 직접 허용하고 매번 승인해야만 쓰이고, 하루 한도를 넘으면 자동으로 막힙니다."],
-      ["'한도 초과', '막힘'이 떠요.", "무료 AI의 사용량이 잠시 찼다는 뜻입니다. 보통 몇 분~하루 뒤 풀립니다. 'AI 연결'에서 무료 AI를 더 연결하거나 설치형 AI를 준비해 두면 막힐 일이 거의 없습니다."],
-      ["키를 잘못 넣었어요.", "'AI 연결'에서 해당 키의 '삭제'를 두 번 누르고 다시 넣으세요. '연결 확인' 버튼으로 맞는 키인지 확인할 수 있습니다."],
-      ["설정을 망친 것 같아요.", "'시작하기'의 '추천 설정 한 번에 적용'을 다시 누르면 안전한 기본값으로 돌아옵니다."],
+      ["'한도 초과', '막힘'이 떠요.", "무료 AI의 사용량이 잠시 찼다는 뜻입니다. 보통 몇 분~하루 뒤 풀립니다. 'AI 키 연결'에서 무료 AI를 더 연결하거나 설치형 AI를 준비해 두면 막힐 일이 거의 없습니다."],
+      ["키를 잘못 넣었어요.", "'AI 키 연결'에서 해당 키의 '삭제'를 두 번 누르고 다시 넣으세요. '연결 확인' 버튼으로 맞는 키인지 확인할 수 있습니다."],
+      ["설정을 망친 것 같아요.", "'시작하기'의 '추천 설정 적용'을 다시 누르면 안전한 기본값으로 돌아옵니다. 스위치를 모두 풀고 처음부터 하려면 '마무리 · 백업'의 '설정 초기화'를 쓰세요."],
       ["이 페이지가 안 열려요 / 로그인 만료라고 나와요.", "메뉴 막대(Mac) 또는 작업 표시줄(Windows)의 AI Character 아이콘 → '처음 설정 (웹)'을 누르면 다시 열립니다."],
       ["새 컴퓨터로 옮기고 싶어요.", "'마무리 · 백업'에서 백업 파일을 받아 새 컴퓨터에서 불러오세요. API 키는 보안상 백업에 들어가지 않으니 다시 넣어야 합니다."],
       ["내 대화가 어디로 가나요?", "인터넷 AI를 쓸 땐 그 회사(Google 등)로 갑니다. 설치형 AI를 쓸 땐 내 컴퓨터(또는 내가 연결한 다른 컴퓨터) 밖으로 나가지 않습니다. 키나 비밀번호 같은 값은 자동으로 가려서 보냅니다."],
@@ -2024,8 +2057,8 @@ function usageToday(report) {
     const limit = Number(alerts.dailyCostLimitUsd) || 0;
     items.push(
       limit > 0
-        ? meterBar("오늘 유료 비용", `${usd(alerts.costUsd)} / $${limit}`, (alerts.costUsd / limit) * 100, alerts.paidBlocked ? "하루 한도를 넘어 유료 AI 호출을 막고 있습니다. '알림·한도'에서 바꿀 수 있어요." : "한도에 닿으면 유료 AI 호출을 자동으로 막습니다.")
-        : h("p", { class: "muted small", text: `오늘 유료 비용 ${usd(alerts.costUsd)} — 하루 한도가 꺼져 있습니다.` })
+        ? meterBar("오늘 유료 비용", `${usd(alerts.costUsd)} / $${limit}`, (alerts.costUsd / limit) * 100, alerts.paidBlocked ? "하루 한도를 넘어 유료 AI 호출을 막고 있습니다. '알림 · 비용 한도'에서 바꿀 수 있어요." : "한도에 닿으면 '막기' 설정에 따라 유료 AI 호출을 막습니다.")
+        : h("p", { class: "muted small", text: `하루 유료 한도가 0달러라 유료 AI를 쓰지 않습니다. '알림 · 비용 한도'에서 금액을 정할 수 있어요.` })
     );
     const warn = Number(alerts.dailyCallWarn) || 0;
     if (warn > 0) items.push(meterBar("오늘 AI 호출", `${alerts.calls}회 / 경고 ${warn}회`, (alerts.calls / warn) * 100, `유료 호출 ${alerts.paidCalls}회 포함`));
@@ -2175,6 +2208,8 @@ function render() {
   const main = document.getElementById("main");
   const fatal = document.getElementById("fatal");
   const same = main.querySelector(`section[data-section="${current}"]`);
+  // Every input is rebuilt from saved state, so nothing typed survives a render.
+  dirty.delete(current);
   const section = h("section", { "data-section": current, class: same ? "visible still" : "visible" }, ...BUILDERS[current]());
   section.addEventListener("input", () => dirty.add(current));
   main.replaceChildren(fatal, section);

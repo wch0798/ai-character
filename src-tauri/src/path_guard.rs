@@ -10,6 +10,16 @@ pub fn normalize_for_compare(path: &Path) -> PathBuf {
     PathBuf::from(trimmed)
 }
 
+/// `fs::canonicalize` on Windows returns `\\?\C:\...`, which cmd.exe cannot use as a
+/// working directory. Keep plain drive paths; leave `\\?\UNC\...` untouched.
+pub fn without_verbatim_drive_prefix(path: PathBuf) -> PathBuf {
+    let raw = path.to_string_lossy();
+    match raw.strip_prefix(r"\\?\") {
+        Some(rest) if rest.as_bytes().get(1) == Some(&b':') => PathBuf::from(rest),
+        _ => path,
+    }
+}
+
 pub fn is_path_within(root: &Path, candidate: &Path) -> bool {
     let root = normalize_for_compare(root);
     let candidate = normalize_for_compare(candidate);
