@@ -152,6 +152,7 @@ import { waitForTauri } from "./tauri-ready";
 quietConsoleInProduction();
 
 const CHARACTER_DRAG_POLL_MS = 32;
+const CHARACTER_MAX_FPS = 30;
 const CHAT_RESIZE_POLL_MS = 32;
 
 try {
@@ -1428,6 +1429,24 @@ async function startLive2D() {
   });
   app.renderer.background.alpha = 0;
   app.canvas.style.background = "transparent";
+  // Uncapped, the character redrew at the monitor's refresh rate (60–144 Hz) and kept about
+  // 10% of the CPU busy while idle. Breathing and motions look the same at 30 fps.
+  // The Live2D model animates on the shared ticker (registerTicker below), so cap that too:
+  // its physics and mesh updates cost more than drawing.
+  const characterTickers = [app.ticker, Ticker.shared];
+  for (const ticker of characterTickers) {
+    ticker.maxFPS = CHARACTER_MAX_FPS;
+  }
+  // Nothing on screen to draw while the window is hidden or minimized.
+  document.addEventListener("visibilitychange", () => {
+    for (const ticker of characterTickers) {
+      if (document.hidden) {
+        ticker.stop();
+      } else {
+        ticker.start();
+      }
+    }
+  });
 
   // WKWebView에서 createImageBitmap/워커 디코드가 실패해 텍스처가 검게 나오는 문제 방지
   if (loadTextures?.config) {

@@ -8,6 +8,20 @@ let initialized = false;
 let lastSyncedPayload: string | null = null;
 let syncInFlight = false;
 let lastWarningAt = 0;
+// Set whenever localStorage is written, so the periodic sync skips re-encoding everything
+// (the whole chat history included) when nothing changed.
+let storageDirty = true;
+
+function trackStorageWrites(): void {
+  const storage = Object.getPrototypeOf(localStorage) as Storage;
+  for (const name of ["setItem", "removeItem", "clear"] as const) {
+    const original = storage[name] as (...args: unknown[]) => unknown;
+    (storage as unknown as Record<string, unknown>)[name] = function (this: Storage, ...args: unknown[]) {
+      if (this === localStorage) storageDirty = true;
+      return original.apply(this, args);
+    };
+  }
+}
 
 function isTransientTauriError(error: unknown): boolean {
   const text = error instanceof Error ? error.message : String(error);
@@ -59,8 +73,9 @@ function restoreSnapshot(snapshot: LocalStorageSnapshot): void {
 }
 
 async function persistIfChanged(): Promise<void> {
-  if (syncInFlight) return;
+  if (syncInFlight || !storageDirty) return;
   if (!(await waitForTauri(1500))) return;
+  storageDirty = false;
   const payload = encodeSnapshot(readLocalStorageSnapshot());
   if (payload === lastSyncedPayload) return;
 
@@ -69,6 +84,8 @@ async function persistIfChanged(): Promise<void> {
     await invoke("save_ui_state", { payload });
     lastSyncedPayload = payload;
   } catch (error) {
+    // Not saved: try again on the next tick.
+    storageDirty = true;
     if (!isTransientTauriError(error)) {
       const now = Date.now();
       if (now - lastWarningAt > 10_000) {
@@ -84,6 +101,7 @@ async function persistIfChanged(): Promise<void> {
 export async function initializeSqliteStateMirror(): Promise<void> {
   if (initialized) return;
   initialized = true;
+  trackStorageWrites();
 
   try {
     await waitForTauri();
