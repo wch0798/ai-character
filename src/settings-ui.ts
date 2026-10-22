@@ -1478,7 +1478,7 @@ export function initializeSettingsUi(): void {
       const login = logins.find((item) => item.id === id);
       const label = agentLabels[id];
       const plan = (snapshot.providers ?? []).find((item) => item.id === id)?.account?.plan;
-      const detail = [login?.detail ?? "로그인 상태를 확인하지 못했습니다.", login?.account, plan && `요금제 ${plan}`]
+      const detail = [login?.detail ?? "로그인 상태를 확인하지 못했습니다.", plan && `요금제 ${plan}`]
         .filter(Boolean)
         .join(" · ");
       rows.push(
@@ -1486,6 +1486,7 @@ export function initializeSettingsUi(): void {
           label,
           connected: login?.loggedIn === true,
           stateText: login?.loggedIn === true ? "로그인됨" : login?.loggedIn === false ? "로그인 필요" : "확인 불가",
+          account: login?.loggedIn === true ? login.account ?? "계정 이름은 확인할 수 없습니다" : undefined,
           detail,
           actionLabel: login?.loggedIn ? "다시 로그인" : "로그인",
           onAction: () => startAgentLogin(id, label),
@@ -1514,6 +1515,8 @@ export function initializeSettingsUi(): void {
     label: string;
     connected: boolean;
     stateText?: string;
+    /** Which account is signed in, shown on its own line so a wrong account is easy to spot. */
+    account?: string;
     detail: string;
     actionLabel: string;
     onAction: () => void | Promise<void>;
@@ -1534,7 +1537,14 @@ export function initializeSettingsUi(): void {
     const state = document.createElement("small");
     state.className = "ai-settings-help";
     state.textContent = options.detail;
-    meta.append(title, state);
+    meta.append(title);
+    if (options.account) {
+      const account = document.createElement("span");
+      account.className = "ai-login-account";
+      account.textContent = `계정: ${options.account}`;
+      meta.append(account);
+    }
+    meta.append(state);
     const actions = document.createElement("div");
     actions.className = "ai-web-account-actions";
     const button = makeButton(options.actionLabel, "ai-settings-action");
