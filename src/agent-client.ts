@@ -190,7 +190,46 @@ export async function chooseProjectDirectory(): Promise<string> {
   return setProjectDirectory(selected);
 }
 
-export async function ensureProjectDirectory(): Promise<string> {
+export type ConversationDir = {
+  /** The folder this conversation works in: its own, or the default one. */
+  path: string | null;
+  /** True when the conversation picked its own folder. */
+  custom: boolean;
+  defaultPath: string | null;
+  recent: string[];
+};
+
+export const CONVERSATION_DIR_EVENT = "ai-character:conversation-dir-changed";
+
+export async function getConversationDir(conversationId: string | null): Promise<ConversationDir> {
+  return invoke<ConversationDir>("get_conversation_dir", { conversationId });
+}
+
+/** `path: null` makes the conversation follow the default folder again. */
+export async function setConversationDir(conversationId: string, path: string | null): Promise<ConversationDir> {
+  const status = await invoke<ConversationDir>("set_conversation_dir", { conversationId, path });
+  window.dispatchEvent(new CustomEvent(CONVERSATION_DIR_EVENT, { detail: { conversationId, status } }));
+  return status;
+}
+
+export async function chooseConversationDirectory(conversationId: string): Promise<string> {
+  const selected = await open({
+    directory: true,
+    multiple: false,
+    title: "이 대화의 작업 폴더 선택",
+  });
+  if (!selected || Array.isArray(selected)) {
+    throw new Error("작업 폴더 선택이 취소되었습니다.");
+  }
+  const status = await setConversationDir(conversationId, selected);
+  return status.path ?? selected;
+}
+
+export async function ensureProjectDirectory(conversationId?: string | null): Promise<string> {
+  if (conversationId) {
+    const status = await getConversationDir(conversationId);
+    return status.path ?? chooseConversationDirectory(conversationId);
+  }
   const saved = await getProjectDirectory();
   if (saved) {
     return saved;
@@ -199,7 +238,9 @@ export async function ensureProjectDirectory(): Promise<string> {
 }
 
 export async function setProjectDirectory(path: string): Promise<string> {
-  return invoke<string>("set_project_dir", { path });
+  const saved = await invoke<string>("set_project_dir", { path });
+  window.dispatchEvent(new CustomEvent(CONVERSATION_DIR_EVENT, { detail: { conversationId: null } }));
+  return saved;
 }
 
 export async function detectAgent(agent: AgentKind): Promise<string> {
@@ -450,7 +491,7 @@ export function runAgentTask(options: RunAgentOptions): AgentTask {
 
     try {
       const projectDir =
-        options.workingDir ?? await ensureProjectDirectory();
+        options.workingDir ?? await ensureProjectDirectory(options.conversationId);
 
       const startDetail: AgentTaskStartEvent = {
         taskId,

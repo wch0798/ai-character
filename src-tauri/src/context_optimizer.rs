@@ -360,7 +360,7 @@ fn changes_block(project_root: &Path, conversation_id: &str, budget: usize) -> (
 
 fn workspace_root(conversation_id: Option<&str>) -> Result<Option<(PathBuf, PathBuf)>, String> {
     let settings = load_settings()?;
-    let Some(project) = settings.project_dir else { return Ok(None) };
+    let Some(project) = crate::agent_commands::project_dir_for(&settings, conversation_id) else { return Ok(None) };
     let root = match conversation_id {
         Some(id) => ensure_project_snapshot(&project, id)?,
         None => project.clone(),

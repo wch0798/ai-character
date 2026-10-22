@@ -1,5 +1,4 @@
 use crate::environment_preflight::{git_binary, prepare_workspace_git, run_git};
-use crate::settings::load_settings;
 use crate::workspace::{ensure_conversation_workspace, ensure_project_snapshot};
 use serde::Serialize;
 use std::fs;
@@ -238,16 +237,14 @@ pub fn discard_worktree_for(project_root: &Path, conversation_id: &str, task_id:
     Ok(())
 }
 
-fn project_root() -> Result<PathBuf, String> {
-    load_settings()?
-        .project_dir
-        .ok_or_else(|| "프로젝트 폴더가 지정되지 않았습니다.".to_string())
+fn project_root(conversation_id: &str) -> Result<PathBuf, String> {
+    crate::agent_commands::configured_project_dir_for(Some(conversation_id))
 }
 
 #[tauri::command]
 pub async fn create_coder_worktree(conversation_id: String, task_id: String) -> Result<CoderWorktree, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        create_worktree_for(&project_root()?, conversation_id.trim(), &task_id)
+        create_worktree_for(&project_root(&conversation_id)?, conversation_id.trim(), &task_id)
     })
     .await
     .map_err(|error| format!("worktree 생성 작업 실패: {error}"))?
@@ -256,7 +253,7 @@ pub async fn create_coder_worktree(conversation_id: String, task_id: String) -> 
 #[tauri::command]
 pub async fn merge_coder_worktree(conversation_id: String, task_id: String) -> Result<WorktreeMergeOutcome, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        merge_worktree_for(&project_root()?, conversation_id.trim(), &task_id)
+        merge_worktree_for(&project_root(&conversation_id)?, conversation_id.trim(), &task_id)
     })
     .await
     .map_err(|error| format!("worktree 병합 작업 실패: {error}"))?
@@ -265,7 +262,7 @@ pub async fn merge_coder_worktree(conversation_id: String, task_id: String) -> R
 #[tauri::command]
 pub async fn discard_coder_worktree(conversation_id: String, task_id: String) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
-        discard_worktree_for(&project_root()?, conversation_id.trim(), &task_id)
+        discard_worktree_for(&project_root(&conversation_id)?, conversation_id.trim(), &task_id)
     })
     .await
     .map_err(|error| format!("worktree 정리 작업 실패: {error}"))?

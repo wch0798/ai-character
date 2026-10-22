@@ -26,6 +26,18 @@ fn default_true() -> bool {
     true
 }
 
+/// The user picks the daily paid limit. There is no "unlimited": 0 means paid APIs are never
+/// used at all. Only an unreadable value falls back to the $1 default.
+pub const DEFAULT_DAILY_COST_LIMIT_USD: f64 = 1.0;
+
+pub fn normalize_cost_limit(value: f64) -> f64 {
+    if value.is_finite() {
+        value.clamp(0.0, 10_000.0)
+    } else {
+        DEFAULT_DAILY_COST_LIMIT_USD
+    }
+}
+
 #[derive(Clone, Debug, Default, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct UsageAlerts {
@@ -47,15 +59,21 @@ pub fn alert_settings() -> AlertSettings {
     let settings = load_settings().unwrap_or_default();
     AlertSettings {
         desktop: settings.extra_bool("notify.desktop", true),
-        daily_cost_limit_usd: settings.extra_f64("usage.daily_cost_limit_usd", 1.0).max(0.0),
+        daily_cost_limit_usd: normalize_cost_limit(settings.extra_f64("usage.daily_cost_limit_usd", DEFAULT_DAILY_COST_LIMIT_USD)),
         daily_call_warn: settings.extra_u64("usage.daily_call_warn", 300),
         block_paid_over_limit: settings.extra_bool("usage.block_paid_over_limit", true),
     }
 }
 
 fn block_reason(cost_usd: f64, settings: &AlertSettings) -> Option<String> {
-    let limit = settings.daily_cost_limit_usd;
-    (settings.block_paid_over_limit && limit > 0.0 && cost_usd >= limit).then(|| {
+    let limit = normalize_cost_limit(settings.daily_cost_limit_usd);
+    if limit <= 0.0 {
+        return Some(
+            "하루 유료 한도가 0달러라 유료 API를 쓰지 않습니다. 무료 경로로 진행합니다. 유료를 쓰려면 설정 → 자동화에서 금액을 정하세요."
+                .to_string(),
+        );
+    }
+    (settings.block_paid_over_limit && cost_usd >= limit).then(|| {
         format!(
             "오늘 유료 사용액(${cost_usd:.2})이 하루 한도 ${limit:.2}에 도달해 유료 API 호출을 막았습니다. 무료 경로로 진행하거나 설정 → 자동화에서 한도를 올리세요."
         )
@@ -65,9 +83,6 @@ fn block_reason(cost_usd: f64, settings: &AlertSettings) -> Option<String> {
 /// Why paid calls are refused right now, or None when they may proceed.
 pub fn paid_block_reason(connection: &Connection) -> Option<String> {
     let settings = alert_settings();
-    if !settings.block_paid_over_limit || settings.daily_cost_limit_usd <= 0.0 {
-        return None;
-    }
     let (_, _, cost) = today_usage(connection, day_start(connection)).ok()?;
     block_reason(cost, &settings)
 }
@@ -103,10 +118,11 @@ fn day_start(connection: &Connection) -> i64 {
 
 /// Thresholds: warn at 80% of the cost limit or at the call count, over at 100% of the cost limit.
 pub fn evaluate(calls: u64, paid_calls: u64, cost_usd: f64, settings: &AlertSettings) -> UsageAlerts {
-    let limit = settings.daily_cost_limit_usd;
-    let paid_blocked = block_reason(cost_usd, settings).is_some();
+    let limit = normalize_cost_limit(settings.daily_cost_limit_usd);
+    // With a $0 limit paid APIs are simply off, which is a setting rather than an alert.
+    let paid_blocked = limit > 0.0 && block_reason(cost_usd, settings).is_some();
     let (level, message) = if limit > 0.0 && cost_usd >= limit {
-        let tail = if paid_blocked { " 오늘은 유료 API 호출을 막습니다." } else { "" };
+        let tail = if paid_blocked { " 오늘은 유료 API 호출을 막습니다." } else { " 막기가 꺼져 있어 계속 쓸 수 있습니다." };
         ("over", format!("오늘 유료 사용액이 한도 ${limit:.2}에 도달했습니다 (${cost_usd:.2}).{tail}"))
     } else if limit > 0.0 && cost_usd >= limit * 0.8 {
         ("warn", format!("오늘 유료 사용액이 한도의 80%를 넘었습니다 (${cost_usd:.2} / ${limit:.2})."))
@@ -217,7 +233,7 @@ pub fn get_alert_settings() -> AlertSettings {
 pub fn set_alert_settings(value: AlertSettings) -> Result<AlertSettings, String> {
     let mut settings = load_settings()?;
     settings.set_extra("notify.desktop", Some(value.desktop.to_string()));
-    let limit = if value.daily_cost_limit_usd.is_finite() { value.daily_cost_limit_usd.clamp(0.0, 10_000.0) } else { 1.0 };
+    let limit = normalize_cost_limit(value.daily_cost_limit_usd);
     settings.set_extra("usage.daily_cost_limit_usd", Some(format!("{limit}")));
     settings.set_extra("usage.daily_call_warn", Some(value.daily_call_warn.min(1_000_000).to_string()));
     settings.set_extra("usage.block_paid_over_limit", Some(value.block_paid_over_limit.to_string()));
@@ -244,14 +260,26 @@ mod tests {
     }
 
     #[test]
-    fn paid_calls_are_blocked_only_at_the_limit_when_enabled() {
+    fn paid_calls_are_blocked_at_the_limit_when_enabled() {
         assert!(block_reason(0.99, &settings(1.0, 0)).is_none());
         assert!(block_reason(1.0, &settings(1.0, 0)).unwrap().contains("막았습니다"));
-        assert!(block_reason(9.0, &settings(0.0, 0)).is_none());
         let off = AlertSettings { block_paid_over_limit: false, ..settings(1.0, 0) };
         assert!(block_reason(9.0, &off).is_none());
         assert!(evaluate(1, 1, 1.5, &settings(1.0, 0)).paid_blocked);
         assert!(!evaluate(1, 1, 1.5, &off).paid_blocked);
+    }
+
+    #[test]
+    fn zero_limit_means_no_paid_use_at_all() {
+        // Even with blocking switched off and nothing spent, $0 refuses every paid call.
+        let off = AlertSettings { block_paid_over_limit: false, ..settings(0.0, 0) };
+        assert!(block_reason(0.0, &off).unwrap().contains("쓰지 않습니다"));
+        assert!(!evaluate(0, 0, 0.0, &off).paid_blocked);
+        assert_eq!(normalize_cost_limit(0.0), 0.0);
+        assert_eq!(normalize_cost_limit(-5.0), 0.0);
+        assert_eq!(normalize_cost_limit(f64::NAN), 1.0);
+        assert_eq!(normalize_cost_limit(2.5), 2.5);
+        assert_eq!(normalize_cost_limit(1e9), 10_000.0);
     }
 
     #[test]

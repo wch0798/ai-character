@@ -294,7 +294,7 @@ fn expired_page() -> Response {
     Response::text(
         401,
         "text/html; charset=utf-8",
-        "<!doctype html><meta charset=utf-8><title>AI Character 설정</title><body style=\"font-family:system-ui;padding:40px;background:#0f1320;color:#e8ecf4\"><h2>링크가 만료되었습니다</h2><p>보안을 위해 설정 링크는 한 번만 쓸 수 있습니다.<br>AI Character 앱의 <b>설정 → 시작 → 웹에서 쉽게 설정</b> 또는 트레이 메뉴의 <b>처음 설정 (웹)</b>을 다시 눌러 주세요.</p></body>",
+        "<!doctype html><meta charset=utf-8><title>AI Character 설정</title><body style=\"font-family:system-ui;padding:40px;background:#0f1320;color:#e8ecf4\"><h2>링크가 만료되었습니다</h2><p>보안을 위해 설정 링크는 한 번만 쓸 수 있습니다.<br>AI Character 앱의 <b>설정 → 기본 → 웹에서 설정 보기</b> 또는 트레이 메뉴의 <b>처음 설정 (웹)</b>을 다시 눌러 주세요.</p></body>",
     )
 }
 
@@ -312,11 +312,22 @@ fn route(request: &Request, server: &SetupServer, app: &AppHandle) -> Response {
     if !host_allowed(request.header("host"), server.port) {
         return Response::error(403, "허용되지 않은 주소입니다.");
     }
-    if request.method == "GET" && request.path == "/auth" {
-        return authenticate(request, server);
-    }
     let authorized = cookie_value(request.header("cookie"), COOKIE_NAME)
         .is_some_and(|value| constant_time_eq(value, &server.session));
+    if request.method == "GET" && request.path == "/auth" {
+        // A second "open setup" click replaces the one-time code; an already signed-in tab
+        // should still land on the page instead of "link expired".
+        if authorized {
+            let section = request
+                .query_param("to")
+                .filter(|value| SECTIONS.contains(&value.as_str()))
+                .unwrap_or_else(|| "welcome".into());
+            let mut response = Response::text(302, "text/plain; charset=utf-8", "");
+            response.extra.push(("Location".into(), format!("/#{section}")));
+            return response;
+        }
+        return authenticate(request, server);
+    }
     if !authorized {
         return if request.path.starts_with("/api/") { Response::error(401, "세션이 만료되었습니다. 앱에서 다시 열어 주세요.") } else { expired_page() };
     }
@@ -467,21 +478,24 @@ fn parse<T: serde::de::DeserializeOwned>(value: Value) -> Result<T, String> {
 }
 
 fn apply_recommended() -> Result<(), String> {
+    let alerts = crate::alerts::get_alert_settings();
+    let updates = crate::updates::get_update_settings();
     apply_basic_preferences(BasicPreferencesPatch {
-        default_agent: Some("claude".to_string()),
+        default_agent: None,
         cradle_enabled: Some(true),
         auto_web_search: Some(true),
         gemini_api_enabled: Some(true),
         allow_paid_open_ai_api: Some(false),
         close_web_account_after_handoff: Some(true),
         close_web_account_when_cradle_done: Some(true),
-        timeout_seconds: Some(180),
+        timeout_seconds: None,
         warn_sensitive_files: Some(true),
     })?;
+    // A limit the user already set is kept; only "no limit" (0) gets the safe $1 default.
     crate::alerts::set_alert_settings(crate::alerts::AlertSettings {
         desktop: true,
-        daily_cost_limit_usd: 1.0,
-        daily_call_warn: 300,
+        daily_cost_limit_usd: alerts.daily_cost_limit_usd,
+        daily_call_warn: alerts.daily_call_warn,
         block_paid_over_limit: true,
     })?;
     crate::updates::set_update_settings(crate::updates::UpdateSettings {
@@ -489,7 +503,7 @@ fn apply_recommended() -> Result<(), String> {
         clis: true,
         plugins: true,
         models: true,
-        interval_hours: 6,
+        interval_hours: updates.interval_hours,
     })?;
     Ok(())
 }
@@ -510,7 +524,7 @@ fn reset_user_checks() -> Result<(), String> {
         desktop: false,
         daily_cost_limit_usd: 1.0,
         daily_call_warn: 300,
-        block_paid_over_limit: false,
+        block_paid_over_limit: true,
     })?;
     crate::updates::set_update_settings(crate::updates::UpdateSettings {
         app: false,
@@ -536,17 +550,21 @@ fn import_settings(body: Value) -> Result<Value, String> {
     if body.get("kind").and_then(Value::as_str) != Some("ai-character-settings") {
         return Err("AI Character 설정 백업 파일이 아닙니다.".into());
     }
+    // Parse every part first so a bad backup changes nothing instead of half the settings.
+    let preferences: Option<BasicPreferencesPatch> = body.get("preferences").cloned().map(parse).transpose()?;
+    let alerts: Option<crate::alerts::AlertSettings> = body.get("alerts").cloned().map(parse).transpose()?;
+    let updates: Option<crate::updates::UpdateSettings> = body.get("updates").cloned().map(parse).transpose()?;
     let mut notes = Vec::new();
-    if let Some(preferences) = body.get("preferences").cloned() {
-        apply_basic_preferences(parse(preferences)?)?;
+    if let Some(preferences) = preferences {
+        apply_basic_preferences(preferences)?;
         notes.push("동작 방식");
     }
-    if let Some(alerts) = body.get("alerts").cloned() {
-        crate::alerts::set_alert_settings(parse(alerts)?)?;
+    if let Some(alerts) = alerts {
+        crate::alerts::set_alert_settings(alerts)?;
         notes.push("알림·비용 한도");
     }
-    if let Some(updates) = body.get("updates").cloned() {
-        crate::updates::set_update_settings(parse(updates)?)?;
+    if let Some(updates) = updates {
+        crate::updates::set_update_settings(updates)?;
         notes.push("자동 업데이트");
     }
     let mut warning = None;

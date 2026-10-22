@@ -1,7 +1,7 @@
 import { getAlertSettings, setAlertSettings, type AlertSettings } from "./alerts-client";
 import { clampNumber, errorText, numberField, sectionShell, toggleRow } from "./settings-controls";
 
-/** Dollar limits keep cents; anything unparsable falls back to the previous value. */
+/** Dollar limits keep cents; 0 means no paid use at all. Unparsable input keeps the previous value. */
 export function parseCostLimit(value: string, fallback: number): number {
   const parsed = Number.parseFloat(value);
   if (!Number.isFinite(parsed)) {
@@ -20,7 +20,7 @@ export function createAlertsSection(setMessage: (text: string) => void): { secti
     min: 0,
     max: 10_000,
     step: 0.1,
-    tooltip: "오늘 유료 API 사용액이 이 금액의 80%를 넘으면 경고, 넘으면 한도 도달 알림을 보냅니다. 0이면 끕니다.",
+    tooltip: "0이면 유료 API를 아예 쓰지 않습니다. 금액을 넣으면 80%에서 경고하고, 한도에 닿으면 알립니다. 무제한은 없습니다.",
   });
   const calls = numberField("하루 호출 경고(회)", {
     min: 0,
@@ -29,7 +29,7 @@ export function createAlertsSection(setMessage: (text: string) => void): { secti
   });
   const block = toggleRow(
     "한도 도달 시 유료 호출 막기",
-    "오늘 유료 사용액이 하루 한도에 닿으면 그날은 유료 API를 호출하지 않고 무료 경로로 넘깁니다. 승인을 받아 둔 호출도 막습니다."
+    "켜면 오늘 유료 사용액이 하루 한도에 닿았을 때 그날은 유료 API를 호출하지 않고 무료 경로로 넘깁니다. 승인을 받아 둔 호출도 막습니다. 한도가 0이면 이 스위치와 상관없이 유료를 쓰지 않습니다."
   );
   section.append(desktop.root, cost.root, block.root, calls.root);
 

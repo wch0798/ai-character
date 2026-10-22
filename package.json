@@ -4,8 +4,8 @@
   "version": "0.1.4",
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "tsc && vite build",
+    "dev": "node --require ./tools/patch-styletext.cjs ./node_modules/vite/bin/vite.js",
+    "build": "tsc && node --require ./tools/patch-styletext.cjs ./node_modules/vite/bin/vite.js build",
     "preview": "vite preview",
     "tauri": "tauri",
     "start": "node tools/launch.mjs",

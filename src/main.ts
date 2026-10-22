@@ -144,6 +144,7 @@ import {
   type ChatHistoryManager,
 } from "./chat-history-ui";
 import { quietConsoleInProduction } from "./quiet-console";
+import { initializeConversationFolderUi } from "./conversation-folder-ui";
 import { resolveLive2DAssetUrl, resolveLive2DModelSource } from "./live2d-asset-url";
 import { patchLive2DAssetFetchMime } from "./live2d-fetch-mime";
 import { waitForTauri } from "./tauri-ready";
@@ -181,6 +182,7 @@ async function startLive2D() {
   initializeOptionalUi("Agent 상태", () => { initializeAgentRuntimeUi(); });
   initializeOptionalUi("진행 표시", () => { initializeChatProgressUi(); });
   initializeOptionalUi("설정", () => { initializeSettingsUi(); });
+  initializeOptionalUi("작업 폴더", () => { initializeConversationFolderUi(); });
   initializeOptionalUi("CRADLE", () => { initializeCradleOrchestrationUi(); });
   const canvas =
     document.querySelector<HTMLCanvasElement>(

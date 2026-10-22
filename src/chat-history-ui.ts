@@ -38,6 +38,14 @@ function flashLabel(button: HTMLButtonElement, text: string): void {
   }, 1600);
 }
 
+export const CONVERSATION_SHOWN_EVENT = "ai-character:conversation-shown";
+let shownConversationId: string | null = null;
+
+/** The conversation currently on screen, for UI that follows it (e.g. its work folder). */
+export function getShownConversationId(): string | null {
+  return shownConversationId;
+}
+
 export type ChatHistoryManager = {
   getActiveId(): string;
   getContext(): string;
@@ -149,6 +157,10 @@ export function setupChatHistory(options: SetupOptions): ChatHistoryManager {
   });
 
   const renderMessages = (conversation: ChatConversation) => {
+    if (shownConversationId !== conversation.id) {
+      shownConversationId = conversation.id;
+      window.dispatchEvent(new CustomEvent(CONVERSATION_SHOWN_EVENT, { detail: { id: conversation.id } }));
+    }
     closeFind();
     options.messages.innerHTML = "";
 
