@@ -3754,6 +3754,56 @@ body:has(#ai-settings-panel:not([hidden])) #performance-hud {
   background: none;
 }
 
+/* Markdown tables and dividers in chat replies */
+.md-table-wrap {
+  margin: 6px 0 8px;
+  overflow-x: auto;
+  border: 1px solid rgb(52, 58, 74);
+  border-radius: 10px;
+}
+
+.md-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+
+.md-table th,
+.md-table td {
+  padding: 6px 10px;
+  border-bottom: 1px solid rgb(44, 49, 63);
+  vertical-align: top;
+}
+
+.md-table th {
+  background: rgb(30, 34, 46);
+  color: rgb(170, 180, 200);
+  font-size: 11.5px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.md-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.md-table tbody tr:nth-child(even) td {
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.md-table td[style*="right"],
+.md-table th[style*="right"] {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.message-md hr {
+  margin: 10px 0;
+  border: 0;
+  border-top: 1px solid rgb(52, 58, 74);
+}
+
 /* ---------- 대화창: 첫 화면 ---------- */
 .chat-welcome {
   display: flex;
