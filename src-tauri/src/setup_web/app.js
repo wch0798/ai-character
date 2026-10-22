@@ -129,7 +129,7 @@ const KEY_INFO = {
   },
 };
 
-const LOGIN_AGENTS = { claude: "Claude 로그인", codex: "Codex 로그인", cursor: "Cursor 열기", antigravity: "Antigravity 로그인" };
+const LOGIN_AGENTS = { claude: "Claude 로그인", codex: "Codex 로그인", cursor: "Cursor 로그인", antigravity: "Antigravity 로그인" };
 
 const SIGN_STEPS = [
   {
@@ -190,6 +190,7 @@ const SIGN_STEPS = [
 
 let state = null;
 let runtime = null;
+let runtimeStale = false;
 let current = "welcome";
 const dirty = new Set();
 
@@ -912,13 +913,15 @@ function sectionAccounts() {
   const list = h("div", { class: "stack" });
   const refresh = h("button", { text: "다시 확인" });
   const load = async () => {
-    list.replaceChildren(h("div", { class: "row muted" }, h("span", { class: "spinner" }), "설치된 프로그램을 확인하는 중…"));
+    if (!runtime) list.replaceChildren(h("div", { class: "row muted" }, h("span", { class: "spinner" }), "설치·로그인 상태를 확인하는 중…"));
+    runtimeStale = false;
     runtime = await api.get("/api/runtime");
     renderRuntime(list);
   };
   refresh.addEventListener("click", () => busy(refresh, load, "확인 중…"));
   if (runtime) renderRuntime(list);
-  else load().catch((error) => list.replaceChildren(h("p", { class: "notice warn", text: error.message })));
+  // Coming back from a login window marks the result stale: re-check quietly in the background.
+  if (!runtime || runtimeStale) load().catch((error) => list.replaceChildren(h("p", { class: "notice warn", text: error.message })));
   const github = h("button", { text: "GitHub 로그인" });
   github.addEventListener("click", () =>
     busy(github, async () => {
@@ -937,10 +940,17 @@ function sectionAccounts() {
       "로그인 버튼을 누르면 브라우저나 해당 앱이 열립니다. 로그인을 마치고 이 페이지로 돌아오면 상태가 자동으로 새로고침됩니다.",
     ]),
     h("div", { class: "notice", text: "구독형(Claude Pro/Max, ChatGPT Plus)은 월정액이라 호출당 요금이 없지만, 5시간·주간 사용 한도가 있습니다. 한도에 닿으면 앱이 무료 AI로 자동 전환합니다." }),
-    h("div", { class: "card" }, h("div", { class: "row space", style: "margin-bottom:8px" }, h("h3", { text: "설치 상태" }), refresh), list),
+    h("div", { class: "card" }, h("div", { class: "row space", style: "margin-bottom:8px" }, h("h3", { text: "설치 · 로그인 상태" }), refresh), list),
     h("div", { class: "card row space" }, h("div", {}, h("h3", { text: "GitHub" }), h("p", { class: "muted small", text: "PR 요약, 코드 저장 같은 기능에 씁니다. 브라우저에서 로그인합니다." })), github),
     footer("accounts"),
   ];
+}
+
+function loginBadge(signIn) {
+  if (!signIn) return null;
+  if (signIn.loggedIn === true) return h("span", { class: "badge ok", text: "✓ 로그인됨" });
+  if (signIn.loggedIn === false) return h("span", { class: "badge warn", text: "로그인 필요" });
+  return h("span", { class: "badge", text: "로그인 확인 불가" });
 }
 
 function renderRuntime(list) {
@@ -959,8 +969,12 @@ function renderRuntime(list) {
       );
       actions.push(install);
     }
+    const signIn = (runtime.logins || []).find((item) => item.id === component.id);
     if (component.ready && LOGIN_AGENTS[component.id]) {
-      const login = h("button", { text: LOGIN_AGENTS[component.id] });
+      const login = h("button", {
+        class: signIn && signIn.loggedIn === false ? "primary" : "",
+        text: signIn && signIn.loggedIn ? "다시 로그인" : LOGIN_AGENTS[component.id],
+      });
       login.addEventListener("click", () =>
         busy(login, async () => {
           const result = await api.post("/api/login", { agent: component.id });
@@ -972,7 +986,7 @@ function renderRuntime(list) {
     return h(
       "div",
       { class: "key-row row space" },
-      h("div", { style: "min-width:0;flex:1" }, h("div", { class: "row" }, h("h4", { text: component.label }), h("span", { class: `badge ${component.ready ? "ok" : "warn"}`, text: component.ready ? "준비됨" : "없음" })), h("p", { class: "muted small mono", style: "word-break:break-all", text: component.detail })),
+      h("div", { style: "min-width:0;flex:1" }, h("div", { class: "row" }, h("h4", { text: component.label }), h("span", { class: `badge ${component.ready ? "ok" : "warn"}`, text: component.ready ? "설치됨" : "없음" }), component.ready ? loginBadge(signIn) : null), signIn && component.ready ? h("p", { class: "small", text: signIn.account ? `${signIn.detail} (${signIn.account})` : signIn.detail }) : null, h("p", { class: "muted small mono", style: "word-break:break-all", text: component.detail })),
       h("div", { class: "row" }, ...actions)
     );
   });
@@ -2212,10 +2226,36 @@ function render() {
   dirty.delete(current);
   const section = h("section", { "data-section": current, class: same ? "visible still" : "visible" }, ...BUILDERS[current]());
   section.addEventListener("input", () => dirty.add(current));
-  main.replaceChildren(fatal, section);
+  if (same) {
+    // Saving, polling and returning to the window all redraw the page; keep what the
+    // user opened or folded and where they were scrolled instead of snapping back.
+    const opened = foldState(same);
+    for (const [key, details] of foldEntries(section)) if (opened.has(key)) details.open = opened.get(key);
+    const scrollY = window.scrollY;
+    main.replaceChildren(fatal, section);
+    window.scrollTo(0, scrollY);
+  } else {
+    main.replaceChildren(fatal, section);
+  }
   renderNav();
   const build = state.build || {};
   document.getElementById("version").textContent = `v${build.version || "?"} · ${state.platform}`;
+}
+
+/** Folded sections keyed by their title (plus position, for repeated titles). */
+function foldEntries(root) {
+  const seen = new Map();
+  return [...root.querySelectorAll("details")].map((details) => {
+    const summary = details.querySelector(":scope > summary");
+    const title = summary ? summary.textContent.trim() : "";
+    const count = seen.get(title) || 0;
+    seen.set(title, count + 1);
+    return [`${title}#${count}`, details];
+  });
+}
+
+function foldState(root) {
+  return new Map(foldEntries(root).map(([key, details]) => [key, details.open]));
 }
 
 function show(id) {
@@ -2240,7 +2280,7 @@ window.addEventListener("focus", async () => {
   if (!state || dirty.has(current)) return;
   try {
     await refreshState();
-    if (current === "accounts") runtime = null;
+    if (current === "accounts") runtimeStale = true;
     if (current === "usage" && !usageView.loading) loadUsage(usageView.days);
     else if (current === "local") loadLocal();
     else if (current === "remote") loadRemote();

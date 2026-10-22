@@ -1,6 +1,5 @@
 import {
   askAgentCompat,
-  askClaudeCompat,
   cancelAgent,
   confirmSensitiveAgentAccess,
   detectAgent,
@@ -22,7 +21,7 @@ import {
   summarizeTestRun,
   type TestRunSummary,
 } from "./cradle-workspace-client";
-import { classifyRequestIntent, extractCurrentUserRequest } from "./request-intent";
+import { classifyRequestIntent, extractCurrentUserRequest, needsLocalFiles } from "./request-intent";
 import { compactText, compactWorkerOutput, WORKER_RESULT_SCHEMA } from "./worker-result";
 import {
   classifyAutomaticProviderError,
@@ -1673,6 +1672,29 @@ async function answerDirectly(
   } catch (error) {
     if (blocked(error)) {
       throw error instanceof Error ? error : new Error(error instanceof Error ? error.message : String(error));
+    }
+    if (needsLocalFiles(prompt)) {
+      // Web-only AIs cannot see the work folder and would only ask the user to paste files,
+      // so a file question goes to Claude, which also runs inside the folder.
+      const codexReason = isQuotaOrLimitError(error) ? "사용량을 다 썼습니다" : "응답하지 못했습니다";
+      try {
+        const text = await askAgentCompat("claude", composed, conversationId);
+        pendingChatNotice = `ChatGPT(Codex)가 ${codexReason}. 이 답은 Claude가 작업 폴더를 보고 이어받았습니다.`;
+        return withChatNotice(text);
+      } catch (claudeError) {
+        if (blocked(claudeError)) {
+          throw claudeError instanceof Error ? claudeError : new Error(String(claudeError));
+        }
+        const detail = (value: unknown) => compactText(value instanceof Error ? value.message : String(value), 300);
+        throw new Error(
+          `작업 폴더를 볼 수 있는 AI가 지금 답하지 못해 폴더 내용을 확인하지 못했습니다.
+` +
+          `· ChatGPT(Codex): ${detail(error)}
+· Claude: ${detail(claudeError)}
+` +
+          "설정 → 프로그램 · 로그인에서 두 프로그램의 로그인 상태를 확인해 주세요."
+        );
+      }
     }
     pendingChatNotice = isQuotaOrLimitError(error)
       ? "ChatGPT(Codex) 사용량을 다 썼습니다. 이 답은 무료 AI가 이어받았습니다."

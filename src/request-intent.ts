@@ -103,6 +103,40 @@ function historyLooksLikeProject(history: string): boolean {
   );
 }
 
+const LOCAL_FILE_MARKERS = [
+  "폴더",
+  "디렉토리",
+  "디렉터리",
+  "파일",
+  "프로젝트",
+  "코드",
+  "소스",
+  "저장소",
+  "레포",
+  "readme",
+  "folder",
+  "directory",
+  "file",
+  "project",
+  "codebase",
+  "source code",
+  "repo",
+];
+
+/** e.g. `main.ts`, `app.py`, `settings.json` mentioned by name. */
+const FILE_NAME_PATTERN = /[\w가-힣-]+\.(ts|tsx|js|jsx|mjs|py|rs|go|java|kt|cs|cpp|c|h|json|toml|yaml|yml|md|txt|html|css|sql|sh|ps1|bat)\b/i;
+
+/**
+ * Questions about the user's own folder or files. Only programs running inside the work
+ * folder (ChatGPT/Codex, Claude) can answer these; web-only AIs cannot see the files.
+ */
+export function needsLocalFiles(prompt: string): boolean {
+  const text = extractCurrentUserRequest(prompt);
+  if (!text) return false;
+  const lower = text.toLowerCase();
+  return LOCAL_FILE_MARKERS.some((marker) => lower.includes(marker)) || FILE_NAME_PATTERN.test(text);
+}
+
 export function classifyRequestIntent(
   prompt: string,
   conversationContext = ""
@@ -113,6 +147,8 @@ export function classifyRequestIntent(
   if (isProjectConfirmation(current) && historyLooksLikeProject(conversationContext)) {
     return "project";
   }
+  // A question about the user's files must not be sent to web research first.
+  if (needsLocalFiles(current)) return "chat";
   if (shouldAutoWebSearch(current)) return "research";
   return "chat";
 }

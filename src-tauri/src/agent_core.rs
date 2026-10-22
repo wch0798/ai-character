@@ -127,20 +127,32 @@ pub fn args_for_with_options(
 
     if agent == AgentKind::Codex {
         // Flags that belong to `codex exec`, not the root command.
-        let mut exec_flags = Vec::new();
+        let mut exec_flags: Vec<String> = Vec::new();
         let mut root_args = Vec::new();
-        for arg in extra_args {
-            if matches!(
-                arg.as_str(),
-                "--skip-git-repo-check"
-                    | "--full-auto"
-                    | "--dangerously-bypass-approvals-and-sandbox"
-            ) {
-                if !exec_flags.iter().any(|existing: &String| existing == arg) {
-                    exec_flags.push(arg.clone());
+        let mut sandbox_set = false;
+        let mut iter = extra_args.iter();
+        while let Some(arg) = iter.next() {
+            match arg.as_str() {
+                // Codex 0.15x removed `--full-auto` and rejects it; `--sandbox workspace-write`
+                // is what it meant (read and edit inside the work folder only).
+                "--full-auto" | "--sandbox" | "-s" => {
+                    let mode = if arg == "--full-auto" {
+                        Some("workspace-write".to_string())
+                    } else {
+                        iter.next().cloned()
+                    };
+                    if let Some(mode) = mode.filter(|_| !sandbox_set) {
+                        exec_flags.push("--sandbox".to_string());
+                        exec_flags.push(mode);
+                        sandbox_set = true;
+                    }
                 }
-            } else {
-                root_args.push(arg.clone());
+                "--skip-git-repo-check" | "--dangerously-bypass-approvals-and-sandbox" => {
+                    if !exec_flags.iter().any(|existing| existing == arg) {
+                        exec_flags.push(arg.clone());
+                    }
+                }
+                _ => root_args.push(arg.clone()),
             }
         }
         args.extend(root_args);
@@ -161,7 +173,7 @@ pub fn managed_workspace_permission_args(agent: AgentKind) -> Vec<String> {
             "--permission-mode".to_string(),
             "bypassPermissions".to_string(),
         ],
-        AgentKind::Codex => vec!["--full-auto".to_string()],
+        AgentKind::Codex => vec!["--sandbox".to_string(), "workspace-write".to_string()],
         AgentKind::Cursor => vec!["--force".to_string()],
         AgentKind::Antigravity => Vec::new(),
     }
@@ -962,7 +974,7 @@ mod tests {
     }
 
     #[test]
-    fn codex_full_auto_follows_exec() {
+    fn codex_full_auto_becomes_sandbox_after_exec() {
         let extra = vec![
             "--skip-git-repo-check".to_string(),
             "--full-auto".to_string(),
@@ -973,9 +985,18 @@ mod tests {
             vec![
                 "exec".to_string(),
                 "--skip-git-repo-check".to_string(),
-                "--full-auto".to_string(),
+                "--sandbox".to_string(),
+                "workspace-write".to_string(),
                 "안녕".to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn codex_keeps_one_sandbox_when_saved_and_managed_args_overlap() {
+        let extra = merge_extra_args(&["--full-auto".to_string()], &managed_workspace_permission_args(AgentKind::Codex));
+        let args = args_for_with_options(AgentKind::Codex, "hi", None, &extra);
+        assert_eq!(args.iter().filter(|value| *value == "--sandbox").count(), 1);
+        assert!(!args.iter().any(|value| value == "--full-auto"));
     }
 }

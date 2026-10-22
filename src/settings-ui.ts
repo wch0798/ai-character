@@ -34,6 +34,8 @@ import {
   resetRecommendedSettings,
   setAppPreferences,
   getUsageSnapshot,
+  getAgentLogins,
+  type AgentLogin,
   type AgentKind,
   type AgentRunRecord,
   type CheckpointRecord,
@@ -1412,7 +1414,12 @@ export function initializeSettingsUi(): void {
 
   async function refreshLoginStatus(): Promise<void> {
     try {
-      const snapshot = (await getUsageSnapshot()) as {
+      // Sign-in state is read directly by the app; API key rows still come from the usage snapshot.
+      const [logins, snapshotOrNull] = await Promise.all([
+        getAgentLogins(),
+        getUsageSnapshot().catch(() => null),
+      ]);
+      const snapshot = (snapshotOrNull ?? {}) as {
         providers?: Array<{
           id?: string;
           label?: string;
@@ -1433,7 +1440,7 @@ export function initializeSettingsUi(): void {
           hint?: string | null;
         }>;
       };
-      renderLoginStatus(snapshot);
+      renderLoginStatus(snapshot, logins);
     } catch (error) {
       loginStatusList.replaceChildren();
       const failure = document.createElement("div");
@@ -1463,30 +1470,25 @@ export function initializeSettingsUi(): void {
       configured?: boolean;
       hint?: string | null;
     }>;
-  }): void {
-    const agentIds: AgentKind[] = ["claude", "codex", "cursor", "antigravity"];
+  }, logins: AgentLogin[]): void {
+    const agentLabels: Record<AgentKind, string> = { claude: "Claude", codex: "Codex", cursor: "Cursor", antigravity: "Antigravity" };
     const rows: HTMLElement[] = [];
 
-    for (const id of agentIds) {
-      const provider = (snapshot.providers ?? []).find((item) => item.id === id);
-      const account = provider?.account;
-      const connected = Boolean(account?.connected || account?.email || account?.keyHint);
-      const connectedDetail = [
-        account?.plan && `요금제 ${account.plan}`,
-        account?.loginWith && `로그인 ${account.loginWith}`,
-      ]
+    for (const id of Object.keys(agentLabels) as AgentKind[]) {
+      const login = logins.find((item) => item.id === id);
+      const label = agentLabels[id];
+      const plan = (snapshot.providers ?? []).find((item) => item.id === id)?.account?.plan;
+      const detail = [login?.detail ?? "로그인 상태를 확인하지 못했습니다.", login?.account, plan && `요금제 ${plan}`]
         .filter(Boolean)
         .join(" · ");
-      const detail = connected
-        ? connectedDetail || "로그인되어 있어요"
-        : "로그인 정보 없음 — 로그인이 필요합니다";
       rows.push(
         makeLoginRow({
-          label: provider?.label || id,
-          connected,
+          label,
+          connected: login?.loggedIn === true,
+          stateText: login?.loggedIn === true ? "로그인됨" : login?.loggedIn === false ? "로그인 필요" : "확인 불가",
           detail,
-          actionLabel: connected ? "다시 로그인" : "로그인",
-          onAction: () => startAgentLogin(id, provider?.label || id),
+          actionLabel: login?.loggedIn ? "다시 로그인" : "로그인",
+          onAction: () => startAgentLogin(id, label),
         })
       );
     }
@@ -1511,6 +1513,7 @@ export function initializeSettingsUi(): void {
   function makeLoginRow(options: {
     label: string;
     connected: boolean;
+    stateText?: string;
     detail: string;
     actionLabel: string;
     onAction: () => void | Promise<void>;
@@ -1525,7 +1528,7 @@ export function initializeSettingsUi(): void {
     title.append(
       dot,
       document.createTextNode(
-        ` ${options.label} · ${options.connected ? "연결됨" : "미연결"}`
+        ` ${options.label} · ${options.stateText ?? (options.connected ? "연결됨" : "미연결")}`
       )
     );
     const state = document.createElement("small");

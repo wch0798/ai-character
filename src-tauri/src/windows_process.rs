@@ -49,21 +49,25 @@ fn command_with_creation_flags(path: &Path, args: &[&str], flags: u32) -> Comman
         .unwrap_or("")
         .to_ascii_lowercase();
     if matches!(ext.as_str(), "cmd" | "bat") {
-        let mut command = Command::new("cmd.exe");
+        // npm and Cursor launchers only start Node with a script: run that directly so prompts
+        // keep their line breaks, `%` and `!` (cmd.exe would mangle or refuse them).
+        let find_node = || crate::process_util::find_tool("node");
+        if let Some(target) = crate::cmd_shim::resolve(path, find_node) {
+            let mut command = Command::new(&target.program);
+            crate::process_util::apply_process_env(&mut command);
+            command.creation_flags(flags);
+            command.envs(target.envs);
+            command.args(target.leading);
+            command.args(args);
+            return command;
+        }
+        // Unknown batch file: let the standard library run it. It escapes cmd.exe
+        // metacharacters (& | % ^ ") but refuses line breaks, so those are flattened.
+        // (Building a `cmd /C "..."` line by hand broke every launch: Rust re-quoted it.)
+        let mut command = Command::new(path);
         crate::process_util::apply_process_env(&mut command);
         command.creation_flags(flags);
-        let mut line = format!("\"{}\"", path.display());
-        for arg in args {
-            line.push(' ');
-            if arg.contains(char::is_whitespace) {
-                line.push('"');
-                line.push_str(arg);
-                line.push('"');
-            } else {
-                line.push_str(arg);
-            }
-        }
-        command.arg("/D").arg("/S").arg("/C").arg(line);
+        command.args(args.iter().map(|arg| flatten_for_batch(arg)));
         return command;
     }
     let mut command = Command::new(path);
@@ -71,6 +75,16 @@ fn command_with_creation_flags(path: &Path, args: &[&str], flags: u32) -> Comman
     command.creation_flags(flags);
     command.args(args);
     command
+}
+
+/// Batch files cannot take an argument containing a line break; join the lines instead.
+#[cfg(windows)]
+fn flatten_for_batch(arg: &str) -> String {
+    if arg.contains(['\r', '\n']) {
+        arg.split(['\r', '\n']).filter(|line| !line.trim().is_empty()).collect::<Vec<_>>().join(" ")
+    } else {
+        arg.to_string()
+    }
 }
 
 #[allow(dead_code)]
@@ -209,5 +223,16 @@ pub fn read_process_stats() -> Result<(f64, f64), String> {
         };
 
         Ok((cpu_percent, memory_mb))
+    }
+}
+
+#[cfg(all(test, windows))]
+mod batch_tests {
+    use super::flatten_for_batch;
+
+    #[test]
+    fn multi_line_prompts_become_one_line_for_batch_files() {
+        assert_eq!(flatten_for_batch("고쳐줘\r\n\n- a & b\n- 100%"), "고쳐줘 - a & b - 100%");
+        assert_eq!(flatten_for_batch("status"), "status");
     }
 }

@@ -458,7 +458,11 @@ fn export_settings() -> Result<Value, String> {
 fn api_get(path: &str) -> Result<Value, String> {
     match path {
         "/api/state" => state(),
-        "/api/runtime" => to_json(crate::agent_install::get_runtime_setup_status()),
+        "/api/runtime" => {
+            let mut runtime = to_json(crate::agent_install::get_runtime_setup_status())?;
+            runtime["logins"] = to_json(crate::login_status::agent_logins())?;
+            Ok(runtime)
+        }
         "/api/export" => export_settings(),
         "/api/local" => Ok(tauri::async_runtime::block_on(crate::local_ai::status())),
         "/api/remote" => Ok(tauri::async_runtime::block_on(crate::remote_ai::remote_statuses())),
