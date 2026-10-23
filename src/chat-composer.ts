@@ -119,6 +119,8 @@ export type ComposerOptions = {
    * with it); otherwise it waits and goes out as a follow-up when the task finishes.
    */
   onAdd?: (text: string) => boolean;
+  /** A short notice for the user, e.g. when the waiting list is full. */
+  onNotice?: (text: string) => void;
 };
 
 export function setupComposer(
@@ -126,7 +128,7 @@ export function setupComposer(
   input: HTMLTextAreaElement,
   options: ComposerOptions
 ): Composer {
-  const { onStop, onAdd } = options;
+  const { onStop, onAdd, onNotice } = options;
   const submit = form.querySelector<HTMLButtonElement>("button[type='submit']");
   let busy = false;
   let sent = readJson<string[]>(SENT_KEY, []).filter((item) => typeof item === "string");
@@ -137,6 +139,16 @@ export function setupComposer(
   queueBox.id = "chat-queue";
   queueBox.hidden = true;
   form.before(queueBox);
+  // "↓ 맨 아래로" sits just above the form; lift it over the waiting list and attachments.
+  const placeJumpButton = () => {
+    const attachments = document.getElementById("attachment-list");
+    const above = (queueBox.hidden ? 0 : queueBox.offsetHeight) + (attachments?.offsetHeight ?? 0);
+    form.style.setProperty("--chat-above-form", `${above}px`);
+  };
+  const attachmentList = document.getElementById("attachment-list");
+  if (attachmentList && "ResizeObserver" in window) {
+    new ResizeObserver(placeJumpButton).observe(attachmentList);
+  }
 
   const resize = () => {
     input.style.height = "auto";
@@ -181,6 +193,7 @@ export function setupComposer(
   const paintQueue = () => {
     queueBox.replaceChildren();
     queueBox.hidden = queue.length === 0;
+    window.requestAnimationFrame(placeJumpButton);
     if (!queue.length) return;
     const title = document.createElement("div");
     title.className = "chat-queue-title";
@@ -218,6 +231,7 @@ export function setupComposer(
     if (queue.length >= QUEUE_LIMIT) {
       input.classList.add("is-waiting");
       window.setTimeout(() => input.classList.remove("is-waiting"), 900);
+      onNotice?.(`답변 중에는 ${QUEUE_LIMIT}개까지 넣을 수 있습니다. 지금 답변이 끝나면 다시 넣어 주세요.`);
       return;
     }
     queue = enqueue(queue, text, kind);
@@ -237,7 +251,21 @@ export function setupComposer(
     paintSubmit();
   });
 
+  // Ctrl+Enter pressed while a Korean syllable is still being composed only finishes the
+  // syllable; queue the question once composition ends instead of needing a second press.
+  let queueAfterComposition = false;
+  input.addEventListener("compositionend", () => {
+    if (!queueAfterComposition) return;
+    queueAfterComposition = false;
+    window.setTimeout(() => {
+      if (busy) addToQueue("next");
+    }, 0);
+  });
+
   input.addEventListener("keydown", (event) => {
+    if (busy && event.key === "Enter" && (event.ctrlKey || event.metaKey) && (event.isComposing || event.keyCode === 229)) {
+      queueAfterComposition = true;
+    }
     const intent = keyIntent({
       key: event.key,
       shiftKey: event.shiftKey,
@@ -397,6 +425,24 @@ export const WELCOME_SUGGESTIONS = [
   "이메일 답장을 공손하게 써 줘: ",
 ];
 
+/** Shown in the chat with F1. */
+export const SHORTCUT_HELP = [
+  "**단축키**",
+  "",
+  "| 키 | 하는 일 |",
+  "| --- | --- |",
+  "| Enter | 보내기 |",
+  "| Shift+Enter | 줄바꿈 |",
+  "| ↑ / ↓ | 이전에 보낸 질문 불러오기 |",
+  "| Enter (답변 중) | 지금 작업에 추가 지시 넣기 |",
+  "| Ctrl+Enter (답변 중) | 다음 질문으로 기다리게 하기 |",
+  "| Esc (답변 중) | 답변 멈추기 |",
+  "| Ctrl+F | 이 대화에서 찾기 |",
+  "| Ctrl+V | 그림 붙여넣기 |",
+  "| Ctrl+Shift+Space | 캐릭터 숨기기·부르기 (설정에서 바꿀 수 있음) |",
+  "| F1 | 이 도움말 |",
+].join("\n");
+
 export function renderWelcome(messages: HTMLElement, onPick: (text: string) => void): void {
   const box = document.createElement("div");
   box.className = "chat-welcome";
@@ -405,7 +451,7 @@ export function renderWelcome(messages: HTMLElement, onPick: (text: string) => v
   title.textContent = "무엇을 도와드릴까요?";
   const hint = document.createElement("div");
   hint.className = "chat-welcome-hint";
-  hint.textContent = "Enter 보내기 · Shift+Enter 줄바꿈 · ↑ 이전 질문 · 파일은 끌어다 놓기 · 그림은 Ctrl+V · 🎤 말로 입력";
+  hint.textContent = "Enter 보내기 · Shift+Enter 줄바꿈 · ↑ 이전 질문 · 그림은 Ctrl+V · 🎤 말로 입력 · F1 단축키 전체 보기";
   const chips = document.createElement("div");
   chips.className = "chat-welcome-chips";
   for (const suggestion of WELCOME_SUGGESTIONS) {

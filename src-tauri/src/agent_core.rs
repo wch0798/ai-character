@@ -186,10 +186,72 @@ pub fn managed_workspace_permission_args(agent: AgentKind) -> Vec<String> {
             "--permission-mode".to_string(),
             "bypassPermissions".to_string(),
         ],
-        AgentKind::Codex => vec!["--sandbox".to_string(), "workspace-write".to_string()],
+        // No network for Codex's commands: whatever it reads stays on this PC.
+        AgentKind::Codex => vec![
+            "--sandbox".to_string(),
+            "workspace-write".to_string(),
+            "-c".to_string(),
+            "sandbox_workspace_write.network_access=false".to_string(),
+        ],
         AgentKind::Cursor => vec!["--force".to_string()],
         AgentKind::Antigravity => Vec::new(),
     }
+}
+
+/// Saved options that would undo the managed workspace's protections. They are dropped there,
+/// so the app's own options (added after) are the only ones that count.
+pub fn strip_unsafe_managed_args(agent: AgentKind, args: &[String]) -> Vec<String> {
+    // (flag, takes a value)
+    let unsafe_flags: &[(&str, bool)] = match agent {
+        AgentKind::Codex => &[
+            ("-s", true),
+            ("--sandbox", true),
+            ("--dangerously-bypass-approvals-and-sandbox", false),
+            ("--full-auto", false),
+        ],
+        AgentKind::Claude => &[
+            ("--settings", true),
+            ("--permission-mode", true),
+            ("--dangerously-skip-permissions", false),
+            ("--add-dir", true),
+            ("--mcp-config", true),
+            ("--plugin-dir", true),
+        ],
+        _ => &[],
+    };
+    let mut out = Vec::with_capacity(args.len());
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        let (name, inline_value) = match arg.split_once('=') {
+            Some((name, value)) if name.starts_with('-') => (name, Some(value)),
+            _ => (arg.as_str(), None),
+        };
+        if let Some((_, takes_value)) = unsafe_flags.iter().find(|(flag, _)| *flag == name) {
+            if *takes_value && inline_value.is_none() {
+                iter.next();
+            }
+            continue;
+        }
+        // Codex `-c key=value` overrides that reach the sandbox or its network.
+        if agent == AgentKind::Codex && (name == "-c" || name == "--config") {
+            let value = match inline_value {
+                Some(value) => Some(value.to_string()),
+                None => iter.next().cloned(),
+            };
+            let lower = value.as_deref().unwrap_or_default().to_lowercase();
+            if !(lower.contains("sandbox") || lower.contains("network") || lower.contains("approval")) {
+                out.push(arg.clone());
+                if inline_value.is_none() {
+                    if let Some(value) = value {
+                        out.push(value);
+                    }
+                }
+            }
+            continue;
+        }
+        out.push(arg.clone());
+    }
+    out
 }
 
 /// Claude in the managed workspace has every permission, so the project's own settings (hooks,
@@ -1018,6 +1080,14 @@ mod tests {
                 "안녕".to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn managed_workspace_drops_saved_options_that_undo_protection() {
+        let saved = ["-s", "danger-full-access", "--model", "x", "-c", "sandbox_workspace_write.network_access=true", "-c", "model_reasoning_effort=high"].map(String::from);
+        assert_eq!(strip_unsafe_managed_args(AgentKind::Codex, &saved), ["--model", "x", "-c", "model_reasoning_effort=high"].map(String::from));
+        let saved = ["--settings", "evil.json", "--permission-mode=default", "--add-dir", "C:/", "--verbose"].map(String::from);
+        assert_eq!(strip_unsafe_managed_args(AgentKind::Claude, &saved), ["--verbose".to_string()]);
     }
 
     #[test]

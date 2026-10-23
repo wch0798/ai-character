@@ -6,6 +6,9 @@ pub fn install(app: &mut App) -> tauri::Result<()> {
     let show = MenuItem::with_id(app, "show", "캐릭터 보이기", true, None::<&str>)?;
     let hide = MenuItem::with_id(app, "hide", "캐릭터 숨기기", true, None::<&str>)?;
     let chat = MenuItem::with_id(app, "chat", "채팅 열기", true, None::<&str>)?;
+    let new_chat = MenuItem::with_id(app, "new-chat", "새 채팅", true, None::<&str>)?;
+    let stop = MenuItem::with_id(app, "stop", "답변 중지", true, None::<&str>)?;
+    let reset_position = MenuItem::with_id(app, "reset-position", "캐릭터 위치 초기화", true, None::<&str>)?;
     let settings = MenuItem::with_id(app, "settings", "설정", true, None::<&str>)?;
     let setup_web = MenuItem::with_id(app, "setup_web", "처음 설정 (웹)", true, None::<&str>)?;
     let usage = MenuItem::with_id(app, "usage", "사용량", true, None::<&str>)?;
@@ -16,7 +19,8 @@ pub fn install(app: &mut App) -> tauri::Result<()> {
     let menu = Menu::with_items(
         app,
         &[
-            &show, &hide, &sep, &chat, &settings, &setup_web, &usage, &automation, &sep, &restart, &quit,
+            &show, &hide, &reset_position, &sep, &chat, &new_chat, &stop, &sep, &settings, &setup_web, &usage, &automation, &sep, &restart,
+            &quit,
         ],
     )?;
 
@@ -46,10 +50,15 @@ pub fn install(app: &mut App) -> tauri::Result<()> {
                     eprintln!("{error}");
                 }
             }
-            "chat" | "settings" | "usage" | "automation" => {
+            "chat" | "settings" | "usage" | "automation" | "new-chat" | "stop" | "reset-position" => {
                 show_main(app);
                 if let Some(window) = app.get_webview_window("main") {
-                    let _ = window.emit("tray-action", event.id().as_ref());
+                    let id = event.id().as_ref();
+                    let _ = window.emit("tray-action", id);
+                    // The newer items also get their own event (ai-character:tray-stop, …).
+                    if matches!(id, "new-chat" | "stop" | "reset-position") {
+                        let _ = window.emit(&format!("ai-character:tray-{id}"), ());
+                    }
                 }
             }
             _ => {}

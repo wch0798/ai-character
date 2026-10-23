@@ -1,6 +1,7 @@
 import { personaInstruction } from "./persona";
 import {
   askAgentCompat,
+  chatModelChoice,
   cancelAgent,
   confirmSensitiveAgentAccess,
   detectAgent,
@@ -1604,7 +1605,7 @@ function composeDirectPrompt(
 ): string {
   const role = mode === "facts"
     ? "You answer a factual question. Use the research block when it is present. Do not invent numbers, dates, or prices. Say what you could not verify."
-    : "You are ChatGPT, answering this chat. Answer the user directly in their language.";
+    : "You are the assistant in the AI Character desktop app, answering this chat. Answer the user directly in their language.";
   return [
     role,
     personaInstruction(),
@@ -1616,6 +1617,13 @@ function composeDirectPrompt(
     prompt,
   ].filter(Boolean).join("\n\n");
 }
+
+const CHAT_AGENT_NAMES: Record<AgentKind, string> = {
+  claude: "Claude",
+  codex: "ChatGPT(Codex)",
+  cursor: "Cursor",
+  antigravity: "Antigravity",
+};
 
 async function answerDirectly(
   prompt: string,
@@ -1641,6 +1649,10 @@ async function answerDirectly(
     const message = error instanceof Error ? error.message : String(error);
     return message.includes("취소") || message.includes("민감 파일");
   };
+  // The program picked in the chat menu for this conversation (else 기본 프로그램 in settings)
+  // answers first; its name is used in notices.
+  const primary = chatModelChoice()?.agent ?? preferences.defaultAgent;
+  const primaryName = CHAT_AGENT_NAMES[primary];
 
   if (mode === "facts") {
     const free = await tryAutomaticProviders(freeApis, composed, { ...context, streamId }, "정보 조사");
@@ -1648,21 +1660,21 @@ async function answerDirectly(
       return free.response;
     }
     try {
-      const text = await askAgentCompat("codex", composed, conversationId);
-      pendingChatNotice = "무료 AI로 정보를 확인하지 못해 ChatGPT가 답했습니다.";
+      const text = await askAgentCompat(primary, composed, conversationId);
+      pendingChatNotice = `무료 AI로 정보를 확인하지 못해 ${primaryName}가 답했습니다.`;
       return withChatNotice(text);
     } catch (error) {
       if (blocked(error)) {
         throw error instanceof Error ? error : new Error(String(error));
       }
       if (isQuotaOrLimitError(error)) {
-        pendingChatNotice = "ChatGPT(Codex) 사용량을 다 썼습니다.";
+        pendingChatNotice = `${primaryName} 사용량을 다 썼습니다.`;
       }
     }
     if (!pendingChatNotice) {
-      pendingChatNotice = "무료 AI와 ChatGPT로 정보를 확인하지 못했습니다.";
+      pendingChatNotice = `무료 AI와 ${primaryName}로 정보를 확인하지 못했습니다.`;
     }
-    const paid = await tryAutomaticProviders(paidApis, composed, context, "무료 AI와 ChatGPT를 쓸 수 없어 유료 API로 답변");
+    const paid = await tryAutomaticProviders(paidApis, composed, context, `무료 AI와 ${primaryName}를 쓸 수 없어 유료 API로 답변`);
     if (paid) {
       return withChatNotice(paid.response);
     }
@@ -1670,18 +1682,19 @@ async function answerDirectly(
   }
 
   try {
-    return await askAgentCompat("codex", composed, conversationId);
+    return await askAgentCompat(primary, composed, conversationId);
   } catch (error) {
     if (blocked(error)) {
       throw error instanceof Error ? error : new Error(error instanceof Error ? error.message : String(error));
     }
+    const backup: AgentKind = primary === "claude" ? "codex" : "claude";
     if (needsLocalFiles(prompt)) {
       // Web-only AIs cannot see the work folder and would only ask the user to paste files,
-      // so a file question goes to Claude, which also runs inside the folder.
-      const codexReason = isQuotaOrLimitError(error) ? "사용량을 다 썼습니다" : "응답하지 못했습니다";
+      // so a file question goes to the other program that runs inside the folder.
+      const primaryReason = isQuotaOrLimitError(error) ? "사용량을 다 썼습니다" : "응답하지 못했습니다";
       try {
-        const text = await askAgentCompat("claude", composed, conversationId);
-        pendingChatNotice = `ChatGPT(Codex)가 ${codexReason}. 이 답은 Claude가 작업 폴더를 보고 이어받았습니다.`;
+        const text = await askAgentCompat(backup, composed, conversationId);
+        pendingChatNotice = `${primaryName}가 ${primaryReason}. 이 답은 ${CHAT_AGENT_NAMES[backup]}가 작업 폴더를 보고 이어받았습니다.`;
         return withChatNotice(text);
       } catch (claudeError) {
         if (blocked(claudeError)) {
@@ -1691,16 +1704,16 @@ async function answerDirectly(
         throw new Error(
           `작업 폴더를 볼 수 있는 AI가 지금 답하지 못해 폴더 내용을 확인하지 못했습니다.
 ` +
-          `· ChatGPT(Codex): ${detail(error)}
-· Claude: ${detail(claudeError)}
+          `· ${primaryName}: ${detail(error)}
+· ${CHAT_AGENT_NAMES[backup]}: ${detail(claudeError)}
 ` +
           "설정 → 프로그램 · 로그인에서 두 프로그램의 로그인 상태를 확인해 주세요."
         );
       }
     }
     pendingChatNotice = isQuotaOrLimitError(error)
-      ? "ChatGPT(Codex) 사용량을 다 썼습니다. 이 답은 무료 AI가 이어받았습니다."
-      : "ChatGPT(Codex)로 답하지 못했습니다. 이 답은 무료 AI가 이어받았습니다.";
+      ? `${primaryName} 사용량을 다 썼습니다. 이 답은 무료 AI가 이어받았습니다.`
+      : `${primaryName}로 답하지 못했습니다. 이 답은 무료 AI가 이어받았습니다.`;
     const free = await tryAutomaticProviders(
       freeApis,
       composed,
@@ -1714,13 +1727,13 @@ async function answerDirectly(
       paidApis,
       composed,
       context,
-      "ChatGPT와 무료 AI를 쓸 수 없어 유료 API로 답변"
+      `${primaryName}와 무료 AI를 쓸 수 없어 유료 API로 답변`
     );
     if (paid) {
       return withChatNotice(paid.response);
     }
     throw new Error(isQuotaOrLimitError(error)
-      ? "ChatGPT(Codex) 사용량을 다 썼고, 무료 AI도 지금은 답하지 못합니다. 한도가 초기화된 뒤 다시 보내세요."
+      ? `${primaryName} 사용량을 다 썼고, 무료 AI도 지금은 답하지 못합니다. 한도가 초기화된 뒤 다시 보내세요.`
       : (error instanceof Error ? error.message : String(error)));
   }
 }

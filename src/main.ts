@@ -9,11 +9,14 @@ import { initializeAgentRuntimeUi } from "./agent-runtime-ui";
 import { initializeChatProgressUi } from "./chat-progress";
 import { openWorkLogWindow } from "./work-log-window";
 import { renderMarkdown } from "./chat-markdown";
-import { additionsPrompt, mergedPrompt, renderWelcome, setupComposer, setupScrollFollow, type Composer, type ScrollFollower } from "./chat-composer";
+import { SHORTCUT_HELP, additionsPrompt, mergedPrompt, renderWelcome, setupComposer, setupScrollFollow, type Composer, type ScrollFollower } from "./chat-composer";
 import { classifyRequestIntent } from "./request-intent";
 import { formatAnswerSource, lookupAnswerSource } from "./answer-source";
 import { friendlyChatError } from "./chat-errors";
 import { SPEAKING_EVENT, setupVoiceButtons, speakAnswer, stopSpeaking } from "./voice";
+import { choiceFor, setupChatModelMenu } from "./chat-model-menu";
+import { rectsFromBoxes, silhouetteFits, visiblePartBoxes } from "./character-silhouette";
+import { setChatModelChoice } from "./agent-client";
 import { HISTORY_SAVE_FAILED_EVENT } from "./chat-history";
 import { initializeAutomationPanel } from "./automation-panel-ui";
 import { notificationPreview, notifyDesktop, shouldNotifyCompletion } from "./alerts-client";
@@ -60,8 +63,11 @@ import {
   readStoredWindowPosition,
   windowPositionKeepingCharacter,
 } from "./window-layout";
+import "pretendard/dist/web/variable/pretendardvariable-dynamic-subset.css";
 import "./styles.css";
 import "./chat-extras.css";
+// Last, so the light colors win over the dark design when <html data-theme="light">.
+import "./theme-light.css";
 
 import {
   Application,
@@ -77,7 +83,9 @@ import {
 } from "@laplace.live/pixijs-live2d";
 
 import {
+  availableMonitors,
   currentMonitor,
+  primaryMonitor,
   getCurrentWindow,
   LogicalSize,
   PhysicalPosition,
@@ -150,6 +158,8 @@ import {
 } from "@tauri-apps/plugin-clipboard-manager";
 
 import {
+  CONVERSATION_SHOWN_EVENT,
+  isRenderingHistory,
   setupChatHistory,
   type ChatHistoryManager,
 } from "./chat-history-ui";
@@ -188,8 +198,13 @@ async function startLive2D() {
   void getCurrentWebview()
     .setBackgroundColor({ red: 0, green: 0, blue: 0, alpha: 0 })
     .catch(() => undefined);
-  // 외장 디스크 TCC 권한 대화에 막히지 않도록 UI 상태 복원은 백그라운드에서 처리
-  void initializeSqliteStateMirror();
+  // Restore saved UI state before the chat reads it, or the restore can replace the history under
+  // a running chat. Capped so a slow disk (macOS TCC prompt on external volumes) never blocks
+  // start-up.
+  await Promise.race([
+    initializeSqliteStateMirror(),
+    new Promise((resolve) => window.setTimeout(resolve, 1_500)),
+  ]);
   initializeOptionalUi("Agent 상태", () => { initializeAgentRuntimeUi(); });
   initializeOptionalUi("진행 표시", () => { initializeChatProgressUi(); });
   initializeOptionalUi("설정", () => { initializeSettingsUi(); });
@@ -334,8 +349,43 @@ async function startLive2D() {
     }
     if (action === "automation") {
       window.dispatchEvent(new Event("ai-character:open-automation"));
+      return;
+    }
+    if (action === "new-chat") {
+      setChatOpen(true);
+      document.querySelector<HTMLButtonElement>("#new-chat-button")?.click();
+      return;
+    }
+    if (action === "stop") {
+      window.dispatchEvent(new Event("ai-character:stop-active-work"));
+      return;
+    }
+    if (action === "reset-position") {
+      void resetCharacterPosition();
     }
   }).catch(() => undefined);
+
+  /** Tray → 캐릭터 위치 초기화: back to the primary monitor's lower right, e.g. after the
+   * character ended up off-screen or on a monitor that was unplugged. */
+  async function resetCharacterPosition(): Promise<void> {
+    try {
+      localStorage.removeItem(WINDOW_POSITION_KEY);
+      const appWindow = getCurrentWindow();
+      const [monitor, size] = await Promise.all([primaryMonitor(), appWindow.outerSize()]);
+      if (!monitor) return;
+      const margin = Math.round(40 * monitor.scaleFactor);
+      await appWindow.setPosition(
+        new PhysicalPosition(
+          monitor.position.x + Math.max(0, monitor.size.width - size.width - margin),
+          monitor.position.y + Math.max(0, monitor.size.height - size.height - margin)
+        )
+      );
+      await appWindow.show();
+      flashStatus("캐릭터를 화면 오른쪽 아래로 옮겼습니다");
+    } catch (error) {
+      flashStatus(`캐릭터 위치를 옮기지 못했습니다: ${error instanceof Error ? error.message : String(error)}`, "error", 3600);
+    }
+  }
 
   document
     .querySelector("#chat-close-button")
@@ -2218,10 +2268,22 @@ async function startLive2D() {
       return;
     }
     try {
-      const [monitor, outerSize] = await Promise.all([
+      const [monitors, current, outerSize] = await Promise.all([
+        availableMonitors().catch(() => []),
         currentMonitor(),
         tauriWindow.outerSize(),
       ]);
+      // At start the window is on the primary monitor; clamp to the monitor the saved spot is
+      // on instead, so a character left on a second screen goes back there. That monitor gone
+      // (unplugged): the current one.
+      const monitor =
+        monitors.find(
+          (item) =>
+            stored.x >= item.position.x &&
+            stored.x < item.position.x + item.size.width &&
+            stored.y >= item.position.y &&
+            stored.y < item.position.y + item.size.height
+        ) ?? current;
       let next = stored;
       if (monitor) {
         next = clampWindowPositionToMonitor(
@@ -2421,12 +2483,22 @@ async function startLive2D() {
             window.dispatchEvent(new Event("ai-character:stop-active-work"));
           },
           onAdd: (text) => restartWithAddition(text),
+          onNotice: (text) => flashStatus(text, "error", 3600),
         })
       : null;
 
   if (chatForm && chatInput) {
     setupVoiceButtons(chatForm, chatInput, (text) => flashStatus(text, "error", 4200));
   }
+  setupChatModelMenu((text) => flashStatus(text, "info", 2600));
+
+  // F1: every chat shortcut, shown in the chat (not saved to the conversation).
+  document.addEventListener("keydown", (event) => {
+    if (event.key !== "F1") return;
+    event.preventDefault();
+    addMessage(SHORTCUT_HELP, "assistant");
+    scrollFollower?.follow(true);
+  });
 
   const scrollFollower: ScrollFollower | null =
     messages && chatForm ? setupScrollFollow(messages, chatForm) : null;
@@ -2553,7 +2625,10 @@ async function startLive2D() {
       bubble.append(content, actions);
     }
     messages.appendChild(bubble);
-    scrollFollower?.follow(type === "user");
+    // A saved conversation scrolls once after it is drawn, not once per message.
+    if (!isRenderingHistory()) {
+      scrollFollower?.follow(type === "user");
+    }
   }
 
   // A CRADLE run's answer arrives twice (session event and awaited result); post it once per
@@ -2573,6 +2648,10 @@ async function startLive2D() {
     lastAssistantReply = clean;
     const target = requestConversationId ?? chatHistory?.getActiveId();
     const shown = target && chatHistory ? chatHistory.appendTo(target, "assistant", clean, source) : true;
+    if (shown === null) {
+      flashStatus("답을 받았지만 그 대화가 삭제되어 저장하지 못했습니다", "error", 4200);
+      return;
+    }
     if (shown) {
       addMessage(clean, "assistant", Date.now(), source);
       speakAnswer(clean);
@@ -2708,15 +2787,31 @@ async function startLive2D() {
     characterHitLayer.style.right = "auto";
     characterHitLayer.style.bottom = "auto";
   };
+  // The character's outline (see character-silhouette.ts), refreshed a few times a second; the
+  // old single box covered empty space beside a small character and caught clicks meant for
+  // the window behind.
+  let silhouette: ReturnType<typeof rectsFromBoxes> = [];
+  let silhouetteAt = 0;
+  const refreshSilhouette = () => {
+    const now = performance.now();
+    if (now - silhouetteAt < 300) return;
+    silhouetteAt = now;
+    silhouette = rectsFromBoxes(visiblePartBoxes(model));
+  };
   const collectClickThroughRegions = () => {
-    const regions = [
+    refreshSilhouette();
+    // Safety net: an outline that doesn't sit inside the old box would leave the character
+    // unclickable, so fall back to the box.
+    const box = getCharacterHitBox();
+    const characterRects = silhouetteFits(silhouette, box) ? silhouette : [box];
+    const regions = characterRects.map((rect) =>
       toScreenRegion(
         clickThroughWindowPosition.x,
         clickThroughWindowPosition.y,
         clickThroughScaleFactor,
-        getCharacterHitBox()
-      ),
-    ];
+        rect
+      )
+    );
     const overlaySelectors = [
       "#chat-panel.open",
       "#ai-settings-panel",
@@ -2725,6 +2820,8 @@ async function startLive2D() {
       "#work-log-overlay",
       "#rightclick-test-menu",
       "#chat-history-drawer",
+      "#chat-model-menu",
+      "#chat-size-menu",
     ];
     for (const selector of overlaySelectors) {
       const el = document.querySelector<HTMLElement>(selector);
@@ -3096,6 +3193,89 @@ async function startLive2D() {
         window.addEventListener("pointercancel", onUp, true);
       });
     }
+  }
+
+  // 작게 · 중간 · 크게 next to ×: the same result as dragging the edge (size kept, app window
+  // refitted), for people who don't find the edge.
+  const CHAT_SIZE_PRESETS: Array<{ label: string; title: string; width: number; height: number }> = [
+    { label: "작게", title: "채팅창을 작게", width: 420, height: 480 },
+    { label: "중간", title: "채팅창을 중간 크기로", width: 640, height: 640 },
+    { label: "크게", title: "채팅창을 크게 (화면에 맞춰 최대)", width: MAX_CHAT_WIDTH, height: MAX_CHAT_HEIGHT },
+  ];
+  const closeButton = document.querySelector<HTMLButtonElement>("#chat-close-button");
+  if (chatPanel && closeButton) {
+    // One icon button next to ×, with the three sizes in a small menu: three labelled buttons
+    // did not fit in the toolbar of the small chat window.
+    const sizeButton = document.createElement("button");
+    sizeButton.type = "button";
+    sizeButton.id = "chat-size-button";
+    sizeButton.textContent = "⤢";
+    sizeButton.title = "채팅창 크기 (작게 · 중간 · 크게)";
+    sizeButton.setAttribute("aria-label", "채팅창 크기");
+    sizeButton.setAttribute("aria-haspopup", "menu");
+    const sizeMenu = document.createElement("div");
+    sizeMenu.id = "chat-size-menu";
+    sizeMenu.setAttribute("role", "menu");
+    sizeMenu.hidden = true;
+    chatPanel.append(sizeMenu);
+
+    const nearestPreset = () =>
+      CHAT_SIZE_PRESETS.reduce((best, preset) =>
+        Math.abs(preset.width - chatPanelWidth) + Math.abs(preset.height - chatPanelHeight) <
+        Math.abs(best.width - chatPanelWidth) + Math.abs(best.height - chatPanelHeight)
+          ? preset
+          : best
+      );
+    const closeSizeMenu = () => {
+      sizeMenu.hidden = true;
+      sizeButton.classList.remove("open");
+    };
+    const applyPreset = (preset: (typeof CHAT_SIZE_PRESETS)[number]) => {
+      // Not limited by the current window yet (it is about to be resized for this size).
+      applyChatPanelSize(preset.width, preset.height, false);
+      persistChatPanelSize();
+      void fitChatModeWindow().then(() => {
+        // The window grew or shrank: fit the panel to it once more (크게 = as big as fits).
+        applyChatPanelSize(preset.width, preset.height);
+        persistChatPanelSize();
+        pushNativeClickThrough(true);
+      });
+    };
+    sizeButton.addEventListener("click", (event) => {
+      event.stopPropagation();
+      if (!sizeMenu.hidden) {
+        closeSizeMenu();
+        return;
+      }
+      const current = nearestPreset();
+      sizeMenu.replaceChildren(
+        ...CHAT_SIZE_PRESETS.map((preset) => {
+          const item = document.createElement("button");
+          item.type = "button";
+          item.setAttribute("role", "menuitemradio");
+          item.setAttribute("aria-checked", String(preset === current));
+          item.textContent = preset.label;
+          item.title = preset.title;
+          item.addEventListener("click", (clickEvent) => {
+            clickEvent.stopPropagation();
+            closeSizeMenu();
+            applyPreset(preset);
+          });
+          return item;
+        })
+      );
+      const button = sizeButton.getBoundingClientRect();
+      const panel = chatPanel.getBoundingClientRect();
+      sizeMenu.style.top = `${button.bottom - panel.top + 6}px`;
+      sizeMenu.style.right = `${Math.max(8, panel.right - button.right)}px`;
+      sizeMenu.hidden = false;
+      sizeButton.classList.add("open");
+    });
+    sizeMenu.addEventListener("pointerdown", (event) => event.stopPropagation());
+    document.addEventListener("pointerdown", () => {
+      if (!sizeMenu.hidden) closeSizeMenu();
+    });
+    closeButton.before(sizeButton);
   }
 
 
@@ -3490,6 +3670,47 @@ async function startLive2D() {
     }
   }
 
+  // Notes and questions typed while conversation X ran belong to X. If the user is looking at
+  // another conversation when X finishes, they wait until X is on screen again.
+  let waitingFor: string | null = null;
+
+  /** After a request: notes added to it go out first, together, as its follow-up; then
+   * separate questions, one at a time. */
+  function sendWaitingOrDefer(conversationId: string | null): void {
+    if (conversationId && conversationId !== chatHistory?.getActiveId()) {
+      waitingFor = conversationId;
+      flashStatus("다른 대화를 보고 있어서, 기다리던 질문은 원래 대화로 돌아가면 보냅니다", "info", 4200);
+      return;
+    }
+    waitingFor = null;
+    const additions = composer?.takeAdditions() ?? [];
+    const next = additions.length ? undefined : composer?.takeQueued();
+    if (additions.length) {
+      window.setTimeout(() => sendWithPrompt(additions.join("\n"), additionsPrompt(additions)), 0);
+    } else if (next) {
+      window.setTimeout(() => sendWithPrompt(next, next), 0);
+    }
+  }
+
+  window.addEventListener(CONVERSATION_SHOWN_EVENT, (event: Event) => {
+    const id = (event as CustomEvent<{ id: string }>).detail?.id;
+    if (runningRequest && requestConversationId) {
+      // The running request's live answer and progress row show only in its own conversation.
+      if (id === requestConversationId) {
+        liveReply?.repaint();
+        if (!runningRequest.answering) {
+          window.dispatchEvent(new Event("ai-character:chat-progress-start"));
+        }
+      } else {
+        window.dispatchEvent(new Event("ai-character:chat-progress-hide"));
+      }
+      return;
+    }
+    if (waitingFor && id === waitingFor && !composer?.isBusy()) {
+      sendWaitingOrDefer(id);
+    }
+  });
+
   /**
    * A note typed while a task runs. Before any answer has appeared (and when no files are being
    * changed) the task restarts at once with the note folded in; otherwise it waits and follows up.
@@ -3607,6 +3828,9 @@ async function startLive2D() {
         userDisplayText
       );
       requestConversationId = chatHistory?.getActiveId() ?? null;
+      const thisConversationId = requestConversationId;
+      // The program and model picked in the chat menu for this conversation.
+      setChatModelChoice(choiceFor(thisConversationId));
       lastAssistantReply = "";
 
       const requestPrompt =
@@ -3640,6 +3864,7 @@ async function startLive2D() {
               window.dispatchEvent(new Event("ai-character:chat-progress-hide"));
             },
             onUpdate: () => scrollFollower?.follow(false),
+            isVisible: requestConversationShown,
           })
         : null;
       liveReply = live;
@@ -3715,7 +3940,10 @@ async function startLive2D() {
             : String(error);
 
         const failedText = text ?? "";
-        composer?.restoreText(failedText);
+        // Back into the input only if the user is still on the conversation it came from.
+        if (requestConversationShown()) {
+          composer?.restoreText(failedText);
+        }
         retryLastRequest = () => {
           composer?.fill(failedText);
           chatForm?.requestSubmit();
@@ -3752,15 +3980,7 @@ async function startLive2D() {
         if (!isStopped()) {
           composer?.setBusy(false);
           chatInput?.focus();
-          // Notes added to this task go out first, together, as its follow-up; then separate
-          // questions, one at a time.
-          const additions = composer?.takeAdditions() ?? [];
-          const next = additions.length ? undefined : composer?.takeQueued();
-          if (additions.length) {
-            window.setTimeout(() => sendWithPrompt(additions.join("\n"), additionsPrompt(additions)), 0);
-          } else if (next) {
-            window.setTimeout(() => sendWithPrompt(next, next), 0);
-          }
+          sendWaitingOrDefer(thisConversationId);
         }
       }
     }

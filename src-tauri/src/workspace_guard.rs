@@ -42,7 +42,43 @@ const SHELL_DENY: &[&str] = &[
     "set-itemproperty",
     "-encodedcommand",
     "frombase64string",
+    // The app's own data: the saved keys file and the folder it lives in.
+    "keys.env",
+    "roaming/ai-character",
+    "roaming\\ai-character",
+    "application support/ai-character",
+    // Reading the environment or special folders builds paths this check can't see.
+    "process.env",
+    "os.environ",
+    "getenv",
+    "[environment]::",
+    "getfolderpath",
+    // cmd.exe can change drive and folder (`C: & cd \`) without writing a full path.
+    "cmd //c",
+    "cmd.exe //c",
+    "cmd /c",
+    "cmd.exe /c",
+    "cmd /k",
+    "cmd.exe /k",
+    // The app runs git in this folder; hooks or fsmonitor there would run outside this check.
+    ".git/hooks",
+    ".git\\hooks",
+    ".git/config",
+    ".git\\config",
+    "core.hookspath",
+    "core.fsmonitor",
+    "git config",
 ];
+
+/// Claude tools that write files; none of them may touch a `.git` folder.
+const WRITE_TOOLS: &[&str] = &["Write", "Edit", "MultiEdit", "NotebookEdit"];
+
+/// `\\server\share` or `//server/share`. Checked before anything touches the file system,
+/// because even looking at such a path makes Windows connect to that server.
+pub fn is_network_path(raw: &str) -> bool {
+    let raw = raw.trim().trim_matches(|c| c == '"' || c == '\'');
+    raw.starts_with(r"\\") || (raw.starts_with("//") && !raw.starts_with("///"))
+}
 
 /// Lexically resolves `raw` against `base`: Git Bash `/c/...`, `~`, `.` and `..` included.
 pub fn resolve(base: &Path, raw: &str, home: Option<&Path>) -> PathBuf {
@@ -135,9 +171,15 @@ pub fn check_file_tool(tool: &str, tool_input: &serde_json::Value, cwd: &Path, w
         if raw.trim().is_empty() {
             continue;
         }
+        if is_network_path(raw) {
+            return Some(outside_message(raw));
+        }
         let path = resolve(cwd, raw, home);
         if !allowed(&path, &roots) {
             return Some(outside_message(raw));
+        }
+        if WRITE_TOOLS.contains(&tool) && path.components().any(|part| part.as_os_str().eq_ignore_ascii_case(".git")) {
+            return Some(git_message());
         }
     }
     // Glob's `pattern` and Grep's `glob` can carry a path of their own ("C:/Users/**/*.env",
@@ -156,11 +198,65 @@ pub fn check_file_tool(tool: &str, tool_input: &serde_json::Value, cwd: &Path, w
     };
     if let Some(raw) = glob_field.and_then(|field| tool_input.get(field)).and_then(serde_json::Value::as_str) {
         let folder = pattern_folder(raw);
-        if !folder.is_empty() && !allowed(&resolve(&base, &folder, home), &roots) {
+        if is_network_path(&folder) || (!folder.is_empty() && !allowed(&resolve(&base, &folder, home), &roots)) {
             return Some(outside_message(raw));
         }
     }
     None
+}
+
+/// Words in an MCP tool name that change something on GitHub.
+const GITHUB_WRITE_WORDS: &[&str] = &["create", "update", "delete", "push", "merge", "fork", "write", "comment", "close", "add_", "remove"];
+
+/// MCP tools (Playwright, GitHub): GitHub changes are left to the user, and any file path or
+/// `file://` address in the arguments must stay inside the workspace.
+pub fn check_mcp_tool(tool: &str, tool_input: &serde_json::Value, cwd: &Path, workspace: &Path, temp: &Path, home: Option<&Path>) -> Option<String> {
+    let name = tool.to_lowercase();
+    if name.contains("github") && GITHUB_WRITE_WORDS.iter().any(|word| name.contains(word)) {
+        return Some(format!(
+            "AI-Character 안전 규칙: GitHub에 바로 쓰는 작업({tool})은 하지 않습니다. 바꿀 내용을 결과에 적어 사용자에게 직접 하도록 요청하세요."
+        ));
+    }
+    let roots = [workspace.to_path_buf(), temp.to_path_buf()];
+    let mut strings = Vec::new();
+    collect_strings(tool_input, &mut strings);
+    for raw in strings {
+        let text = raw.trim();
+        let path_text = match file_url_path(text) {
+            Some(path) => path,
+            None if is_network_path(text) || starts_like_path(text) => text.to_string(),
+            None => continue,
+        };
+        if is_network_path(&path_text) || !allowed(&resolve(cwd, &path_text, home), &roots) {
+            return Some(outside_message(text));
+        }
+    }
+    None
+}
+
+fn collect_strings<'a>(value: &'a serde_json::Value, out: &mut Vec<&'a str>) {
+    match value {
+        serde_json::Value::String(text) => out.push(text),
+        serde_json::Value::Array(items) => items.iter().for_each(|item| collect_strings(item, out)),
+        serde_json::Value::Object(map) => map.values().for_each(|item| collect_strings(item, out)),
+        _ => {}
+    }
+}
+
+/// `file:///C:/x/y` → `C:/x/y`; `file://server/share` → `//server/share` (a network path).
+fn file_url_path(text: &str) -> Option<String> {
+    if !text.get(..5)?.eq_ignore_ascii_case("file:") {
+        return None;
+    }
+    let decoded = text[5..].replace("%20", " ");
+    Some(match decoded.strip_prefix("///") {
+        Some(local) => local.to_string(),
+        None => decoded.strip_prefix("//").map_or(decoded.clone(), |host| format!("//{host}")),
+    })
+}
+
+fn git_message() -> String {
+    "AI-Character 안전 규칙: .git 폴더(훅·설정)는 고칠 수 없습니다. 코드 파일만 고치세요.".to_string()
 }
 
 /// The folder a glob starts from: everything before the first segment with a wildcard.
@@ -214,11 +310,16 @@ fn path_like_words(command: &str) -> Vec<String> {
 
 fn starts_like_path(word: &str) -> bool {
     let bytes = word.as_bytes();
-    let drive = bytes.len() >= 3 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && (bytes[2] == b'\\' || bytes[2] == b'/');
+    // `C:\x`, `C:/x`, and also a bare `C:` or drive-relative `C:Users` (cmd changes drive so).
+    let drive = bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && !word.contains("://");
+    // `\Users\me` is rooted on the current drive; `\n` alone is an escape, not a path.
+    let rooted = word == r"\"
+        || (bytes.len() > 2 && bytes[0] == b'\\' && bytes[1].is_ascii_alphabetic() && word[1..].contains(['\\', '/']));
     drive
+        || rooted
         || word.starts_with('~')
         || word.starts_with("..")
-        || word.starts_with("\\\\")
+        || is_network_path(word)
         || git_bash_drive(word.split_whitespace().next().unwrap_or_default()).is_some()
 }
 
@@ -234,8 +335,8 @@ pub fn check_shell(command: &str, cwd: &Path, workspace: &Path, temp: &Path, hom
     let mut roots = vec![workspace.to_path_buf(), temp.to_path_buf()];
     roots.extend(extra_roots.iter().cloned());
     for word in path_like_words(command) {
-        // Network paths (\\server\share) are always outside.
-        if word.starts_with("\\\\") || !allowed(&resolve(cwd, &word, home), &roots) {
+        // Network paths (\\server\share) are always outside, and never looked at.
+        if is_network_path(&word) || !allowed(&resolve(cwd, &word, home), &roots) {
             return Some(outside_message(&word));
         }
     }
@@ -291,6 +392,34 @@ mod tests {
         assert!(check("cp x.bat /c/Users/me/AppData/Roaming/x.bat").is_some());
         assert!(check("echo hi > $env:APPDATA\\x.txt").is_some());
         assert!(check("schtasks /create /tn x /tr calc").is_some());
+    }
+
+    #[test]
+    fn keys_env_git_and_network_paths_are_refused() {
+        let (ws, tmp, home) = dirs();
+        let shell = |cmd: &str| check_shell(cmd, &ws, &ws, &tmp, Some(&home), &[]);
+        assert!(shell("cat keys.env").is_some());
+        assert!(shell(r#"node -e "console.log(process.env.APPDATA)""#).is_some());
+        assert!(shell(r#"cmd //c "C: & cd \ & type Users\me\x.txt""#).is_some());
+        assert!(shell("dir C:").is_some());
+        assert!(shell("echo x > .git/hooks/post-checkout").is_some());
+        assert!(shell("cat //attacker/share/x").is_some());
+        assert_eq!(shell("npm run test:unit"), None);
+        let file = |tool: &str, input: serde_json::Value| check_file_tool(tool, &input, &ws, &ws, &tmp, Some(&home));
+        assert!(file("Write", json!({ "file_path": ".git/config" })).is_some());
+        assert_eq!(file("Read", json!({ "file_path": ".git/HEAD" })), None);
+        assert!(file("Read", json!({ "file_path": r"\\attacker\share\x" })).is_some());
+    }
+
+    #[test]
+    fn mcp_tools_stay_inside_and_leave_github_writes_to_the_user() {
+        let (ws, tmp, home) = dirs();
+        let mcp = |tool: &str, input: serde_json::Value| check_mcp_tool(tool, &input, &ws, &ws, &tmp, Some(&home));
+        assert!(mcp("mcp__github__create_pull_request", json!({ "title": "x" })).is_some());
+        assert_eq!(mcp("mcp__github__get_file_contents", json!({ "path": "README.md" })), None);
+        assert!(mcp("mcp__playwright__browser_navigate", json!({ "url": "file:///C:/Users/me/x.html" })).is_some());
+        assert!(mcp("mcp__playwright__browser_file_upload", json!({ "paths": ["C:/Users/me/secret.txt"] })).is_some());
+        assert_eq!(mcp("mcp__playwright__browser_navigate", json!({ "url": "https://example.com" })), None);
     }
 
     #[test]

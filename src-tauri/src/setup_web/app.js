@@ -669,7 +669,7 @@ function usingNow() {
 
 function workOrder() {
   const items = [
-    ["대화", "ChatGPT 구독이 답합니다."],
+    ["대화", "'기본 프로그램'으로 고른 AI(처음엔 Claude)가 답합니다."],
     ["정보 찾기", "무료 Gemini가 찾습니다."],
     ["파일 고치기", "Claude가 계획하고 고칩니다. Cursor도 고칠 수 있습니다."],
   ];
@@ -892,7 +892,7 @@ function sectionKeys() {
     })
   );
   return [
-    ...header("keys", "AI 키 연결", "정보 찾기에 쓰는 무료 Gemini 키만 넣으면 됩니다. 대화는 ChatGPT 로그인, 파일 고치기는 Claude 로그인이 담당이라 여기 키와 별개입니다."),
+    ...header("keys", "AI 키 연결", "정보 찾기에 쓰는 무료 Gemini 키만 넣으면 됩니다. 대화와 파일 고치기는 Claude·ChatGPT(Codex) 로그인이 담당이라 여기 키와 별개입니다."),
     h("div", { class: "card" }, h("h3", { text: "Gemini (이것만 넣으면 됩니다)" }), ...free.filter((k) => k.name === "GEMINI_API_KEY").map(keyRow)),
     h(
       "details",
@@ -1031,7 +1031,7 @@ function sectionBehavior() {
     explain("질문하면 앱 안에서 무슨 일이 일어나나요?", [
       "1) 앱이 질문을 보고 일반 대화인지, 조사가 필요한지, 파일을 고쳐야 하는지 판단합니다.",
       "2) 최신 정보가 필요하면 Jina로 웹을 검색해 결과를 함께 넘깁니다 (웹 검색이 켜져 있고 키가 있을 때).",
-      "3) 대화는 ChatGPT(Codex)가 먼저 답합니다. 정보 조사는 무료 Gemini가 먼저 해서 구독 한도를 아끼고, 막히면 채팅에 알린 뒤 다음 AI로 넘어갑니다.",
+      "3) 대화는 '기본 프로그램'으로 고른 AI(처음엔 Claude)가 먼저 답합니다. 정보 조사는 무료 Gemini가 먼저 해서 구독 한도를 아끼고, 막히면 채팅에 알린 뒤 다음 AI로 넘어갑니다.",
       "4) 파일 작업은 Claude가 계획하고 고칩니다. Cursor도 파일을 고칠 수 있습니다. 플러그인·스킬·MCP는 Claude에 붙습니다. 구독 한도가 차면 채팅에 알리고 무료 AI가 이어받습니다.",
       "5) 유료 API는 '유료 허용'이 켜져 있고, 그 호출을 사용자가 승인하고, 하루 한도 안일 때만 씁니다.",
     ]),
@@ -1881,7 +1881,7 @@ function sectionHelp() {
   return [
     h("div", { class: "eyebrow", text: "도움말" }),
     h("h2", { text: "사용 설명서 (처음 쓰는 분용)" }),
-    h("p", { class: "lead", text: "대화는 ChatGPT 구독, 정보 찾기는 무료 Gemini, 파일 고치기는 Claude가 합니다. 처음이면 왼쪽 '꼭 필요한 설정' 1·2·3만 하세요." }),
+    h("p", { class: "lead", text: "대화는 '기본 프로그램'으로 고른 AI(처음엔 Claude), 정보 찾기는 무료 Gemini, 파일 고치기는 Claude가 합니다. 처음이면 왼쪽 '꼭 필요한 설정' 1·2·3만 하세요." }),
     guide(
       "🚀 5분 만에 시작하기",
       [

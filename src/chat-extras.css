@@ -1,5 +1,20 @@
 /* Chat additions kept apart from styles.css: answer source, pinned chats, voice buttons.
-   The light theme inverts the whole chat panel (styles.css), so these need no light variants. */
+   Light theme colors for these are generated into theme-light.css. */
+
+/* Pretendard (bundled) reads cleaner than the Windows default Malgun Gothic, for Korean and
+   Latin alike. Form controls don't inherit the page font on their own. */
+body {
+  font-family: "Pretendard Variable", Pretendard, "Segoe UI Variable Text", "Segoe UI", "Malgun Gothic", sans-serif;
+  -webkit-font-smoothing: antialiased;
+  letter-spacing: -0.005em;
+}
+
+button,
+input,
+textarea,
+select {
+  font-family: inherit;
+}
 
 .message-source {
   margin-top: 4px;
@@ -38,3 +53,269 @@
   background: rgba(78, 112, 245, 0.85);
 }
 
+
+/* Above the waiting list and attachments, not on top of them (chat-composer sets the height). */
+#chat-jump-latest {
+  bottom: calc(100% + 8px + var(--chat-above-form, 0px));
+}
+
+
+/* Program/model menu (chat-model-menu.ts). */
+#chat-model-button {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#chat-model-menu {
+  position: absolute;
+  z-index: 40;
+  width: 320px;
+  max-height: 60%;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid rgb(58, 62, 76);
+  border-radius: 14px;
+  background: rgb(24, 27, 35);
+  color: rgb(232, 236, 244);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.35);
+  overflow: hidden;
+}
+
+#chat-model-menu[hidden] {
+  display: none;
+}
+
+.chat-model-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 8px;
+  border-bottom: 1px solid rgb(42, 46, 58);
+}
+
+.chat-model-tab {
+  border: 0;
+  border-radius: 999px;
+  padding: 4px 10px;
+  background: rgb(38, 42, 54);
+  color: rgb(200, 206, 220);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.chat-model-tab[aria-selected="true"] {
+  background: rgb(78, 112, 245);
+  color: white;
+}
+
+.chat-model-tab.is-signed-out {
+  opacity: 0.55;
+}
+
+.chat-model-list {
+  display: flex;
+  flex-direction: column;
+  padding: 6px;
+  overflow-y: auto;
+}
+
+.chat-model-item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  border: 0;
+  border-radius: 9px;
+  padding: 7px 10px;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.chat-model-item:hover {
+  background: rgb(38, 42, 54);
+}
+
+.chat-model-item[aria-checked="true"] {
+  background: rgba(78, 112, 245, 0.22);
+}
+
+.chat-model-name {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.chat-model-item[aria-checked="true"] .chat-model-name::after {
+  content: " ✓";
+  color: rgb(120, 156, 255);
+}
+
+.chat-model-hint,
+.chat-model-note {
+  font-size: 11px;
+  color: rgba(232, 236, 244, 0.6);
+}
+
+.chat-model-note {
+  padding: 8px 10px;
+}
+
+.chat-model-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 7px 10px;
+  border-top: 1px solid rgb(42, 46, 58);
+  font-size: 11px;
+  color: rgba(232, 236, 244, 0.55);
+}
+
+.chat-model-footer button {
+  border: 0;
+  background: transparent;
+  color: rgb(120, 156, 255);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.chat-model-search {
+  margin: 2px 2px 6px;
+  padding: 7px 10px;
+  border: 1px solid rgb(58, 62, 76);
+  border-radius: 9px;
+  background: rgb(32, 36, 48);
+  color: inherit;
+  font-size: 12px;
+  outline: none;
+}
+
+.chat-model-item[hidden] {
+  display: none;
+}
+
+/* Chat size: one icon next to ×, sizes in a small menu (main.ts). */
+#chat-history-toolbar #chat-size-button {
+  min-width: 28px;
+  padding: 0 7px;
+  font-size: 14px;
+}
+
+#chat-size-menu {
+  position: absolute;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  min-width: 110px;
+  padding: 4px;
+  border: 1px solid rgb(58, 62, 76);
+  border-radius: 12px;
+  background: rgb(24, 27, 35);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.35);
+}
+
+#chat-size-menu[hidden] {
+  display: none;
+}
+
+#chat-size-menu button {
+  border: 0;
+  border-radius: 8px;
+  padding: 7px 12px;
+  background: transparent;
+  color: rgb(232, 236, 244);
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+
+#chat-size-menu button:hover {
+  background: rgb(38, 42, 54);
+}
+
+#chat-size-menu button[aria-checked="true"]::after {
+  content: " ✓";
+  color: rgb(120, 156, 255);
+}
+
+/*
+ * A narrow chat window keeps every control reachable: × and the size button never move out.
+ * Below 600px the "여러 AI" badge goes (the model menu shows the same thing) and the model
+ * name shortens; below 520px 자동화 · 사용량 · 설정 become icons.
+ */
+#chat-panel {
+  container-type: inline-size;
+  container-name: chat-panel;
+}
+
+#chat-history-toolbar {
+  flex-wrap: nowrap;
+}
+
+#chat-history-toolbar .chat-toolbar-start {
+  min-width: 0;
+  overflow: hidden;
+}
+
+#chat-history-toolbar .chat-toolbar-end {
+  flex-shrink: 0;
+}
+
+#chat-history-toolbar button {
+  white-space: nowrap;
+}
+
+@container chat-panel (max-width: 600px) {
+  #agent-runtime-agent {
+    display: none !important;
+  }
+
+  #chat-model-button {
+    max-width: 150px;
+  }
+}
+
+@container chat-panel (max-width: 520px) {
+  #chat-history-toolbar .chat-toolbar-start,
+  #chat-history-toolbar .chat-toolbar-end {
+    gap: 4px;
+  }
+
+  #chat-model-button {
+    max-width: 118px;
+  }
+
+  #chat-history-toolbar #automation-button,
+  #chat-history-toolbar #usage-dashboard-button,
+  #chat-history-toolbar #ai-settings-button {
+    min-width: 28px;
+    padding: 0 6px;
+    font-size: 0;
+  }
+
+  #chat-history-toolbar #automation-button > *,
+  #chat-history-toolbar #usage-dashboard-button > *,
+  #chat-history-toolbar #ai-settings-button > * {
+    display: none;
+  }
+
+  #chat-history-toolbar #automation-button::before,
+  #chat-history-toolbar #usage-dashboard-button::before,
+  #chat-history-toolbar #ai-settings-button::before {
+    font-size: 13px;
+  }
+
+  #chat-history-toolbar #automation-button::before {
+    content: "⏱";
+  }
+
+  #chat-history-toolbar #usage-dashboard-button::before {
+    content: "📊";
+  }
+
+  #chat-history-toolbar #ai-settings-button::before {
+    content: "⚙";
+  }
+}

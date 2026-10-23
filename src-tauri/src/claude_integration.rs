@@ -211,8 +211,9 @@ pub fn hooks_json(quality: bool) -> Option<Value> {
     Some(json!({ "hooks": hooks }))
 }
 
-/// Every Claude tool that touches files or runs commands.
-const GUARDED_TOOLS: &str = "Bash|Read|Write|Edit|MultiEdit|NotebookEdit|NotebookRead|Glob|Grep|LS";
+/// Every Claude tool that touches files or runs commands, and every MCP tool (Playwright can
+/// open file:// pages and upload files; GitHub can write to the repository).
+const GUARDED_TOOLS: &str = "Bash|Read|Write|Edit|MultiEdit|NotebookEdit|NotebookRead|Glob|Grep|LS|mcp__.*";
 
 /// GitHub's token is referenced as `${GITHUB_TOKEN}` and expanded by Claude at
 /// runtime, so it never lands in the file.
@@ -450,7 +451,7 @@ pub fn pre_bash_decision(command: &str) -> Result<(), String> {
 /// The PreToolUse check: the command safety rules for Bash, and for every tool, nothing
 /// outside the workspace copy (see workspace_guard).
 fn pre_tool_decision(input: &Value) -> Result<(), String> {
-    use crate::workspace_guard::{check_file_tool, check_shell, WORKSPACE_ENV};
+    use crate::workspace_guard::{check_file_tool, check_mcp_tool, check_shell, WORKSPACE_ENV};
     let cwd = hook_cwd(input);
     let workspace = std::env::var_os(WORKSPACE_ENV).map(PathBuf::from).unwrap_or_else(|| cwd.clone());
     let temp = std::env::temp_dir();
@@ -466,6 +467,8 @@ fn pre_tool_decision(input: &Value) -> Result<(), String> {
             .filter_map(|name| std::env::var_os(name).map(PathBuf::from))
             .collect();
         check_shell(command, &cwd, &workspace, &temp, home.as_deref(), &system)
+    } else if tool.starts_with("mcp__") {
+        check_mcp_tool(tool, &tool_input, &cwd, &workspace, &temp, home.as_deref())
     } else {
         check_file_tool(tool, &tool_input, &cwd, &workspace, &temp, home.as_deref())
     };
