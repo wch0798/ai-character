@@ -7,6 +7,7 @@ import { openSetupWeb } from "./setup-web-client";
 import { createScheduledJobsSection } from "./scheduled-jobs-ui";
 import { createAlertsSection } from "./alerts-ui";
 import { createAppPreferencesSections } from "./app-preferences-ui";
+import { createCharacterProfilesSection, createDataToolsSection } from "./data-tools-ui";
 import {
   chooseAgentExecutable,
   chooseProjectDirectory,
@@ -234,7 +235,7 @@ export function initializeSettingsUi(): void {
   const orderList = document.createElement("ol");
   orderList.className = "ai-settings-order";
   const orderItems: Array<[string, string]> = [
-    ["대화", "ChatGPT 구독이 답합니다."],
+    ["대화", "'기본 프로그램'으로 고른 AI(처음엔 Claude)가 답합니다."],
     ["정보 찾기", "무료 Gemini가 찾습니다."],
     ["파일 고치기", "Claude가 계획하고 고칩니다. Cursor도 고칠 수 있습니다."],
   ];
@@ -319,7 +320,7 @@ export function initializeSettingsUi(): void {
   githubTitle.textContent = "GitHub";
   const githubHelp = document.createElement("div");
   githubHelp.className = "ai-settings-help";
-  githubHelp.textContent = "Gmail 로그인은 기본 브라우저에서. 자동 저장은 GITHUB_TOKEN도 씁니다.";
+  githubHelp.textContent = "기본 브라우저에서 GitHub에 로그인합니다(구글 계정으로 가입했다면 그 계정으로). 결과를 GitHub에 자동 저장하려면 키 파일의 GitHub 토큰(GITHUB_TOKEN)도 필요합니다.";
   githubHelp.hidden = true;
   const githubLoginButton = makeButton("로그인", "ai-settings-action");
   githubLoginButton.title = "기본 브라우저로 GitHub 로그인";
@@ -514,7 +515,7 @@ export function initializeSettingsUi(): void {
   const agentsSection = document.createElement("section");
   agentsSection.className = "ai-settings-section";
   const agentsTitle = document.createElement("h3");
-  agentsTitle.textContent = "Agents";
+  agentsTitle.textContent = "AI 프로그램";
   const agentsLead = document.createElement("div");
   agentsLead.className = "ai-settings-help";
   agentsLead.textContent =
@@ -545,17 +546,17 @@ export function initializeSettingsUi(): void {
   const checkpointHeader = document.createElement("div");
   checkpointHeader.className = "ai-checkpoint-history-header";
   const checkpointTitle = document.createElement("h3");
-  checkpointTitle.textContent = "체크포인트 복원";
+  checkpointTitle.textContent = "되돌리기 기록";
   const refreshCheckpointButton = makeButton("새로고침", "ai-settings-action");
   checkpointHeader.append(checkpointTitle, refreshCheckpointButton);
   const checkpointHelp = document.createElement("p");
   checkpointHelp.className = "ai-checkpoint-help";
-  checkpointHelp.textContent = "원본 적용 직전 상태입니다. 복원 직전 현재 원본도 안전 체크포인트로 자동 저장됩니다.";
+  checkpointHelp.textContent = "AI가 바꾼 파일을 적용하기 직전 상태입니다. 여기서 되돌려도 되돌리기 직전 상태가 따로 저장되니 안심하고 쓰세요.";
   const checkpointList = document.createElement("div");
   checkpointList.className = "ai-checkpoint-history";
   const checkpointEmpty = document.createElement("div");
   checkpointEmpty.className = "ai-checkpoint-history-empty";
-  checkpointEmpty.textContent = "체크포인트가 없습니다.";
+  checkpointEmpty.textContent = "아직 되돌릴 기록이 없습니다.";
   checkpointList.append(checkpointEmpty);
   const safetyList = document.createElement("div");
   safetyList.className = "ai-settings-safety-list";
@@ -755,7 +756,7 @@ export function initializeSettingsUi(): void {
   characterPane.className = "ai-settings-pane";
   characterPane.dataset.pane = "character";
   characterPane.hidden = true;
-  characterPane.append(characterSection);
+  characterPane.append(characterSection, createCharacterProfilesSection(makeButton, setMessage));
 
   const advancedPane = document.createElement("div");
   advancedPane.className = "ai-settings-pane";
@@ -763,6 +764,7 @@ export function initializeSettingsUi(): void {
   advancedPane.hidden = true;
   advancedPane.append(
     appPreferences.diagnostics,
+    createDataToolsSection(makeButton, setMessage),
     policySection.section,
     agentsSection,
     foldCard(runtimeSection),
@@ -1213,8 +1215,19 @@ export function initializeSettingsUi(): void {
     }
   }
 
+  /** The chat's title from saved history, so a checkpoint reads as "대화 \"로그인 버튼 수정\"". */
+  function chatTitleFor(conversationId: string): string | null {
+    try {
+      const raw = localStorage.getItem("ai-character-chat-history-v1");
+      const snapshot = raw ? (JSON.parse(raw) as { conversations?: Array<{ id?: string; title?: string }> }) : null;
+      return snapshot?.conversations?.find((item) => item.id === conversationId)?.title ?? null;
+    } catch {
+      return null;
+    }
+  }
+
   function checkpointPurpose(record: CheckpointRecord): string {
-    return record.purpose === "restore_safety" ? "복원 전 안전 백업" : "원본 적용 전";
+    return record.purpose === "restore_safety" ? "되돌리기 직전 상태" : "AI 변경 적용 직전 상태";
   }
 
   function renderCheckpoints(records: CheckpointRecord[]): void {
@@ -1222,7 +1235,7 @@ export function initializeSettingsUi(): void {
     if (records.length === 0) {
       const empty = document.createElement("div");
       empty.className = "ai-checkpoint-history-empty";
-      empty.textContent = "체크포인트가 없습니다.";
+      empty.textContent = "아직 되돌릴 기록이 없습니다.";
       checkpointList.append(empty);
       return;
     }
@@ -1238,23 +1251,21 @@ export function initializeSettingsUi(): void {
       const meta = document.createElement("div");
       meta.className = "ai-checkpoint-history-meta";
       const created = new Date(record.createdAt).toLocaleString();
-      const conversation = record.conversationId
-        ? ` · 대화 ${record.conversationId.slice(0, 8)}`
-        : "";
-      meta.textContent = `${created} · ${record.changedCount}개 파일${conversation}`;
-      const id = document.createElement("code");
-      id.className = "ai-checkpoint-history-id";
-      id.textContent = record.id;
-      info.append(title, meta, id);
+      const conversationTitle = record.conversationId ? chatTitleFor(record.conversationId) : null;
+      const conversation = conversationTitle ? ` · 대화 "${conversationTitle}"` : "";
+      meta.textContent = `${created} · 파일 ${record.changedCount}개${conversation}`;
+      // The raw ID only as a tooltip, for support.
+      row.title = `기록 번호: ${record.id}`;
+      info.append(title, meta);
 
       const restore = makeButton("복원", "ai-settings-action");
-      restore.title = "원본 프로젝트를 이 상태로 되돌립니다. 복원 직전 상태는 새 안전 체크포인트로 저장됩니다. 한 번 더 누르면 실행합니다.";
+      restore.title = "프로젝트 파일을 이 상태로 되돌립니다. 되돌리기 직전 상태도 따로 저장됩니다. 한 번 더 누르면 실행합니다.";
       confirmOnSecondClick(restore, "한 번 더 누르면 복원", async () => {
         restore.disabled = true;
-        message.textContent = "체크포인트 복원 중…";
+        message.textContent = "되돌리는 중…";
         try {
           const result = await restoreProjectCheckpoint(record.id);
-          message.textContent = `체크포인트를 복원했습니다 (${result.restoredCount}개 파일). 복원 전 상태: ${result.safetyCheckpointId}`;
+          message.textContent = `파일 ${result.restoredCount}개를 되돌렸습니다. 되돌리기 직전 상태는 목록 맨 위에 저장했습니다.`;
           await refreshCheckpoints();
         } catch (error) {
           message.textContent = errorText(error);
@@ -1277,7 +1288,7 @@ export function initializeSettingsUi(): void {
       checkpointList.replaceChildren();
       const failure = document.createElement("div");
       failure.className = "ai-checkpoint-history-empty";
-      failure.textContent = `체크포인트를 읽지 못했습니다: ${errorText(error)}`;
+      failure.textContent = `되돌리기 기록을 읽지 못했습니다: ${errorText(error)}`;
       checkpointList.append(failure);
     } finally {
       refreshCheckpointButton.disabled = false;

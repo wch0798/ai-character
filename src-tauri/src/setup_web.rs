@@ -448,7 +448,7 @@ fn state() -> Result<Value, String> {
     }))
 }
 
-fn export_settings() -> Result<Value, String> {
+pub(crate) fn export_settings() -> Result<Value, String> {
     Ok(json!({
         "kind": "ai-character-settings",
         "version": 1,
@@ -564,7 +564,7 @@ pub fn reset_recommended_settings() -> Result<String, String> {
     Ok("설정을 초기화했습니다. 체크는 모두 풀렸고, 키와 작업 폴더는 그대로입니다.".to_string())
 }
 
-fn import_settings(body: Value) -> Result<Value, String> {
+pub(crate) fn import_settings(body: Value) -> Result<Value, String> {
     if body.get("kind").and_then(Value::as_str) != Some("ai-character-settings") {
         return Err("AI Character 설정 백업 파일이 아닙니다.".into());
     }

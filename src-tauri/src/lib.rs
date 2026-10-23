@@ -1,4 +1,5 @@
 mod alerts;
+mod data_reset;
 mod pasted_image;
 mod system_features;
 mod workspace_guard;
@@ -559,6 +560,9 @@ pub fn run() {
             scheduled_jobs::run_scheduled_job_now,
             scheduled_jobs::open_reports_folder,
             pasted_image::save_pasted_image,
+            data_reset::wipe_all_data,
+            data_reset::export_settings_backup,
+            data_reset::import_settings_backup,
             system_features::get_toggle_shortcut,
             system_features::set_toggle_shortcut,
             system_features::get_autostart,

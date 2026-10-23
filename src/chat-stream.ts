@@ -9,7 +9,7 @@ export function applyStreamEvent(current: string, event: ProviderStreamEvent, st
   return event.reset ? "" : current + event.text;
 }
 
-export type LiveReply = { dispose(): void; hasText(): boolean };
+export type LiveReply = { dispose(): void; hasText(): boolean; repaint(): void };
 
 /**
  * Shows partial answer text in a temporary assistant bubble while a provider streams.
@@ -22,6 +22,8 @@ export function startLiveReply(
     render(target: HTMLElement, text: string): void;
     onFirstText?(): void;
     onUpdate?(): void;
+    /** False while another conversation is on screen: the text keeps arriving but isn't drawn. */
+    isVisible?(): boolean;
   }
 ): LiveReply {
   let text = "";
@@ -34,6 +36,17 @@ export function startLiveReply(
   const paint = () => {
     frame = 0;
     if (disposed) return;
+    // Switching conversations redraws the message list, which detaches the bubble.
+    if (bubble && !bubble.isConnected) {
+      bubble = null;
+      content = null;
+    }
+    if (options.isVisible && !options.isVisible()) {
+      bubble?.remove();
+      bubble = null;
+      content = null;
+      return;
+    }
     if (!text) {
       bubble?.remove();
       bubble = null;
@@ -71,6 +84,9 @@ export function startLiveReply(
 
   return {
     hasText: () => text.length > 0,
+    repaint() {
+      if (!frame && !disposed) frame = window.requestAnimationFrame(paint);
+    },
     dispose() {
       if (disposed) return;
       disposed = true;

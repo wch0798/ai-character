@@ -46,15 +46,23 @@ export function getShownConversationId(): string | null {
   return shownConversationId;
 }
 
+let renderingHistory = false;
+
+/** True while a saved conversation is being drawn; the chat skips per-message scrolling then. */
+export function isRenderingHistory(): boolean {
+  return renderingHistory;
+}
+
 export type ChatHistoryManager = {
   getActiveId(): string;
   getContext(): string;
   append(role: ChatRole, content: string, source?: string): void;
   /**
    * Saves into a given conversation, which may no longer be on screen (the user switched while
-   * the answer was on its way). Returns whether that conversation is the one showing.
+   * the answer was on its way). Returns whether that conversation is the one showing, or null
+   * when it was deleted meanwhile and the message could not be saved.
    */
-  appendTo(conversationId: string, role: ChatRole, content: string, source?: string): boolean;
+  appendTo(conversationId: string, role: ChatRole, content: string, source?: string): boolean | null;
   refresh(): void;
 };
 
@@ -178,8 +186,13 @@ export function setupChatHistory(options: SetupOptions): ChatHistoryManager {
       return;
     }
 
-    for (const message of conversation.messages) {
-      options.addMessage(message.content, message.role, message.createdAt, message.source);
+    renderingHistory = true;
+    try {
+      for (const message of conversation.messages) {
+        options.addMessage(message.content, message.role, message.createdAt, message.source);
+      }
+    } finally {
+      renderingHistory = false;
     }
     options.messages.scrollTop = options.messages.scrollHeight;
   };
@@ -254,6 +267,9 @@ export function setupChatHistory(options: SetupOptions): ChatHistoryManager {
 
   const renderList = () => {
     if (!list || renaming) return;
+    // Rebuilding every conversation (each one parsed and cloned) on each message is wasted
+    // while the list is closed; opening the drawer renders it.
+    if (drawer && !drawer.classList.contains("open")) return;
 
     list.innerHTML = "";
 
@@ -505,6 +521,7 @@ export function setupChatHistory(options: SetupOptions): ChatHistoryManager {
         store.appendMessage(conversationId, role, content, { activate: false, source });
       } catch {
         // The conversation was deleted while the answer was on its way.
+        return null;
       }
       renderList();
       return false;

@@ -1,5 +1,5 @@
 /* Chat additions kept apart from styles.css: answer source, pinned chats, voice buttons.
-   The light theme inverts the whole chat panel (styles.css), so these need no light variants. */
+   The light theme inverts the whole chat panel (styles.css); only emoji need turning back. */
 
 .message-source {
   margin-top: 4px;
@@ -38,3 +38,13 @@
   background: rgba(78, 112, 245, 0.85);
 }
 
+
+/* Above the waiting list and attachments, not on top of them (chat-composer sets the height). */
+#chat-jump-latest {
+  bottom: calc(100% + 8px + var(--chat-above-form, 0px));
+}
+
+/* The light theme inverts the whole panel; turn the emoji buttons back so 🎤🔊 keep their colours. */
+:root[data-theme="light"] #chat-form .chat-voice-button {
+  filter: invert(1) hue-rotate(180deg);
+}

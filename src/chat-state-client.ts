@@ -12,15 +12,26 @@ let lastWarningAt = 0;
 // (the whole chat history included) when nothing changed.
 let storageDirty = true;
 
+// Saved on every sync; on start the newer of this browser profile and the SQLite copy wins.
+const SAVED_AT_KEY = "ai-character-state-saved-at";
+// Rewritten on every keystroke; not worth re-saving the whole chat history for.
+const UNTRACKED_KEYS = new Set([SAVED_AT_KEY, "ai-character-chat-draft"]);
+
 function trackStorageWrites(): void {
   const storage = Object.getPrototypeOf(localStorage) as Storage;
   for (const name of ["setItem", "removeItem", "clear"] as const) {
     const original = storage[name] as (...args: unknown[]) => unknown;
     (storage as unknown as Record<string, unknown>)[name] = function (this: Storage, ...args: unknown[]) {
-      if (this === localStorage) storageDirty = true;
+      if (this === localStorage && !(name !== "clear" && UNTRACKED_KEYS.has(String(args[0])))) {
+        storageDirty = true;
+      }
       return original.apply(this, args);
     };
   }
+}
+
+function savedAt(snapshot: LocalStorageSnapshot): number {
+  return Number(snapshot[SAVED_AT_KEY] ?? 0) || 0;
 }
 
 function isTransientTauriError(error: unknown): boolean {
@@ -75,6 +86,7 @@ function restoreSnapshot(snapshot: LocalStorageSnapshot): void {
 async function persistIfChanged(): Promise<void> {
   if (syncInFlight || !storageDirty) return;
   if (!(await waitForTauri(1500))) return;
+  localStorage.setItem(SAVED_AT_KEY, String(Date.now()));
   storageDirty = false;
   const payload = encodeSnapshot(readLocalStorageSnapshot());
   if (payload === lastSyncedPayload) return;
@@ -108,8 +120,15 @@ export async function initializeSqliteStateMirror(): Promise<void> {
     const payload = await invoke<string | null>("load_ui_state");
     if (payload !== null) {
       const snapshot = decodeSnapshot(payload);
-      restoreSnapshot(snapshot);
-      lastSyncedPayload = encodeSnapshot(snapshot);
+      // The app can quit (tray → 종료) before the last sync, leaving this profile newer than
+      // the SQLite copy: keep the newer one.
+      if (savedAt(snapshot) >= savedAt(readLocalStorageSnapshot())) {
+        restoreSnapshot(snapshot);
+        lastSyncedPayload = encodeSnapshot(snapshot);
+      } else {
+        storageDirty = true;
+        await persistIfChanged();
+      }
     } else {
       await persistIfChanged();
     }

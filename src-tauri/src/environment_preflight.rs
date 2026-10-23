@@ -100,7 +100,14 @@ pub(crate) fn run_git(binary: &Path, workspace: &Path, args: &[&str]) -> Result<
     {
         crate::windows_process::hide_console(&mut command);
     }
+    // Agents edit these folders, .git included: a hook or fsmonitor they planted would run here,
+    // outside the agent's checks, with the app's environment. So no hooks, no fsmonitor, no keys.
+    for name in crate::policy_engine::SECRET_ENV_NAMES {
+        command.env_remove(name);
+    }
+    let no_hooks = if cfg!(windows) { "core.hooksPath=NUL" } else { "core.hooksPath=/dev/null" };
     let output = command
+        .args(["-c", no_hooks, "-c", "core.fsmonitor=false"])
         .arg("-C")
         .arg(workspace)
         .args(args)

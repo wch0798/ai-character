@@ -29,12 +29,12 @@ type FeatureKey = keyof ClaudeIntegrationSettings;
 
 /** `mcp` is derived from the individual servers and `jsonOutput` must stay on for usage tracking. */
 export const CLAUDE_FEATURES: Array<{ key: FeatureKey; label: string; help: string; hidden?: boolean }> = [
-  { key: "claudeMd", label: "CLAUDE.md 작업 규칙", help: "작업 규칙과 자동으로 찾은 테스트 명령을 알려 줍니다." },
-  { key: "skills", label: "Skills (검토 · 테스트 · 보고)", help: "검토, 테스트, 보고서 작성 순서를 스킬로 제공합니다." },
-  { key: "subagents", label: "Subagents (검토자 · 테스터 · 문서)", help: "필요할 때 검토·테스트·문서 담당을 따로 부릅니다." },
-  { key: "hooks", label: "Hooks (위험 명령 차단 · 자동 검사)", help: "위험한 셸 명령을 막고, 수정 후 린트, 끝날 때 테스트를 실행합니다." },
-  { key: "mcpPlaywright", label: "MCP · Playwright 브라우저", help: "npx로 실행합니다. Node.js가 필요합니다." },
-  { key: "mcpGithub", label: "MCP · GitHub", help: "GITHUB_TOKEN이 있을 때만 연결합니다. 토큰은 파일에 적지 않습니다." },
+  { key: "claudeMd", label: "작업 규칙 안내 (CLAUDE.md)", help: "작업 규칙과 자동으로 찾은 테스트 명령을 알려 줍니다." },
+  { key: "skills", label: "작업 순서 안내 (검토 · 테스트 · 보고)", help: "검토, 테스트, 보고서 작성 순서를 스킬로 제공합니다." },
+  { key: "subagents", label: "도우미 AI (검토 · 테스트 · 문서 담당)", help: "필요할 때 검토·테스트·문서 담당을 따로 부릅니다." },
+  { key: "hooks", label: "자동 검사 (수정 후 검사 · 끝날 때 테스트)", help: "파일을 고친 뒤 형식 검사를, 작업이 끝날 때 테스트를 자동으로 실행합니다. 작업 폴더 보호와 위험 명령 차단은 이 설정과 상관없이 항상 켜져 있습니다." },
+  { key: "mcpPlaywright", label: "브라우저 조작 연결 (Playwright)", help: "Claude가 웹 페이지를 열어 확인할 수 있게 합니다. Node.js가 필요합니다." },
+  { key: "mcpGithub", label: "GitHub 연결", help: "GitHub 토큰(GITHUB_TOKEN)이 있을 때만 연결합니다. 이 연결을 켠 동안에만 Claude가 토큰을 쓸 수 있습니다." },
   { key: "mcp", label: "MCP", help: "", hidden: true },
   { key: "jsonOutput", label: "사용량 기록", help: "", hidden: true },
 ];
@@ -71,7 +71,7 @@ export function createClaudeIntegrationSection(
   const actions = document.createElement("div");
   actions.className = "ai-settings-ghost-row";
   const saveButton = makeButton("저장", "ai-settings-action");
-  const statusButton = makeButton("MCP 상태 확인", "ai-settings-ghost");
+  const statusButton = makeButton("연결 상태 확인", "ai-settings-ghost");
   actions.append(saveButton, statusButton);
   const status = document.createElement("div");
   status.className = "ai-settings-help";
@@ -118,14 +118,14 @@ export function createClaudeIntegrationSection(
   statusButton.addEventListener("click", () => {
     void withBusy([statusButton], async () => {
       status.hidden = false;
-      status.textContent = "MCP 상태를 확인하는 중…";
+      status.textContent = "연결 상태를 확인하는 중…";
       try {
         const result = await invoke<ClaudeIntegrationStatus>("get_claude_integration_status");
         const servers = result.mcpList.trim() ? result.mcpList.trim().split("\n").length : 0;
         status.textContent = [
           result.playwrightAvailable ? "Playwright 준비됨" : "Playwright: Node.js 필요",
           result.githubTokenPresent ? "GitHub 토큰 있음" : "GitHub 토큰 없음",
-          `등록된 MCP ${servers}개`,
+          `등록된 연결 ${servers}개`,
         ].join(" · ");
         status.title = result.mcpList;
       } catch (error) {

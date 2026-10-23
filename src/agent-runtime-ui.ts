@@ -5,6 +5,7 @@ import {
   getWorkspaceChanges,
   getWorkspaceDiff,
   getAppPreferences,
+  restoreProjectCheckpoint,
   type AppPreferences,
   type AgentStreamEvent,
   type AgentTaskEndEvent,
@@ -178,7 +179,16 @@ export function initializeAgentRuntimeUi(): void {
   discardButton.type = "button";
   discardButton.textContent = "취소";
 
-  changeActions.append(applyButton, discardButton);
+  // After applying, the same place offers to put the files back as they were.
+  const undoButton = document.createElement("button");
+  undoButton.id = "agent-undo-button";
+  undoButton.type = "button";
+  undoButton.textContent = "되돌리기";
+  undoButton.title = "방금 적용한 변경을 취소하고 파일을 적용 전으로 되돌립니다.";
+  undoButton.hidden = true;
+  let undoCheckpointId: string | null = null;
+
+  changeActions.append(applyButton, discardButton, undoButton);
   changePanel.append(changeTitle, changeList, diffOutput, changeActions);
   panel.append(changePanel);
   runtimeParent.insertBefore(panel, chatForm);
@@ -224,6 +234,16 @@ export function initializeAgentRuntimeUi(): void {
     diffOutput.textContent = "";
     changePanel.hidden = true;
     setReviewBusy(false);
+    showUndo(null);
+  }
+
+  /** Shows "되돌리기" for the checkpoint an apply just made, or the review buttons again. */
+  function showUndo(checkpointId: string | null): void {
+    undoCheckpointId = checkpointId;
+    undoButton.hidden = !checkpointId;
+    undoButton.disabled = false;
+    applyButton.hidden = Boolean(checkpointId);
+    discardButton.hidden = Boolean(checkpointId);
   }
 
   async function selectChange(
@@ -249,7 +269,7 @@ export function initializeAgentRuntimeUi(): void {
       const diff = await getWorkspaceDiff(conversationId, change.path);
       diffOutput.textContent = diff;
     } catch (error) {
-      diffOutput.textContent = `[error] ${error instanceof Error ? error.message : String(error)}`;
+      diffOutput.textContent = `[변경 내용을 불러오지 못했습니다] ${error instanceof Error ? error.message : String(error)}`;
     }
   }
 
@@ -414,7 +434,7 @@ export function initializeAgentRuntimeUi(): void {
       }
       appendOutput(
         output,
-        `\n[error] ${error instanceof Error ? error.message : String(error)}\n`
+        `\n[중지 요청 실패] ${error instanceof Error ? error.message : String(error)}\n`
       );
     }
   }
@@ -446,15 +466,16 @@ export function initializeAgentRuntimeUi(): void {
       const result = await applyWorkspaceChanges(conversationId);
       reviewConversationId = null;
       changeList.replaceChildren();
-      diffOutput.textContent = `변경 ${result.appliedCount}개를 원본에 적용했습니다.\n체크포인트: ${result.checkpointId}`;
+      diffOutput.textContent = `파일 ${result.appliedCount}개를 원본에 적용했습니다. 마음에 들지 않으면 아래 '되돌리기'로 적용 전 상태로 돌릴 수 있습니다.`;
       changeTitle.textContent = "변경 적용 완료";
       status.textContent = "원본 적용 완료";
+      showUndo(result.checkpointId);
     } catch (error) {
       setReviewBusy(false);
       status.textContent = "원본 적용 실패";
       appendOutput(
         output,
-        `\n[apply error] ${error instanceof Error ? error.message : String(error)}\n`
+        `\n[적용 실패] ${error instanceof Error ? error.message : String(error)}\n`
       );
     }
   });
@@ -475,7 +496,34 @@ export function initializeAgentRuntimeUi(): void {
       status.textContent = "변경 취소 실패";
       appendOutput(
         output,
-        `\n[discard error] ${error instanceof Error ? error.message : String(error)}\n`
+        `\n[취소 실패] ${error instanceof Error ? error.message : String(error)}\n`
+      );
+    }
+  });
+
+  undoButton.addEventListener("click", async () => {
+    const checkpointId = undoCheckpointId;
+    if (!checkpointId) {
+      return;
+    }
+    if (!window.confirm("방금 적용한 변경을 되돌릴까요?\n파일이 적용하기 전 상태로 돌아갑니다. 되돌리기 직전 상태도 따로 저장해 둡니다.")) {
+      return;
+    }
+    undoButton.disabled = true;
+    status.textContent = "되돌리는 중…";
+    try {
+      const result = await restoreProjectCheckpoint(checkpointId);
+      diffOutput.textContent = `파일 ${result.restoredCount}개를 적용 전 상태로 되돌렸습니다. 다시 필요하면 설정 → 고급의 '되돌리기 기록'에서 복원할 수 있습니다.`;
+      changeTitle.textContent = "되돌리기 완료";
+      status.textContent = "되돌리기 완료";
+      undoCheckpointId = null;
+      undoButton.hidden = true;
+    } catch (error) {
+      undoButton.disabled = false;
+      status.textContent = "되돌리기 실패";
+      appendOutput(
+        output,
+        `\n[되돌리기 실패] ${error instanceof Error ? error.message : String(error)}\n`
       );
     }
   });

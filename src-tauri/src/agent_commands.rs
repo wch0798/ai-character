@@ -1,5 +1,5 @@
 use crate::agent_core::{
-    canonical_existing_dir, claude_plugin_dir_args, inspect_agent_runtime, isolate_claude_from_project,
+    canonical_existing_dir, claude_plugin_dir_args, inspect_agent_runtime, isolate_claude_from_project, strip_unsafe_managed_args,
     user_claude_plugin_dir_args,
     managed_workspace_permission_args, merge_extra_args, merge_plugin_dir_args, request_cancel,
     resolve_agent_binary,
@@ -821,6 +821,10 @@ where
         }
 
         let mut extra_args = settings.agent_extra_args(agent).to_vec();
+        if managed_workspace {
+            // Saved options must not undo the workspace's protections; the app adds its own below.
+            extra_args = strip_unsafe_managed_args(agent, &extra_args);
+        }
         if agent == AgentKind::Claude {
             extra_args = sanitize_claude_extra_args(&extra_args);
             // A project's own plugins may carry hooks (code that runs on every tool call), so in
