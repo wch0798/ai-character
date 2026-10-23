@@ -425,6 +425,10 @@ fn validate_model_value(agent: AgentKind, value: String) -> Result<Option<String
     if value.is_empty() {
         return Ok(None);
     }
+    // A leading "-" would be read as another option (--model --dangerously-…).
+    if value.starts_with('-') {
+        return Err(format!("{} 모델 이름은 '-'로 시작할 수 없습니다.", agent.display_name()));
+    }
     if value.len() > 128 || value.chars().any(|ch| matches!(ch, '\n' | '\r' | '\0')) {
         return Err(format!(
             "{} 모델 이름은 128자 이하여야 하고 줄바꿈/NUL 문자를 포함할 수 없습니다.",
@@ -734,13 +738,19 @@ fn run_agent_blocking<F>(
     task_id: Option<String>,
     timeout_seconds: Option<u64>,
     sensitive_acknowledged: Option<bool>,
+    requested_model: Option<String>,
     mut on_chunk: F,
 ) -> Result<String, String>
 where
     F: FnMut(AgentStreamChunk),
 {
     let settings = load_settings()?;
-    let model = settings.agent_model(agent).map(str::to_string).or_else(|| {
+    // The chat's model menu (remembered per conversation) wins over the saved setting.
+    let requested_model = match requested_model {
+        Some(model) => validate_model_value(agent, model)?,
+        None => None,
+    };
+    let model = requested_model.or_else(|| settings.agent_model(agent).map(str::to_string)).or_else(|| {
         (agent == AgentKind::Codex)
             .then(crate::codex_model::replacement_for_retired_model)
             .flatten()
@@ -946,6 +956,7 @@ pub async fn run_agent(
     task_id: Option<String>,
     timeout_seconds: Option<u64>,
     sensitive_acknowledged: Option<bool>,
+    model: Option<String>,
 ) -> Result<String, String> {
     let agent = AgentKind::parse(&agent)?;
     let event_task_id = task_id.clone();
@@ -959,6 +970,7 @@ pub async fn run_agent(
             task_id,
             timeout_seconds,
             sensitive_acknowledged,
+            model,
             move |chunk| {
                 let Some(task_id) = event_task_id.as_ref() else {
                     return;
@@ -1093,6 +1105,7 @@ pub async fn ask_claude(
         "claude".to_string(),
         prompt,
         Some(project_dir),
+        None,
         None,
         None,
         None,

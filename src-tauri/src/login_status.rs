@@ -156,7 +156,7 @@ fn antigravity_account_from_log(text: &str) -> Option<String> {
     account.contains('@').then(|| account.to_string())
 }
 
-fn run_with_timeout(binary: &Path, args: &[&str], timeout: Duration) -> Option<String> {
+pub(crate) fn run_with_timeout(binary: &Path, args: &[&str], timeout: Duration) -> Option<String> {
     let mut command = crate::windows_process::command_with_args(binary, args);
     let mut child = command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().ok()?;
     let started = Instant::now();

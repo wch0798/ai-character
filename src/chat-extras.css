@@ -59,3 +59,139 @@ select {
   bottom: calc(100% + 8px + var(--chat-above-form, 0px));
 }
 
+
+/* Program/model menu (chat-model-menu.ts). */
+#chat-model-button {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#chat-model-menu {
+  position: absolute;
+  z-index: 40;
+  width: 320px;
+  max-height: 60%;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid rgb(58, 62, 76);
+  border-radius: 14px;
+  background: rgb(24, 27, 35);
+  color: rgb(232, 236, 244);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.35);
+  overflow: hidden;
+}
+
+#chat-model-menu[hidden] {
+  display: none;
+}
+
+.chat-model-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 8px;
+  border-bottom: 1px solid rgb(42, 46, 58);
+}
+
+.chat-model-tab {
+  border: 0;
+  border-radius: 999px;
+  padding: 4px 10px;
+  background: rgb(38, 42, 54);
+  color: rgb(200, 206, 220);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.chat-model-tab[aria-selected="true"] {
+  background: rgb(78, 112, 245);
+  color: white;
+}
+
+.chat-model-tab.is-signed-out {
+  opacity: 0.55;
+}
+
+.chat-model-list {
+  display: flex;
+  flex-direction: column;
+  padding: 6px;
+  overflow-y: auto;
+}
+
+.chat-model-item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  border: 0;
+  border-radius: 9px;
+  padding: 7px 10px;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.chat-model-item:hover {
+  background: rgb(38, 42, 54);
+}
+
+.chat-model-item[aria-checked="true"] {
+  background: rgba(78, 112, 245, 0.22);
+}
+
+.chat-model-name {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.chat-model-item[aria-checked="true"] .chat-model-name::after {
+  content: " ✓";
+  color: rgb(120, 156, 255);
+}
+
+.chat-model-hint,
+.chat-model-note {
+  font-size: 11px;
+  color: rgba(232, 236, 244, 0.6);
+}
+
+.chat-model-note {
+  padding: 8px 10px;
+}
+
+.chat-model-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 7px 10px;
+  border-top: 1px solid rgb(42, 46, 58);
+  font-size: 11px;
+  color: rgba(232, 236, 244, 0.55);
+}
+
+.chat-model-footer button {
+  border: 0;
+  background: transparent;
+  color: rgb(120, 156, 255);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.chat-model-search {
+  margin: 2px 2px 6px;
+  padding: 7px 10px;
+  border: 1px solid rgb(58, 62, 76);
+  border-radius: 9px;
+  background: rgb(32, 36, 48);
+  color: inherit;
+  font-size: 12px;
+  outline: none;
+}
+
+.chat-model-item[hidden] {
+  display: none;
+}

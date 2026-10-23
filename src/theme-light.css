@@ -1194,3 +1194,29 @@
   color:
     rgb(255, 255, 255)
 }
+:root[data-theme="light"] #chat-model-menu {
+  border: 1px solid rgb(220, 222, 228);
+  background: rgb(236, 238, 242);
+  color: rgb(26, 35, 54)
+}
+:root[data-theme="light"] .chat-model-tabs {
+  border-bottom: 1px solid rgb(227, 229, 235)
+}
+:root[data-theme="light"] .chat-model-tab {
+  background: rgb(229, 231, 237);
+  color: rgb(43, 50, 68)
+}
+:root[data-theme="light"] .chat-model-item:hover {
+  background: rgb(229, 231, 237)
+}
+:root[data-theme="light"] .chat-model-hint, :root[data-theme="light"] .chat-model-note {
+  color: rgba(26, 35, 54, 0.6)
+}
+:root[data-theme="light"] .chat-model-footer {
+  border-top: 1px solid rgb(227, 229, 235);
+  color: rgba(26, 35, 54, 0.55)
+}
+:root[data-theme="light"] .chat-model-search {
+  border: 1px solid rgb(220, 222, 228);
+  background: rgb(231, 233, 239)
+}

@@ -1,4 +1,5 @@
 mod alerts;
+mod agent_models;
 mod data_reset;
 mod pasted_image;
 mod system_features;
@@ -441,6 +442,7 @@ pub fn run() {
             get_conversation_dir,
             set_conversation_dir,
             login_status::get_agent_logins,
+            agent_models::list_agent_models,
             login_status::get_last_agent_logins,
             set_agent_path,
             detect_agent,

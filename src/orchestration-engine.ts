@@ -1,6 +1,7 @@
 import { personaInstruction } from "./persona";
 import {
   askAgentCompat,
+  chatModelChoice,
   cancelAgent,
   confirmSensitiveAgentAccess,
   detectAgent,
@@ -1648,8 +1649,9 @@ async function answerDirectly(
     const message = error instanceof Error ? error.message : String(error);
     return message.includes("취소") || message.includes("민감 파일");
   };
-  // The program chosen in settings (기본 프로그램) answers first; its name is used in notices.
-  const primary = preferences.defaultAgent;
+  // The program picked in the chat menu for this conversation (else 기본 프로그램 in settings)
+  // answers first; its name is used in notices.
+  const primary = chatModelChoice()?.agent ?? preferences.defaultAgent;
   const primaryName = CHAT_AGENT_NAMES[primary];
 
   if (mode === "facts") {

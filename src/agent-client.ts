@@ -22,6 +22,27 @@ export type RunAgentOptions = {
   onStream?: (event: AgentStreamEvent) => void;
 };
 
+/** The program and model picked in the chat's menu for the conversation being answered. */
+export type ModelChoice = { agent: AgentKind; model: string };
+
+let chatChoice: ModelChoice | null = null;
+
+/** Set for each chat request (one runs at a time); "" model means the program's default. */
+export function setChatModelChoice(choice: ModelChoice | null): void {
+  chatChoice = choice;
+}
+
+export function chatModelChoice(): ModelChoice | null {
+  return chatChoice;
+}
+
+export type AgentModel = { id: string; label: string; note: string };
+
+/** Models the program can run, read from the program itself (cached for ten minutes). */
+export async function listAgentModels(agent: AgentKind, refresh = false): Promise<AgentModel[]> {
+  return invoke<AgentModel[]>("list_agent_models", { agent, refresh });
+}
+
 export type AppPreferences = {
   defaultAgent: AgentKind;
   cradleEnabled: boolean;
@@ -531,6 +552,8 @@ export function runAgentTask(options: RunAgentOptions): AgentTask {
         taskId,
         timeoutSeconds: options.timeoutSeconds,
         sensitiveAcknowledged: options.sensitiveAcknowledged ?? true,
+        // The chat menu's model applies whenever its program runs for this request.
+        model: chatChoice && chatChoice.agent === options.agent && chatChoice.model ? chatChoice.model : null,
       });
 
       const endDetail: AgentTaskEndEvent = {

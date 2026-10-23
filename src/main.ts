@@ -14,6 +14,8 @@ import { classifyRequestIntent } from "./request-intent";
 import { formatAnswerSource, lookupAnswerSource } from "./answer-source";
 import { friendlyChatError } from "./chat-errors";
 import { SPEAKING_EVENT, setupVoiceButtons, speakAnswer, stopSpeaking } from "./voice";
+import { choiceFor, setupChatModelMenu } from "./chat-model-menu";
+import { setChatModelChoice } from "./agent-client";
 import { HISTORY_SAVE_FAILED_EVENT } from "./chat-history";
 import { initializeAutomationPanel } from "./automation-panel-ui";
 import { notificationPreview, notifyDesktop, shouldNotifyCompletion } from "./alerts-client";
@@ -2487,6 +2489,7 @@ async function startLive2D() {
   if (chatForm && chatInput) {
     setupVoiceButtons(chatForm, chatInput, (text) => flashStatus(text, "error", 4200));
   }
+  setupChatModelMenu((text) => flashStatus(text, "info", 2600));
 
   // F1: every chat shortcut, shown in the chat (not saved to the conversation).
   document.addEventListener("keydown", (event) => {
@@ -2800,6 +2803,7 @@ async function startLive2D() {
       "#work-log-overlay",
       "#rightclick-test-menu",
       "#chat-history-drawer",
+      "#chat-model-menu",
     ];
     for (const selector of overlaySelectors) {
       const el = document.querySelector<HTMLElement>(selector);
@@ -3724,6 +3728,8 @@ async function startLive2D() {
       );
       requestConversationId = chatHistory?.getActiveId() ?? null;
       const thisConversationId = requestConversationId;
+      // The program and model picked in the chat menu for this conversation.
+      setChatModelChoice(choiceFor(thisConversationId));
       lastAssistantReply = "";
 
       const requestPrompt =
