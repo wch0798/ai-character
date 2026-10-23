@@ -196,26 +196,126 @@ select {
   display: none;
 }
 
-/* 작게 · 중간 · 크게 next to × (main.ts). */
-.chat-size-presets {
-  display: inline-flex;
-  gap: 2px;
-  padding: 2px;
-  border-radius: 999px;
-  background: rgb(32, 36, 48);
+/* Chat size: one icon next to ×, sizes in a small menu (main.ts). */
+#chat-history-toolbar #chat-size-button {
+  min-width: 28px;
+  padding: 0 7px;
+  font-size: 14px;
 }
 
-#chat-history-toolbar .chat-size-presets button {
+#chat-size-menu {
+  position: absolute;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  min-width: 110px;
+  padding: 4px;
+  border: 1px solid rgb(58, 62, 76);
+  border-radius: 12px;
+  background: rgb(24, 27, 35);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.35);
+}
+
+#chat-size-menu[hidden] {
+  display: none;
+}
+
+#chat-size-menu button {
   border: 0;
-  border-radius: 999px;
-  padding: 3px 9px;
+  border-radius: 8px;
+  padding: 7px 12px;
   background: transparent;
-  color: rgb(196, 202, 214);
-  font-size: 11.5px;
+  color: rgb(232, 236, 244);
+  font-size: 12.5px;
+  text-align: left;
   cursor: pointer;
 }
 
-#chat-history-toolbar .chat-size-presets button[aria-pressed="true"] {
-  background: rgb(78, 112, 245);
-  color: white;
+#chat-size-menu button:hover {
+  background: rgb(38, 42, 54);
+}
+
+#chat-size-menu button[aria-checked="true"]::after {
+  content: " ✓";
+  color: rgb(120, 156, 255);
+}
+
+/*
+ * A narrow chat window keeps every control reachable: × and the size button never move out.
+ * Below 600px the "여러 AI" badge goes (the model menu shows the same thing) and the model
+ * name shortens; below 520px 자동화 · 사용량 · 설정 become icons.
+ */
+#chat-panel {
+  container-type: inline-size;
+  container-name: chat-panel;
+}
+
+#chat-history-toolbar {
+  flex-wrap: nowrap;
+}
+
+#chat-history-toolbar .chat-toolbar-start {
+  min-width: 0;
+  overflow: hidden;
+}
+
+#chat-history-toolbar .chat-toolbar-end {
+  flex-shrink: 0;
+}
+
+#chat-history-toolbar button {
+  white-space: nowrap;
+}
+
+@container chat-panel (max-width: 600px) {
+  #agent-runtime-agent {
+    display: none !important;
+  }
+
+  #chat-model-button {
+    max-width: 150px;
+  }
+}
+
+@container chat-panel (max-width: 520px) {
+  #chat-history-toolbar .chat-toolbar-start,
+  #chat-history-toolbar .chat-toolbar-end {
+    gap: 4px;
+  }
+
+  #chat-model-button {
+    max-width: 118px;
+  }
+
+  #chat-history-toolbar #automation-button,
+  #chat-history-toolbar #usage-dashboard-button,
+  #chat-history-toolbar #ai-settings-button {
+    min-width: 28px;
+    padding: 0 6px;
+    font-size: 0;
+  }
+
+  #chat-history-toolbar #automation-button > *,
+  #chat-history-toolbar #usage-dashboard-button > *,
+  #chat-history-toolbar #ai-settings-button > * {
+    display: none;
+  }
+
+  #chat-history-toolbar #automation-button::before,
+  #chat-history-toolbar #usage-dashboard-button::before,
+  #chat-history-toolbar #ai-settings-button::before {
+    font-size: 13px;
+  }
+
+  #chat-history-toolbar #automation-button::before {
+    content: "⏱";
+  }
+
+  #chat-history-toolbar #usage-dashboard-button::before {
+    content: "📊";
+  }
+
+  #chat-history-toolbar #ai-settings-button::before {
+    content: "⚙";
+  }
 }

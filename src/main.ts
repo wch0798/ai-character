@@ -2821,6 +2821,7 @@ async function startLive2D() {
       "#rightclick-test-menu",
       "#chat-history-drawer",
       "#chat-model-menu",
+      "#chat-size-menu",
     ];
     for (const selector of overlaySelectors) {
       const el = document.querySelector<HTMLElement>(selector);
@@ -3203,45 +3204,78 @@ async function startLive2D() {
   ];
   const closeButton = document.querySelector<HTMLButtonElement>("#chat-close-button");
   if (chatPanel && closeButton) {
-    const group = document.createElement("div");
-    group.className = "chat-size-presets";
-    group.setAttribute("role", "group");
-    group.setAttribute("aria-label", "채팅창 크기");
-    const paintPresets = () => {
-      // The preset closest to the current size shows as selected.
-      const nearest = CHAT_SIZE_PRESETS.reduce((best, preset) =>
+    // One icon button next to ×, with the three sizes in a small menu: three labelled buttons
+    // did not fit in the toolbar of the small chat window.
+    const sizeButton = document.createElement("button");
+    sizeButton.type = "button";
+    sizeButton.id = "chat-size-button";
+    sizeButton.textContent = "⤢";
+    sizeButton.title = "채팅창 크기 (작게 · 중간 · 크게)";
+    sizeButton.setAttribute("aria-label", "채팅창 크기");
+    sizeButton.setAttribute("aria-haspopup", "menu");
+    const sizeMenu = document.createElement("div");
+    sizeMenu.id = "chat-size-menu";
+    sizeMenu.setAttribute("role", "menu");
+    sizeMenu.hidden = true;
+    chatPanel.append(sizeMenu);
+
+    const nearestPreset = () =>
+      CHAT_SIZE_PRESETS.reduce((best, preset) =>
         Math.abs(preset.width - chatPanelWidth) + Math.abs(preset.height - chatPanelHeight) <
         Math.abs(best.width - chatPanelWidth) + Math.abs(best.height - chatPanelHeight)
           ? preset
           : best
       );
-      for (const [index, button] of [...group.children].entries()) {
-        button.setAttribute("aria-pressed", String(CHAT_SIZE_PRESETS[index] === nearest));
-      }
+    const closeSizeMenu = () => {
+      sizeMenu.hidden = true;
+      sizeButton.classList.remove("open");
     };
-    for (const preset of CHAT_SIZE_PRESETS) {
-      const button = document.createElement("button");
-      button.type = "button";
-      button.textContent = preset.label;
-      button.title = preset.title;
-      button.addEventListener("click", (event) => {
-        event.stopPropagation();
-        // Not limited by the current window yet (it is about to be resized for this size).
-        applyChatPanelSize(preset.width, preset.height, false);
+    const applyPreset = (preset: (typeof CHAT_SIZE_PRESETS)[number]) => {
+      // Not limited by the current window yet (it is about to be resized for this size).
+      applyChatPanelSize(preset.width, preset.height, false);
+      persistChatPanelSize();
+      void fitChatModeWindow().then(() => {
+        // The window grew or shrank: fit the panel to it once more (크게 = as big as fits).
+        applyChatPanelSize(preset.width, preset.height);
         persistChatPanelSize();
-        void fitChatModeWindow().then(() => {
-          // The window grew or shrank: fit the panel to it once more (크게 = as big as fits).
-          applyChatPanelSize(preset.width, preset.height);
-          persistChatPanelSize();
-          paintPresets();
-          pushNativeClickThrough(true);
-        });
-        paintPresets();
+        pushNativeClickThrough(true);
       });
-      group.append(button);
-    }
-    closeButton.before(group);
-    paintPresets();
+    };
+    sizeButton.addEventListener("click", (event) => {
+      event.stopPropagation();
+      if (!sizeMenu.hidden) {
+        closeSizeMenu();
+        return;
+      }
+      const current = nearestPreset();
+      sizeMenu.replaceChildren(
+        ...CHAT_SIZE_PRESETS.map((preset) => {
+          const item = document.createElement("button");
+          item.type = "button";
+          item.setAttribute("role", "menuitemradio");
+          item.setAttribute("aria-checked", String(preset === current));
+          item.textContent = preset.label;
+          item.title = preset.title;
+          item.addEventListener("click", (clickEvent) => {
+            clickEvent.stopPropagation();
+            closeSizeMenu();
+            applyPreset(preset);
+          });
+          return item;
+        })
+      );
+      const button = sizeButton.getBoundingClientRect();
+      const panel = chatPanel.getBoundingClientRect();
+      sizeMenu.style.top = `${button.bottom - panel.top + 6}px`;
+      sizeMenu.style.right = `${Math.max(8, panel.right - button.right)}px`;
+      sizeMenu.hidden = false;
+      sizeButton.classList.add("open");
+    });
+    sizeMenu.addEventListener("pointerdown", (event) => event.stopPropagation());
+    document.addEventListener("pointerdown", () => {
+      if (!sizeMenu.hidden) closeSizeMenu();
+    });
+    closeButton.before(sizeButton);
   }
 
 

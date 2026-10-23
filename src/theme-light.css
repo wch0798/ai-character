@@ -1220,9 +1220,13 @@
   border: 1px solid rgb(220, 222, 228);
   background: rgb(231, 233, 239)
 }
-:root[data-theme="light"] .chat-size-presets {
-  background: rgb(231, 233, 239)
+:root[data-theme="light"] #chat-size-menu {
+  border: 1px solid rgb(220, 222, 228);
+  background: rgb(236, 238, 242)
 }
-:root[data-theme="light"] #chat-history-toolbar .chat-size-presets button {
-  color: rgb(48, 55, 69)
+:root[data-theme="light"] #chat-size-menu button {
+  color: rgb(26, 35, 54)
+}
+:root[data-theme="light"] #chat-size-menu button:hover {
+  background: rgb(229, 231, 237)
 }
