@@ -1,5 +1,20 @@
 /* Chat additions kept apart from styles.css: answer source, pinned chats, voice buttons.
-   The light theme inverts the whole chat panel (styles.css); only emoji need turning back. */
+   Light theme colors for these are generated into theme-light.css. */
+
+/* Pretendard (bundled) reads cleaner than the Windows default Malgun Gothic, for Korean and
+   Latin alike. Form controls don't inherit the page font on their own. */
+body {
+  font-family: "Pretendard Variable", Pretendard, "Segoe UI Variable Text", "Segoe UI", "Malgun Gothic", sans-serif;
+  -webkit-font-smoothing: antialiased;
+  letter-spacing: -0.005em;
+}
+
+button,
+input,
+textarea,
+select {
+  font-family: inherit;
+}
 
 .message-source {
   margin-top: 4px;
@@ -44,7 +59,3 @@
   bottom: calc(100% + 8px + var(--chat-above-form, 0px));
 }
 
-/* The light theme inverts the whole panel; turn the emoji buttons back so 🎤🔊 keep their colours. */
-:root[data-theme="light"] #chat-form .chat-voice-button {
-  filter: invert(1) hue-rotate(180deg);
-}

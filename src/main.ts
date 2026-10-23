@@ -60,8 +60,11 @@ import {
   readStoredWindowPosition,
   windowPositionKeepingCharacter,
 } from "./window-layout";
+import "pretendard/dist/web/variable/pretendardvariable-dynamic-subset.css";
 import "./styles.css";
 import "./chat-extras.css";
+// Last, so the light colors win over the dark design when <html data-theme="light">.
+import "./theme-light.css";
 
 import {
   Application,

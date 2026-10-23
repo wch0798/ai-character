@@ -4401,47 +4401,7 @@ body:has(#automation-panel:not([hidden])) #performance-hud {
 #chat-folder-bar .chat-folder-menu-note { padding: 4px 8px 2px; color: rgba(255, 255, 255, 0.5); font-size: 10.5px; line-height: 1.4; }
 
 
-/* ---------- 화면 설정: 밝은 테마 · 글자 크기 (appearance.ts) ---------- */
-
-/*
- * The panels were designed dark, with light text set in over a hundred rules. The light theme
- * flips each panel as a whole and turns pictures back, so every control stays readable without
- * a second copy of every color.
- */
-:root[data-theme="light"] #chat-panel,
-:root[data-theme="light"] #work-log-overlay,
-:root[data-theme="light"] #rightclick-test-menu {
-  filter: invert(1) hue-rotate(180deg);
-}
-
-/* The same filter again cancels exactly, so pictures keep their real colors (a partial
-   invert on the panel left them washed out). Settings and automation panels live inside
-   #chat-panel, so they are flipped with it. */
-:root[data-theme="light"] #chat-panel img,
-:root[data-theme="light"] #chat-panel video,
-:root[data-theme="light"] #chat-panel canvas,
-:root[data-theme="light"] #work-log-overlay img {
-  filter: invert(1) hue-rotate(180deg);
-}
-
-/* Status toasts and the update notice sit outside the panels: give them light colors. */
-:root[data-theme="light"] #status {
-  background: rgba(255, 255, 255, 0.94);
-  color: #1d1f24;
-  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.18);
-}
-
-:root[data-theme="light"] #status.error {
-  background: rgba(255, 228, 228, 0.97);
-  color: #8a1010;
-}
-
-:root[data-theme="light"] .ai-update-notice {
-  background: rgba(255, 255, 255, 0.97);
-  border-color: rgba(0, 0, 0, 0.12);
-  color: #1d1f24;
-  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.18);
-}
+/* ---------- 화면 설정: 글자 크기 (appearance.ts). The light theme is src/theme-light.css. ---------- */
 
 /* Chat messages and the input follow the chosen size (보통 = 1). */
 #messages {
