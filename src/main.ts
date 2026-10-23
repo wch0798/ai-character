@@ -16,7 +16,6 @@ import { friendlyChatError } from "./chat-errors";
 import { SPEAKING_EVENT, setupVoiceButtons, speakAnswer, stopSpeaking } from "./voice";
 import { choiceFor, setupChatModelMenu } from "./chat-model-menu";
 import { rectsFromBoxes, silhouetteFits, visiblePartBoxes } from "./character-silhouette";
-import { setChatModelChoice } from "./agent-client";
 import { HISTORY_SAVE_FAILED_EVENT } from "./chat-history";
 import { initializeAutomationPanel } from "./automation-panel-ui";
 import { notificationPreview, notifyDesktop, shouldNotifyCompletion } from "./alerts-client";
@@ -168,6 +167,7 @@ import { initializeConversationFolderUi } from "./conversation-folder-ui";
 import { resolveLive2DAssetUrl, resolveLive2DModelSource } from "./live2d-asset-url";
 import { patchLive2DAssetFetchMime } from "./live2d-fetch-mime";
 import { waitForTauri } from "./tauri-ready";
+import { attachPopupMenu } from "./popup-menu";
 
 quietConsoleInProduction();
 
@@ -2634,11 +2634,10 @@ async function startLive2D() {
   // A CRADLE run's answer arrives twice (session event and awaited result); post it once per
   // request. Reset on every new request, so asking the same thing again still gets its answer.
   let lastAssistantReply = "";
-  // The conversation the running request was sent from; its answer belongs there even if the
-  // user has switched to another conversation meanwhile.
-  let requestConversationId: string | null = null;
-  // What is running now, to decide whether a note added mid-way can restart it.
-  let runningRequest: { prompt: string; answering: boolean; project: boolean } | null = null;
+  // What is running now. Its answer belongs to the conversation it was sent from even if the
+  // user has switched to another one meanwhile; the rest decides whether a note added mid-way
+  // can restart it.
+  let runningRequest: { conversationId: string | null; prompt: string; answering: boolean; project: boolean } | null = null;
 
   function postAssistantReply(text: string, source?: string): void {
     const clean = text.trim();
@@ -2646,7 +2645,7 @@ async function startLive2D() {
       return;
     }
     lastAssistantReply = clean;
-    const target = requestConversationId ?? chatHistory?.getActiveId();
+    const target = runningRequest?.conversationId ?? chatHistory?.getActiveId();
     const shown = target && chatHistory ? chatHistory.appendTo(target, "assistant", clean, source) : true;
     if (shown === null) {
       flashStatus("답을 받았지만 그 대화가 삭제되어 저장하지 못했습니다", "error", 4200);
@@ -2660,7 +2659,8 @@ async function startLive2D() {
 
   /** Whether the running request's conversation is the one on screen. */
   function requestConversationShown(): boolean {
-    return !requestConversationId || requestConversationId === chatHistory?.getActiveId();
+    const id = runningRequest?.conversationId;
+    return !id || id === chatHistory?.getActiveId();
   }
 
   if (messages) {
@@ -3226,10 +3226,6 @@ async function startLive2D() {
           ? preset
           : best
       );
-    const closeSizeMenu = () => {
-      sizeMenu.hidden = true;
-      sizeButton.classList.remove("open");
-    };
     const applyPreset = (preset: (typeof CHAT_SIZE_PRESETS)[number]) => {
       // Not limited by the current window yet (it is about to be resized for this size).
       applyChatPanelSize(preset.width, preset.height, false);
@@ -3241,12 +3237,7 @@ async function startLive2D() {
         pushNativeClickThrough(true);
       });
     };
-    sizeButton.addEventListener("click", (event) => {
-      event.stopPropagation();
-      if (!sizeMenu.hidden) {
-        closeSizeMenu();
-        return;
-      }
+    const { close: closeSizeMenu } = attachPopupMenu(sizeButton, sizeMenu, () => {
       const current = nearestPreset();
       sizeMenu.replaceChildren(
         ...CHAT_SIZE_PRESETS.map((preset) => {
@@ -3268,12 +3259,6 @@ async function startLive2D() {
       const panel = chatPanel.getBoundingClientRect();
       sizeMenu.style.top = `${button.bottom - panel.top + 6}px`;
       sizeMenu.style.right = `${Math.max(8, panel.right - button.right)}px`;
-      sizeMenu.hidden = false;
-      sizeButton.classList.add("open");
-    });
-    sizeMenu.addEventListener("pointerdown", (event) => event.stopPropagation());
-    document.addEventListener("pointerdown", () => {
-      if (!sizeMenu.hidden) closeSizeMenu();
     });
     closeButton.before(sizeButton);
   }
@@ -3653,21 +3638,10 @@ async function startLive2D() {
   let activeRequestId = 0;
   let stoppedRequestId = 0;
   let liveReply: LiveReply | null = null;
-  // The next submit sends this prompt instead of the input text (input text is still shown).
-  let promptOverride: string | null = null;
-  let restarting = false;
-
-  /** Sends `display` as the user's message with `prompt` as what the AI actually receives. */
+  /** Sends `display` as the user's message with `prompt` as what the AI actually receives;
+   * whatever the user is typing stays in the input. */
   function sendWithPrompt(display: string, prompt: string): void {
-    // The submit handler reads the input synchronously, so a draft being typed can go straight back.
-    const draft = chatInput?.value ?? "";
-    promptOverride = prompt;
-    composer?.fill(display);
-    chatForm?.requestSubmit();
-    promptOverride = null;
-    if (draft.trim()) {
-      composer?.fill(draft);
-    }
+    void sendRequest(display, prompt, false);
   }
 
   // Notes and questions typed while conversation X ran belong to X. If the user is looking at
@@ -3694,9 +3668,9 @@ async function startLive2D() {
 
   window.addEventListener(CONVERSATION_SHOWN_EVENT, (event: Event) => {
     const id = (event as CustomEvent<{ id: string }>).detail?.id;
-    if (runningRequest && requestConversationId) {
+    if (runningRequest?.conversationId) {
       // The running request's live answer and progress row show only in its own conversation.
-      if (id === requestConversationId) {
+      if (id === runningRequest.conversationId) {
         liveReply?.repaint();
         if (!runningRequest.answering) {
           window.dispatchEvent(new Event("ai-character:chat-progress-start"));
@@ -3720,14 +3694,15 @@ async function startLive2D() {
     if (!running || running.answering || running.project) {
       return false;
     }
-    restarting = true;
-    window.dispatchEvent(new Event("ai-character:stop-active-work"));
-    restarting = false;
+    // Other screens listen too and stop the running program; `restart` tells this one to keep the queue.
+    window.dispatchEvent(new CustomEvent("ai-character:stop-active-work", { detail: { restart: true } }));
     window.setTimeout(() => sendWithPrompt(text, mergedPrompt(running.prompt, [text])), 0);
     return true;
   }
 
-  window.addEventListener("ai-character:stop-active-work", () => {
+  /** Stops the running request. A restart (a note folded in) is not a user stop: no stop
+   * message, and the waiting questions stay queued. */
+  function stopActiveWork(restart: boolean): void {
     if (!composer?.isBusy()) {
       return;
     }
@@ -3736,8 +3711,7 @@ async function startLive2D() {
     liveReply?.dispose();
     stopSpeaking();
     composer.setBusy(false);
-    if (restarting) {
-      // Restarting with an added note: not a user stop, so no stop message and keep the queue.
+    if (restart) {
       return;
     }
     // Stopping means "not like this": waiting questions go back to the input, unsent.
@@ -3746,245 +3720,248 @@ async function startLive2D() {
     window.dispatchEvent(new Event("ai-character:chat-progress-hide"));
     addMessage("답변을 중지했습니다. 질문은 입력창에서 ↑ 키로 다시 불러올 수 있어요.", "assistant");
     chatInput?.focus();
+  }
+
+  window.addEventListener("ai-character:stop-active-work", (event) => {
+    stopActiveWork((event as CustomEvent<{ restart?: boolean } | null>).detail?.restart === true);
   });
 
-  chatForm?.addEventListener(
-    "submit",
-    async (event) => {
-      event.preventDefault();
+  chatForm?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    void sendRequest(chatInput?.value.trim() ?? "", null, true);
+  });
 
-      if (composer?.isBusy()) {
-        return;
-      }
+  /** Sends `text` as the user's message; `prompt` (else the text) is what the AI receives.
+   * `fromInput` clears the input box, which only holds this text when it was typed there. */
+  async function sendRequest(text: string, prompt: string | null, fromInput: boolean): Promise<void> {
+    if (composer?.isBusy()) {
+      return;
+    }
 
-      const text =
-        chatInput?.value.trim();
-      // Set only for the duration of a sendWithPrompt call, so read it before any await.
-      const promptText = promptOverride ?? text ?? "";
+    const promptText = prompt ?? text;
 
-      if (
-        !text &&
-        pendingAttachments.length === 0
-      ) {
-        return;
-      }
+    if (
+      !text &&
+      pendingAttachments.length === 0
+    ) {
+      return;
+    }
 
-      const blockedAttachments =
+    const blockedAttachments =
+      pendingAttachments.filter(
+        (attachment) =>
+          attachmentAccess.get(
+            attachment.originalPath ??
+            attachment.path
+          )?.readable === false
+      );
+
+    if (
+      blockedAttachments.length > 0
+    ) {
+      pendingAttachments =
         pendingAttachments.filter(
           (attachment) =>
             attachmentAccess.get(
               attachment.originalPath ??
               attachment.path
-            )?.readable === false
+            )?.readable !== false
         );
 
       if (
-        blockedAttachments.length > 0
+        !text &&
+        pendingAttachments.length === 0
       ) {
-        pendingAttachments =
-          pendingAttachments.filter(
-            (attachment) =>
-              attachmentAccess.get(
-                attachment.originalPath ??
-                attachment.path
-              )?.readable !== false
-          );
-
-        if (
-          !text &&
-          pendingAttachments.length === 0
-        ) {
-          addMessage(
-            [
-              "파일 접근 권한이 없습니다:",
-              ...blockedAttachments.map(
-                (file) =>
-                  `• ${file.name}`
-              ),
-              "",
-              "+ 버튼으로 파일을 다시 선택해 주세요.",
-            ].join("\n"),
-            "assistant"
-          );
-
-          return;
-        }
-      }
-
-      const previousConversationContext =
-        chatHistory?.getContext() ?? "";
-
-      const userDisplayText =
-        text ||
-        `첨부 파일 ${pendingAttachments.length}개 분석`;
-
-      addMessage(
-        userDisplayText,
-        "user"
-      );
-
-      chatHistory?.append(
-        "user",
-        userDisplayText
-      );
-      requestConversationId = chatHistory?.getActiveId() ?? null;
-      const thisConversationId = requestConversationId;
-      // The program and model picked in the chat menu for this conversation.
-      setChatModelChoice(choiceFor(thisConversationId));
-      lastAssistantReply = "";
-
-      const requestPrompt =
-        buildAttachmentPrompt(
-          promptText,
-          pendingAttachments
+        addMessage(
+          [
+            "파일 접근 권한이 없습니다:",
+            ...blockedAttachments.map(
+              (file) =>
+                `• ${file.name}`
+            ),
+            "",
+            "+ 버튼으로 파일을 다시 선택해 주세요.",
+          ].join("\n"),
+          "assistant"
         );
 
-      composer?.takeText();
-      composer?.remember(text ?? "");
-      composer?.setBusy(true);
-      const requestId = ++activeRequestId;
-      const isStopped = () => stoppedRequestId === requestId;
-      const startedAt = Date.now();
-      const thisRequest = {
-        prompt: promptText,
-        answering: false,
-        project: classifyRequestIntent(promptText, previousConversationContext) === "project",
-      };
-      runningRequest = thisRequest;
-
-      characterActivity?.setActivity("working");
-      window.dispatchEvent(new Event("ai-character:chat-progress-start"));
-
-      const live = messages
-        ? startLiveReply(`chat-${requestId}-${startedAt}`, {
-            messages,
-            render: (target, partial) => target.append(renderMarkdown(partial, markdownHandlers)),
-            onFirstText: () => {
-              thisRequest.answering = true;
-              window.dispatchEvent(new Event("ai-character:chat-progress-hide"));
-            },
-            onUpdate: () => scrollFollower?.follow(false),
-            isVisible: requestConversationShown,
-          })
-        : null;
-      liveReply = live;
-
-      try {
-        const answer =
-          await askCradleCompat(
-            requestPrompt,
-            chatHistory?.getActiveId() ?? null,
-            previousConversationContext,
-            `chat-${requestId}-${startedAt}`
-          );
-
-        live?.dispose();
-        if (isStopped()) {
-          return;
-        }
-
-        const source = await lookupAnswerSource(startedAt - 1_000).catch(() => null);
-        if (isStopped()) {
-          return;
-        }
-        postAssistantReply(
-          answer || "작업을 마쳤지만 채팅에 넣을 답이 비어 있습니다.",
-          source ? formatAnswerSource(source) : undefined
-        );
-        window.dispatchEvent(new Event("ai-character:usage-refresh"));
-        notifyIfAway(startedAt, "답변이 도착했습니다", answer || "작업을 마쳤습니다.");
-
-        characterActivity?.setActivity("done");
-        window.dispatchEvent(new Event("ai-character:chat-progress-hide"));
-
-        const completedAttachments =
-          [...pendingAttachments];
-
-        pendingAttachments = [];
-        attachmentAccess.clear();
-        renderAttachments();
-
-        for (
-          const attachment
-          of completedAttachments
-        ) {
-          const originalPath =
-            attachment.originalPath ??
-            attachment.path;
-
-          if (
-            attachment.path ===
-            originalPath
-          ) {
-            continue;
-          }
-
-          try {
-            await removeStagedAttachment(
-              attachment.path
-            );
-          } catch (error) {
-            console.warn(
-              "분석 완료 후 임시파일 삭제 실패:",
-              error
-            );
-          }
-        }
-      } catch (error) {
-        if (isStopped()) {
-          return;
-        }
-        const message =
-          error instanceof Error
-            ? error.message
-            : String(error);
-
-        const failedText = text ?? "";
-        // Back into the input only if the user is still on the conversation it came from.
-        if (requestConversationShown()) {
-          composer?.restoreText(failedText);
-        }
-        retryLastRequest = () => {
-          composer?.fill(failedText);
-          chatForm?.requestSubmit();
-        };
-        // Only on screen if the user is still looking at the conversation the request came from.
-        if (requestConversationShown()) {
-          addMessage(
-            friendlyChatError(message),
-            "assistant",
-            Date.now(),
-            undefined,
-            true
-          );
-        }
-        window.dispatchEvent(new Event("ai-character:usage-refresh"));
-        notifyIfAway(startedAt, "작업이 실패했습니다", message);
-        retryLastRequest = null;
-        characterActivity?.setActivity("error");
-        window.setTimeout(() => {
-          characterActivity?.setActivity("idle");
-        }, 2400);
-      } finally {
-        live?.dispose();
-        if (liveReply === live) {
-          liveReply = null;
-        }
-        // A stopped request settles later, possibly while a newer one runs: leave that one alone.
-        if (requestId === activeRequestId) {
-          // A failed or finished request must not leave the progress row ticking under the chat.
-          window.dispatchEvent(new Event("ai-character:chat-progress-hide"));
-          requestConversationId = null;
-          runningRequest = null;
-        }
-        if (!isStopped()) {
-          composer?.setBusy(false);
-          chatInput?.focus();
-          sendWaitingOrDefer(thisConversationId);
-        }
+        return;
       }
     }
-  );
+
+    const previousConversationContext =
+      chatHistory?.getContext() ?? "";
+
+    const userDisplayText =
+      text ||
+      `첨부 파일 ${pendingAttachments.length}개 분석`;
+
+    addMessage(
+      userDisplayText,
+      "user"
+    );
+
+    chatHistory?.append(
+      "user",
+      userDisplayText
+    );
+    const thisConversationId = chatHistory?.getActiveId() ?? null;
+    // The program and model picked in the chat menu for this conversation.
+    const modelChoice = choiceFor(thisConversationId);
+    lastAssistantReply = "";
+
+    const requestPrompt =
+      buildAttachmentPrompt(
+        promptText,
+        pendingAttachments
+      );
+
+    if (fromInput) composer?.takeText();
+    composer?.remember(text);
+    composer?.setBusy(true);
+    const requestId = ++activeRequestId;
+    const isStopped = () => stoppedRequestId === requestId;
+    const startedAt = Date.now();
+    const thisRequest = {
+      conversationId: thisConversationId,
+      prompt: promptText,
+      answering: false,
+      project: classifyRequestIntent(promptText, previousConversationContext) === "project",
+    };
+    runningRequest = thisRequest;
+
+    characterActivity?.setActivity("working");
+    window.dispatchEvent(new Event("ai-character:chat-progress-start"));
+
+    const live = messages
+      ? startLiveReply(`chat-${requestId}-${startedAt}`, {
+          messages,
+          render: (target, partial) => target.append(renderMarkdown(partial, markdownHandlers)),
+          onFirstText: () => {
+            thisRequest.answering = true;
+            window.dispatchEvent(new Event("ai-character:chat-progress-hide"));
+          },
+          onUpdate: () => scrollFollower?.follow(false),
+          isVisible: requestConversationShown,
+        })
+      : null;
+    liveReply = live;
+
+    try {
+      const answer =
+        await askCradleCompat(
+          requestPrompt,
+          chatHistory?.getActiveId() ?? null,
+          previousConversationContext,
+          `chat-${requestId}-${startedAt}`,
+          modelChoice
+        );
+
+      live?.dispose();
+      if (isStopped()) {
+        return;
+      }
+
+      const source = await lookupAnswerSource(startedAt - 1_000).catch(() => null);
+      if (isStopped()) {
+        return;
+      }
+      postAssistantReply(
+        answer || "작업을 마쳤지만 채팅에 넣을 답이 비어 있습니다.",
+        source ? formatAnswerSource(source) : undefined
+      );
+      window.dispatchEvent(new Event("ai-character:usage-refresh"));
+      notifyIfAway(startedAt, "답변이 도착했습니다", answer || "작업을 마쳤습니다.");
+
+      characterActivity?.setActivity("done");
+      window.dispatchEvent(new Event("ai-character:chat-progress-hide"));
+
+      const completedAttachments =
+        [...pendingAttachments];
+
+      pendingAttachments = [];
+      attachmentAccess.clear();
+      renderAttachments();
+
+      for (
+        const attachment
+        of completedAttachments
+      ) {
+        const originalPath =
+          attachment.originalPath ??
+          attachment.path;
+
+        if (
+          attachment.path ===
+          originalPath
+        ) {
+          continue;
+        }
+
+        try {
+          await removeStagedAttachment(
+            attachment.path
+          );
+        } catch (error) {
+          console.warn(
+            "분석 완료 후 임시파일 삭제 실패:",
+            error
+          );
+        }
+      }
+    } catch (error) {
+      if (isStopped()) {
+        return;
+      }
+      const message =
+        error instanceof Error
+          ? error.message
+          : String(error);
+
+      const failedText = text ?? "";
+      // Back into the input only if the user is still on the conversation it came from.
+      if (requestConversationShown()) {
+        composer?.restoreText(failedText);
+      }
+      retryLastRequest = () => {
+        composer?.fill(failedText);
+        chatForm?.requestSubmit();
+      };
+      // Only on screen if the user is still looking at the conversation the request came from.
+      if (requestConversationShown()) {
+        addMessage(
+          friendlyChatError(message),
+          "assistant",
+          Date.now(),
+          undefined,
+          true
+        );
+      }
+      window.dispatchEvent(new Event("ai-character:usage-refresh"));
+      notifyIfAway(startedAt, "작업이 실패했습니다", message);
+      retryLastRequest = null;
+      characterActivity?.setActivity("error");
+      window.setTimeout(() => {
+        characterActivity?.setActivity("idle");
+      }, 2400);
+    } finally {
+      live?.dispose();
+      if (liveReply === live) {
+        liveReply = null;
+      }
+      // A stopped request settles later, possibly while a newer one runs: leave that one alone.
+      if (requestId === activeRequestId) {
+        // A failed or finished request must not leave the progress row ticking under the chat.
+        window.dispatchEvent(new Event("ai-character:chat-progress-hide"));
+        runningRequest = null;
+      }
+      if (!isStopped()) {
+        composer?.setBusy(false);
+        chatInput?.focus();
+        sendWaitingOrDefer(thisConversationId);
+      }
+    }
+  }
 
   /*
    * 가벼운 성능 HUD

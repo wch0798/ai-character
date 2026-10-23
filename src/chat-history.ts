@@ -159,6 +159,11 @@ export class ChatHistoryStore {
     return conversation ? structuredClone(conversation) : null;
   }
 
+  /** Conversation id → title, read once without copying messages. */
+  conversationTitles(): Map<string, string> {
+    return new Map(this.read().conversations.map((item) => [item.id, item.title]));
+  }
+
   listConversations(query = ""): ChatConversation[] {
     const normalizedQuery = query.trim().toLocaleLowerCase();
     return this.read().conversations

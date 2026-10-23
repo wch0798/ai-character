@@ -1,3 +1,5 @@
+import { isNearBottom } from "./chat-composer";
+
 export type ChatProgressKind = "chat" | "file" | "cradle";
 
 export type ChatProgressView = {
@@ -115,7 +117,7 @@ export function initializeChatProgressUi(): void {
     }
     // Follow the bottom only when the user is already there, so they can scroll up and read
     // earlier messages while a long job runs.
-    const atBottom = messages.scrollHeight - messages.scrollTop - messages.clientHeight < 48;
+    const atBottom = isNearBottom(messages.scrollTop, messages.clientHeight, messages.scrollHeight, 48);
     if (messages.lastElementChild !== row) {
       messages.append(row);
     }

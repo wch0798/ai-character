@@ -10,6 +10,24 @@ export type AgentKind =
   | "cursor"
   | "antigravity";
 
+/** The one place the programs are named in the UI. */
+export const AGENT_LABELS: Record<AgentKind, string> = {
+  claude: "Claude",
+  codex: "ChatGPT (Codex)",
+  cursor: "Cursor",
+  antigravity: "Antigravity",
+};
+
+/** Name for any program id, including ones read from stored rows. */
+export function agentLabel(agent: string): string {
+  return AGENT_LABELS[agent as AgentKind] ?? agent;
+}
+
+/** Name without the bracketed detail, for tight spots like the chat toolbar. */
+export function agentShortLabel(agent: string): string {
+  return agentLabel(agent).replace(/ \(.*\)$/, "");
+}
+
 export type RunAgentOptions = {
   agent: AgentKind;
   prompt: string;
@@ -19,22 +37,13 @@ export type RunAgentOptions = {
   sensitiveAcknowledged?: boolean;
   emitRuntimeEvents?: boolean;
   kind?: "chat" | "file";
+  /** Model to run instead of the one in settings; "" or omitted keeps the settings. */
+  model?: string | null;
   onStream?: (event: AgentStreamEvent) => void;
 };
 
 /** The program and model picked in the chat's menu for the conversation being answered. */
 export type ModelChoice = { agent: AgentKind; model: string };
-
-let chatChoice: ModelChoice | null = null;
-
-/** Set for each chat request (one runs at a time); "" model means the program's default. */
-export function setChatModelChoice(choice: ModelChoice | null): void {
-  chatChoice = choice;
-}
-
-export function chatModelChoice(): ModelChoice | null {
-  return chatChoice;
-}
 
 export type AgentModel = { id: string; label: string; note: string };
 
@@ -552,8 +561,7 @@ export function runAgentTask(options: RunAgentOptions): AgentTask {
         taskId,
         timeoutSeconds: options.timeoutSeconds,
         sensitiveAcknowledged: options.sensitiveAcknowledged ?? true,
-        // The chat menu's model applies whenever its program runs for this request.
-        model: chatChoice && chatChoice.agent === options.agent && chatChoice.model ? chatChoice.model : null,
+        model: options.model || null,
       });
 
       const endDetail: AgentTaskEndEvent = {
@@ -656,7 +664,8 @@ export async function confirmSensitiveAgentAccess(
 export async function askAgentCompat(
   agent: AgentKind,
   prompt: string,
-  conversationId?: string | null
+  conversationId?: string | null,
+  model?: string | null
 ): Promise<string> {
   const preferences = await getAppPreferences();
   const sensitiveAcknowledged = await confirmSensitiveAgentAccess(preferences);
@@ -672,6 +681,7 @@ export async function askAgentCompat(
       timeoutSeconds: preferences.timeoutSeconds,
       sensitiveAcknowledged,
       kind: "chat",
+      model,
     });
   } catch (error) {
     const raw = errorMessage(error);

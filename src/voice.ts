@@ -1,4 +1,5 @@
-import { invoke } from "@tauri-apps/api/core";
+import { readStored, writeStored } from "./local-store";
+import { startVoiceTyping } from "./system-client";
 
 /**
  * Voice in the chat. Input uses Windows voice typing (WebView2 has no speech recognition), so
@@ -9,11 +10,7 @@ export const SPEAKING_EVENT = "ai-character:speaking";
 const TTS_KEY = "ai-character-tts";
 
 function readAloudOn(): boolean {
-  try {
-    return localStorage.getItem(TTS_KEY) === "on";
-  } catch {
-    return false;
-  }
+  return readStored(TTS_KEY) === "on";
 }
 
 /** Markdown to something worth hearing: no code, links read by their text, no symbols. */
@@ -74,7 +71,7 @@ export function setupVoiceButtons(form: HTMLFormElement, input: HTMLTextAreaElem
   mic.setAttribute("aria-label", "말로 입력");
   mic.addEventListener("click", () => {
     input.focus();
-    void invoke("start_voice_typing").catch((error) => {
+    void startVoiceTyping().catch((error) => {
       onError(`음성 입력을 열지 못했습니다. Win+H를 직접 눌러 보세요. (${error instanceof Error ? error.message : String(error)})`);
     });
   });
@@ -91,11 +88,7 @@ export function setupVoiceButtons(form: HTMLFormElement, input: HTMLTextAreaElem
   };
   speaker.addEventListener("click", () => {
     const next = !readAloudOn();
-    try {
-      localStorage.setItem(TTS_KEY, next ? "on" : "off");
-    } catch {
-      // Without storage the choice lasts until the app closes.
-    }
+    writeStored(TTS_KEY, next ? "on" : "off");
     if (!next) stopSpeaking();
     paint();
   });

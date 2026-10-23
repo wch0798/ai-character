@@ -236,35 +236,78 @@ fn run_command_with(
     timeout: Duration,
     cancel: Option<&AtomicBool>,
 ) -> CommandOutput {
-    let started = Instant::now();
     let mut command = Command::new(program);
     #[cfg(windows)]
     {
         crate::windows_process::hide_console(&mut command);
     }
+    apply_process_env(&mut command);
+    command.args(args).env("PATH", augmented_path());
+    if let Some(cwd) = cwd {
+        command.current_dir(cwd);
+    }
+    if strip_secrets {
+        strip_secret_env(&mut command);
+    }
+    for (key, value) in envs {
+        command.env(key, value);
+    }
+    let run = run_prepared_with(command, timeout, cancel);
+    let output = match run.spawn_error {
+        Some(error) => format!("실행 실패: {} ({error})", program.display()),
+        None => run.stdout + &run.stderr,
+    };
+    CommandOutput {
+        success: run.success,
+        code: run.code,
+        output,
+        timed_out: run.timed_out,
+        cancelled: run.cancelled,
+        duration_ms: run.duration_ms,
+    }
+}
+
+/// Hides the app's API keys and tokens from a child.
+pub fn strip_secret_env(command: &mut Command) -> &mut Command {
+    for name in crate::policy_engine::SECRET_ENV_NAMES {
+        command.env_remove(name);
+    }
+    command
+}
+
+/// A finished run of an already-built command, with stdout and stderr kept apart.
+#[derive(Debug, Default)]
+pub struct PreparedOutput {
+    pub success: bool,
+    pub code: Option<i32>,
+    pub stdout: String,
+    pub stderr: String,
+    pub timed_out: bool,
+    pub cancelled: bool,
+    pub duration_ms: i64,
+    /// Set when the program could not be started at all.
+    pub spawn_error: Option<String>,
+}
+
+/// Runs a command built by the caller (for example by `windows_process::command_with_args`,
+/// which resolves `.cmd` shims) with a hard timeout; the whole tree is killed on timeout.
+pub fn run_prepared(command: Command, timeout: Duration) -> PreparedOutput {
+    run_prepared_with(command, timeout, None)
+}
+
+fn run_prepared_with(mut command: Command, timeout: Duration, cancel: Option<&AtomicBool>) -> PreparedOutput {
+    let started = Instant::now();
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
         command.process_group(0);
     }
-    apply_process_env(&mut command);
-    command.args(args).env("PATH", augmented_path()).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
-    if let Some(cwd) = cwd {
-        command.current_dir(cwd);
-    }
-    if strip_secrets {
-        for name in crate::policy_engine::SECRET_ENV_NAMES {
-            command.env_remove(name);
-        }
-    }
-    for (key, value) in envs {
-        command.env(key, value);
-    }
+    command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = match command.spawn() {
         Ok(child) => child,
         Err(error) => {
-            return CommandOutput {
-                output: format!("실행 실패: {} ({error})", program.display()),
+            return PreparedOutput {
+                spawn_error: Some(error.to_string()),
                 duration_ms: started.elapsed().as_millis() as i64,
                 ..Default::default()
             }
@@ -291,19 +334,34 @@ fn run_command_with(
             Err(_) => break None,
         }
     };
-    let mut output = String::new();
     let deadline = Instant::now() + PIPE_GRACE;
-    for (collected, handle) in [stdout, stderr].into_iter().flatten() {
-        output.push_str(&String::from_utf8_lossy(&collect_until(&collected, handle, deadline)));
-    }
-    CommandOutput {
+    let collect = |reader: Option<(SharedOutput, thread::JoinHandle<()>)>| {
+        reader
+            .map(|(output, handle)| String::from_utf8_lossy(&collect_until(&output, handle, deadline)).into_owned())
+            .unwrap_or_default()
+    };
+    let stdout = collect(stdout);
+    let stderr = collect(stderr);
+    PreparedOutput {
         success: !timed_out && !cancelled && status.map(|status| status.success()).unwrap_or(false),
         code: status.and_then(|status| status.code()),
-        output,
+        stdout,
+        stderr,
         timed_out,
         cancelled,
         duration_ms: started.elapsed().as_millis() as i64,
+        spawn_error: None,
     }
+}
+
+/// Runs blocking work (CLI calls, file scans) off the UI thread.
+pub async fn off_ui_thread<T: Send + 'static>(
+    label: &str,
+    work: impl FnOnce() -> T + Send + 'static,
+) -> Result<T, String> {
+    tauri::async_runtime::spawn_blocking(work)
+        .await
+        .map_err(|error| format!("{label}: {error}"))
 }
 
 #[cfg(test)]

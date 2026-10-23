@@ -1,7 +1,7 @@
 import { personaInstruction } from "./persona";
 import {
+  agentLabel,
   askAgentCompat,
-  chatModelChoice,
   cancelAgent,
   confirmSensitiveAgentAccess,
   detectAgent,
@@ -10,6 +10,7 @@ import {
   runAgentTask,
   type AgentKind,
   type AppPreferences,
+  type ModelChoice,
 } from "./agent-client";
 import { collectWebResearch } from "./web-research";
 import { buildTaskContext } from "./context-client";
@@ -1618,20 +1619,14 @@ function composeDirectPrompt(
   ].filter(Boolean).join("\n\n");
 }
 
-const CHAT_AGENT_NAMES: Record<AgentKind, string> = {
-  claude: "Claude",
-  codex: "ChatGPT(Codex)",
-  cursor: "Cursor",
-  antigravity: "Antigravity",
-};
-
 async function answerDirectly(
   prompt: string,
   conversationId: string | null | undefined,
   conversationContext: string,
   researchBlock = "",
   streamId: string | null = null,
-  mode: "chat" | "facts" = "chat"
+  mode: "chat" | "facts" = "chat",
+  choice: ModelChoice | null = null
 ): Promise<string> {
   pendingChatNotice = "";
   const preferences = await getAppPreferences();
@@ -1651,8 +1646,9 @@ async function answerDirectly(
   };
   // The program picked in the chat menu for this conversation (else 기본 프로그램 in settings)
   // answers first; its name is used in notices.
-  const primary = chatModelChoice()?.agent ?? preferences.defaultAgent;
-  const primaryName = CHAT_AGENT_NAMES[primary];
+  const primary = choice?.agent ?? preferences.defaultAgent;
+  const primaryModel = choice?.model || null;
+  const primaryName = agentLabel(primary);
 
   if (mode === "facts") {
     const free = await tryAutomaticProviders(freeApis, composed, { ...context, streamId }, "정보 조사");
@@ -1660,7 +1656,7 @@ async function answerDirectly(
       return free.response;
     }
     try {
-      const text = await askAgentCompat(primary, composed, conversationId);
+      const text = await askAgentCompat(primary, composed, conversationId, primaryModel);
       pendingChatNotice = `무료 AI로 정보를 확인하지 못해 ${primaryName}가 답했습니다.`;
       return withChatNotice(text);
     } catch (error) {
@@ -1682,7 +1678,7 @@ async function answerDirectly(
   }
 
   try {
-    return await askAgentCompat(primary, composed, conversationId);
+    return await askAgentCompat(primary, composed, conversationId, primaryModel);
   } catch (error) {
     if (blocked(error)) {
       throw error instanceof Error ? error : new Error(error instanceof Error ? error.message : String(error));
@@ -1694,7 +1690,7 @@ async function answerDirectly(
       const primaryReason = isQuotaOrLimitError(error) ? "사용량을 다 썼습니다" : "응답하지 못했습니다";
       try {
         const text = await askAgentCompat(backup, composed, conversationId);
-        pendingChatNotice = `${primaryName}가 ${primaryReason}. 이 답은 ${CHAT_AGENT_NAMES[backup]}가 작업 폴더를 보고 이어받았습니다.`;
+        pendingChatNotice = `${primaryName}가 ${primaryReason}. 이 답은 ${agentLabel(backup)}가 작업 폴더를 보고 이어받았습니다.`;
         return withChatNotice(text);
       } catch (claudeError) {
         if (blocked(claudeError)) {
@@ -1705,7 +1701,7 @@ async function answerDirectly(
           `작업 폴더를 볼 수 있는 AI가 지금 답하지 못해 폴더 내용을 확인하지 못했습니다.
 ` +
           `· ${primaryName}: ${detail(error)}
-· ${CHAT_AGENT_NAMES[backup]}: ${detail(claudeError)}
+· ${agentLabel(backup)}: ${detail(claudeError)}
 ` +
           "설정 → 프로그램 · 로그인에서 두 프로그램의 로그인 상태를 확인해 주세요."
         );
@@ -1742,14 +1738,16 @@ export async function askCradleCompat(
   prompt: string,
   conversationId?: string | null,
   conversationContext = "",
-  streamId: string | null = null
+  streamId: string | null = null,
+  /** The program and model picked in the chat menu for this conversation. */
+  choice: ModelChoice | null = null
 ): Promise<string> {
   const preferences = await getAppPreferences();
   const current = extractCurrentUserRequest(prompt);
   const history = compactText(conversationContext.trim(), 2_400);
 
   if (!preferences.cradleEnabled) {
-    return answerDirectly(current, conversationId, history, "", streamId);
+    return answerDirectly(current, conversationId, history, "", streamId, "chat", choice);
   }
 
   const intent = classifyRequestIntent(current, history);
@@ -1759,7 +1757,7 @@ export async function askCradleCompat(
       const research = await collectWebResearch(current, true);
       researchBlock = research.researchPromptBlock;
     }
-    return answerDirectly(current, conversationId, history, researchBlock, streamId, intent === "research" ? "facts" : "chat");
+    return answerDirectly(current, conversationId, history, researchBlock, streamId, intent === "research" ? "facts" : "chat", choice);
   }
 
   return runCradleOrchestration(current, conversationId, history);

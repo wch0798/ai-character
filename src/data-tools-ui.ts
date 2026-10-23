@@ -8,29 +8,17 @@ import {
   storeProfiles,
   upsertProfile,
 } from "./character-profiles";
+import { stamp } from "./chat-backup";
+import { errorText, help, sectionShell, type MakeButton } from "./settings-controls";
 
 /**
  * Settings sections for the user's own data: back up and restore settings, wipe everything
  * the app keeps on this PC, and saved character profiles.
  */
-type MakeButton = (label: string, className?: string) => HTMLButtonElement;
-
-const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
-
 function section(title: string, ...nodes: Node[]): HTMLElement {
-  const box = document.createElement("section");
-  box.className = "ai-settings-section";
-  const heading = document.createElement("h3");
-  heading.textContent = title;
-  box.append(heading, ...nodes);
+  const { section: box } = sectionShell(title);
+  box.append(...nodes);
   return box;
-}
-
-function help(text: string): HTMLDivElement {
-  const node = document.createElement("div");
-  node.className = "ai-settings-help";
-  node.textContent = text;
-  return node;
 }
 
 function row(...buttons: HTMLElement[]): HTMLDivElement {
@@ -38,12 +26,6 @@ function row(...buttons: HTMLElement[]): HTMLDivElement {
   node.className = "ai-settings-ghost-row";
   node.append(...buttons);
   return node;
-}
-
-function stamp(): string {
-  const now = new Date();
-  const pad = (value: number) => String(value).padStart(2, "0");
-  return `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}`;
 }
 
 /** 설정 백업 · 모든 데이터 지우기, for the 고급 tab. */

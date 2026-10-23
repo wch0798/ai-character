@@ -41,6 +41,19 @@ fn assert_text_file_path(path: &Path, for_write: bool) -> Result<PathBuf, String
     Ok(target)
 }
 
+/// Writes a sibling temp file and renames it over `path`, so a crash mid-write never leaves the
+/// file cut short and a reader never sees half of it.
+pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let mut temp = path.as_os_str().to_owned();
+    temp.push(".ai-character.tmp");
+    let temp = std::path::PathBuf::from(temp);
+    let result = fs::write(&temp, bytes).and_then(|()| fs::rename(&temp, path));
+    if result.is_err() {
+        let _ = fs::remove_file(&temp);
+    }
+    result
+}
+
 #[derive(Debug, Serialize)]
 pub struct TextFileResult {
     pub path: String,
@@ -55,16 +68,7 @@ pub fn write_text_file(path: String, contents: String) -> Result<TextFileResult,
     let target = assert_text_file_path(Path::new(&path), true)?;
     ensure_parent(&target)?;
     let bytes = contents.as_bytes().len();
-    // Through a temp file and a rename, so a crash mid-write never leaves the file cut short.
-    let temp = target.with_extension(format!(
-        "{}ai-character-tmp",
-        target.extension().map(|ext| format!("{}.", ext.to_string_lossy())).unwrap_or_default()
-    ));
-    fs::write(&temp, contents.as_bytes()).map_err(|error| format!("파일 저장 실패: {}", error))?;
-    if let Err(error) = fs::rename(&temp, &target) {
-        let _ = fs::remove_file(&temp);
-        return Err(format!("파일 저장 실패: {}", error));
-    }
+    write_atomic(&target, contents.as_bytes()).map_err(|error| format!("파일 저장 실패: {}", error))?;
 
     Ok(TextFileResult {
         path: target.display().to_string(),

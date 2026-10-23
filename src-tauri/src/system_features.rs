@@ -163,7 +163,7 @@ pub fn set_autostart(enabled: bool) -> Result<bool, String> {
 static LOG_PATH: OnceLock<PathBuf> = OnceLock::new();
 static LOG_LOCK: Mutex<()> = Mutex::new(());
 
-fn log_dir(app: &AppHandle) -> Option<PathBuf> {
+pub(crate) fn log_dir(app: &AppHandle) -> Option<PathBuf> {
     app.path().app_local_data_dir().ok().map(|dir| dir.join("logs"))
 }
 

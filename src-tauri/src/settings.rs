@@ -435,11 +435,6 @@ pub fn save_settings_to(path: &Path, settings: &AppSettings) -> Result<(), Strin
     // thread never sees a truncated file (which would load as defaults and get saved back).
     static WRITE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let _guard = WRITE_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-    let temp = path.with_extension("conf.tmp");
-    fs::write(&temp, content)
-        .and_then(|()| fs::rename(&temp, path))
-        .map_err(|error| {
-            let _ = fs::remove_file(&temp);
-            format!("설정 파일 저장 실패: {} ({error})", path.display())
-        })
+    crate::text_files::write_atomic(path, content.as_bytes())
+        .map_err(|error| format!("설정 파일 저장 실패: {} ({error})", path.display()))
 }
