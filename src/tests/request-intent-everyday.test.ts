@@ -3,7 +3,7 @@ import { classifyRequestIntent } from "../request-intent";
 
 describe("everyday edit verbs", () => {
   it("stay plain chat when nothing points at code or files", () => {
-    for (const request of ["이 문장 영어로 바꿔줘", "시 작성해줘", "이메일 답장 작성해줘", "문장을 자연스럽게 고쳐줘", "happy birthday 노래 가사 바꿔줘"]) {
+    for (const request of ["이 문장 영어로 바꿔줘", "시 작성해줘", "이메일 답장 작성해줘", "문장을 자연스럽게 고쳐줘", "happy birthday 노래 가사 바꿔줘", "웹툰 줄거리 작성해줘", "TV 프로그램 소개 작성해줘", "책 한 페이지 요약해서 작성해"]) {
       expect(classifyRequestIntent(request)).toBe("chat");
     }
   });

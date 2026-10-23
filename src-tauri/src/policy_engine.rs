@@ -190,9 +190,9 @@ pub fn estimate_paid_usd(input_tokens: i64, output_tokens: i64, per_1k: f64) -> 
     ((input_tokens + output_tokens).max(0) as f64 / 1000.0) * per_1k
 }
 
-/// USD per 1M tokens (input, output) for models not listed below. Kept above every listed
-/// price so an unknown model reaches the daily limit early rather than late.
-pub const UNKNOWN_MODEL_PRICE: (f64, f64) = (5.0, 20.0);
+/// USD per 1M tokens (input, output) for models not listed below: the most expensive listed
+/// price, so an unknown model reaches the daily limit early rather than late.
+pub const UNKNOWN_MODEL_PRICE: (f64, f64) = (15.0, 75.0);
 
 /// Published list prices per 1M tokens (input, output), rounded up. Matched by the longest
 /// prefix of the model name (after any `vendor/` part), so `gpt-4o-mini` beats `gpt-4o`.

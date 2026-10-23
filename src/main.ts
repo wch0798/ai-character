@@ -1,3 +1,6 @@
+// Pixi builds shader code with new Function() unless this is loaded first; with it the app can
+// run under a CSP without 'unsafe-eval' (tauri.conf.json).
+import "pixi.js/unsafe-eval";
 import { confirmOnSecondClick } from "./settings-controls";
 import { initializeCradleOrchestrationUi } from "./orchestration-ui";
 import { askCradleCompat } from "./orchestration-engine";

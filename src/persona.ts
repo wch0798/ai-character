@@ -1,10 +1,10 @@
-/** The character's personality and tone, set in settings (화면 → 캐릭터 성격·말투). */
+/** The character's personality and tone: written by the settings screen, read into prompts. */
 export const PERSONA_KEY = "ai-character-persona";
-const MAX_PERSONA = 500;
+export const PERSONA_LIMIT = 500;
 
 export function readPersona(): string {
   try {
-    return (localStorage.getItem(PERSONA_KEY) ?? "").trim().slice(0, MAX_PERSONA);
+    return (localStorage.getItem(PERSONA_KEY) ?? "").trim().slice(0, PERSONA_LIMIT);
   } catch {
     return "";
   }

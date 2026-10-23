@@ -128,7 +128,7 @@ fn allowed(path: &Path, roots: &[PathBuf]) -> bool {
 }
 
 /// Why a file tool call is refused, or None to let it run.
-pub fn check_file_tool(tool_input: &serde_json::Value, cwd: &Path, workspace: &Path, temp: &Path, home: Option<&Path>) -> Option<String> {
+pub fn check_file_tool(tool: &str, tool_input: &serde_json::Value, cwd: &Path, workspace: &Path, temp: &Path, home: Option<&Path>) -> Option<String> {
     let roots = [workspace.to_path_buf(), temp.to_path_buf()];
     for field in FILE_PATH_FIELDS {
         let Some(raw) = tool_input.get(*field).and_then(serde_json::Value::as_str) else { continue };
@@ -140,7 +140,46 @@ pub fn check_file_tool(tool_input: &serde_json::Value, cwd: &Path, workspace: &P
             return Some(outside_message(raw));
         }
     }
+    // Glob's `pattern` and Grep's `glob` can carry a path of their own ("C:/Users/**/*.env",
+    // "../../**"): the folder part before the first wildcard must stay inside too, resolved
+    // against the tool's own `path` when it gives one.
+    let base = tool_input
+        .get("path")
+        .and_then(serde_json::Value::as_str)
+        .filter(|raw| !raw.trim().is_empty())
+        .map_or_else(|| cwd.to_path_buf(), |raw| resolve(cwd, raw, home));
+    // Grep's own `pattern` is a regex to search for, not a path.
+    let glob_field = match tool {
+        "Glob" => Some("pattern"),
+        "Grep" => Some("glob"),
+        _ => None,
+    };
+    if let Some(raw) = glob_field.and_then(|field| tool_input.get(field)).and_then(serde_json::Value::as_str) {
+        let folder = pattern_folder(raw);
+        if !folder.is_empty() && !allowed(&resolve(&base, &folder, home), &roots) {
+            return Some(outside_message(raw));
+        }
+    }
     None
+}
+
+/// The folder a glob starts from: everything before the first segment with a wildcard.
+/// `src/**/*.ts` → `src`, `C:/Users/**` → `C:/Users`, `*.md` → "".
+fn pattern_folder(pattern: &str) -> String {
+    let mut folder = Vec::new();
+    for segment in pattern.split(['/', '\\']) {
+        if segment.contains(['*', '?', '[', '{']) {
+            break;
+        }
+        folder.push(segment);
+    }
+    // A pattern with no wildcard at all names a file; its folder is what matters.
+    if folder.len() == pattern.split(['/', '\\']).count() {
+        folder.pop();
+    }
+    let joined = folder.join("/");
+    // "C:" alone is a drive; keep its root.
+    if joined.len() == 2 && joined.ends_with(':') { format!("{joined}/") } else if pattern.starts_with('/') && joined.is_empty() { "/".to_string() } else { joined }
 }
 
 /// Words in a shell command that look like paths (absolute, `~`, Git Bash drives, `..`).
@@ -222,11 +261,23 @@ mod tests {
     #[test]
     fn file_tools_stay_inside() {
         let (ws, tmp, home) = dirs();
-        let ok = check_file_tool(&json!({ "file_path": "src/main.ts" }), &ws, &ws, &tmp, Some(&home));
+        let ok = check_file_tool("Read", &json!({ "file_path": "src/main.ts" }), &ws, &ws, &tmp, Some(&home));
         assert_eq!(ok, None);
-        assert!(check_file_tool(&json!({ "file_path": "../../.env" }), &ws, &ws, &tmp, Some(&home)).is_some());
-        assert!(check_file_tool(&json!({ "file_path": "~/.ssh/id_rsa" }), &ws, &ws, &tmp, Some(&home)).is_some());
-        assert!(check_file_tool(&json!({ "path": "C:/Users" }), &ws, &ws, &tmp, Some(&home)).is_some());
+        assert!(check_file_tool("Read", &json!({ "file_path": "../../.env" }), &ws, &ws, &tmp, Some(&home)).is_some());
+        assert!(check_file_tool("Read", &json!({ "file_path": "~/.ssh/id_rsa" }), &ws, &ws, &tmp, Some(&home)).is_some());
+        assert!(check_file_tool("Read", &json!({ "path": "C:/Users" }), &ws, &ws, &tmp, Some(&home)).is_some());
+    }
+
+    #[test]
+    fn glob_patterns_stay_inside() {
+        let (ws, tmp, home) = dirs();
+        let check = |tool: &str, input: serde_json::Value| check_file_tool(tool, &input, &ws, &ws, &tmp, Some(&home));
+        assert_eq!(check("Glob", json!({ "pattern": "src/**/*.ts" })), None);
+        assert!(check("Glob", json!({ "pattern": "C:/Users/me/**/*.env" })).is_some());
+        assert!(check("Glob", json!({ "pattern": "../../**" })).is_some());
+        assert!(check("Grep", json!({ "pattern": "x", "glob": "../**/*.env" })).is_some());
+        // A regex that happens to look like a path is only searched for, not opened.
+        assert_eq!(check("Grep", json!({ "pattern": "../config" })), None);
     }
 
     #[test]

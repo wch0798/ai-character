@@ -33,7 +33,9 @@ export function speakableText(markdown: string): string {
 
 function koreanVoice(): SpeechSynthesisVoice | undefined {
   const voices = window.speechSynthesis?.getVoices() ?? [];
-  return voices.find((voice) => voice.lang.toLowerCase().startsWith("ko")) ?? voices[0];
+  // No Korean voice installed: leave the choice to the engine (lang ko-KR) instead of reading
+  // Korean with the first, usually English, voice.
+  return voices.find((voice) => voice.lang.toLowerCase().startsWith("ko"));
 }
 
 /** Reads an answer aloud when the user turned it on. */

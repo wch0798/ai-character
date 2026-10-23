@@ -17,24 +17,15 @@ import {
   setAutostart,
   setToggleShortcut,
 } from "./system-client";
+import { PERSONA_KEY, PERSONA_LIMIT, readPersona } from "./persona";
 
-export const PERSONA_KEY = "ai-character-persona";
 export const PERSONA_EVENT = "ai-character:persona-changed";
-export const PERSONA_LIMIT = 500;
 
 export const PERSONA_PRESETS: Array<{ label: string; text: string }> = [
   { label: "친절한 비서", text: "친절하고 차분한 비서처럼 존댓말로 답합니다. 어려운 말은 쉽게 풀어서 설명합니다." },
   { label: "친구처럼 반말", text: "오래된 친구처럼 편한 반말로 답합니다. 짧고 다정하게, 가끔 가벼운 농담도 합니다." },
   { label: "간결하게", text: "인사말이나 군더더기 없이 핵심만 짧게 답합니다. 필요하면 목록으로 정리합니다." },
 ];
-
-export function readPersona(): string {
-  try {
-    return (localStorage.getItem(PERSONA_KEY) ?? "").slice(0, PERSONA_LIMIT);
-  } catch {
-    return "";
-  }
-}
 
 function savePersona(text: string): void {
   const clean = text.trim().slice(0, PERSONA_LIMIT);

@@ -169,13 +169,15 @@ pub fn args_for_with_options(
     args
 }
 
-/// Saved keys an agent must not see. Claude keeps GITHUB_TOKEN only because its GitHub
-/// connection (MCP) expands `${GITHUB_TOKEN}` from its own environment.
+/// Saved keys an agent must not see. Claude keeps GITHUB_TOKEN only while its GitHub
+/// connection (MCP) is on, because that connection expands `${GITHUB_TOKEN}` from Claude's
+/// own environment.
 pub fn agent_hidden_secrets(agent: AgentKind) -> impl Iterator<Item = &'static str> {
+    let keep_github = agent == AgentKind::Claude && crate::claude_integration::github_mcp_enabled();
     crate::policy_engine::SECRET_ENV_NAMES
         .iter()
         .copied()
-        .filter(move |name| !(agent == AgentKind::Claude && *name == "GITHUB_TOKEN"))
+        .filter(move |name| !(keep_github && *name == "GITHUB_TOKEN"))
 }
 
 pub fn managed_workspace_permission_args(agent: AgentKind) -> Vec<String> {
@@ -330,24 +332,6 @@ fn claude_plugin_dir_args_with_home(
         args.push(dir.to_string_lossy().into_owned());
     }
     args
-}
-
-pub fn seed_claude_project_settings(project: &Path, workspace: &Path) {
-    if project == workspace {
-        return;
-    }
-    let src = project.join(".claude").join("settings.json");
-    if !src.is_file() {
-        return;
-    }
-    let dest_dir = workspace.join(".claude");
-    let dest = dest_dir.join("settings.json");
-    if dest.is_file() {
-        return;
-    }
-    if fs::create_dir_all(&dest_dir).is_ok() {
-        let _ = fs::copy(&src, dest);
-    }
 }
 
 fn path_is_runnable(path: &Path) -> bool {

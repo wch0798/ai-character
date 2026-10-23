@@ -3,7 +3,7 @@ use crate::agent_core::{
     user_claude_plugin_dir_args,
     managed_workspace_permission_args, merge_extra_args, merge_plugin_dir_args, request_cancel,
     resolve_agent_binary,
-    run_request_streaming, sanitize_claude_extra_args, seed_claude_project_settings, AgentKind,
+    run_request_streaming, sanitize_claude_extra_args, AgentKind,
     AgentRequest, AgentStreamChunk,
 };
 use crate::settings::{load_settings, save_settings};
@@ -823,9 +823,6 @@ where
         let mut extra_args = settings.agent_extra_args(agent).to_vec();
         if agent == AgentKind::Claude {
             extra_args = sanitize_claude_extra_args(&extra_args);
-            if managed_workspace {
-                seed_claude_project_settings(&configured_project, &working_dir);
-            }
             // A project's own plugins may carry hooks (code that runs on every tool call), so in
             // the managed workspace, where Claude runs with every permission, only the user's
             // own plugins load.

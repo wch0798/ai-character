@@ -51,28 +51,34 @@ const EDIT_VERBS = [
   "build a",
 ];
 
+// Words that put an everyday verb (바꿔줘, 작성해) into software work. Everyday words such as
+// 웹, 프로그램, 페이지 or 설정 alone are not enough: 웹툰 줄거리, TV 프로그램 소개, 책 한 페이지.
 const CODE_CONTEXT = [
   "버그",
   "오류",
   "에러",
   "컴포넌트",
-  "화면",
   "버튼",
-  "기능",
   "함수",
   "클래스",
   "변수",
   "스크립트",
-  "앱",
-  "프로그램",
-  "웹",
-  "사이트",
-  "페이지",
   "서버",
   "스타일",
   "테스트",
   "빌드",
-  "설정",
+  "웹사이트",
+  "웹페이지",
+  "홈페이지",
+  "사이트에",
+  "앱에",
+  "앱의",
+  "앱 화면",
+  "설정 화면",
+  "화면에",
+  "화면의",
+  "기능을",
+  "기능 추가",
 ];
 
 const PROJECT_CONFIRMATIONS = [

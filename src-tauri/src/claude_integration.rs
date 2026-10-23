@@ -239,6 +239,14 @@ pub fn mcp_config(settings: &ClaudeIntegrationSettings, npx: Option<&Path>, gith
     (!servers.is_empty()).then(|| json!({ "mcpServers": servers }))
 }
 
+/// Whether Claude runs get the GitHub connection, the only reason it may see GITHUB_TOKEN.
+pub fn github_mcp_enabled() -> bool {
+    load_settings()
+        .map(|settings| integration_settings(&settings))
+        .map(|settings| settings.mcp && settings.mcp_github)
+        .unwrap_or(false)
+}
+
 fn github_token_present() -> bool {
     crate::process_util::secret_value("GITHUB_TOKEN").is_some()
 }
@@ -459,7 +467,7 @@ fn pre_tool_decision(input: &Value) -> Result<(), String> {
             .collect();
         check_shell(command, &cwd, &workspace, &temp, home.as_deref(), &system)
     } else {
-        check_file_tool(&tool_input, &cwd, &workspace, &temp, home.as_deref())
+        check_file_tool(tool, &tool_input, &cwd, &workspace, &temp, home.as_deref())
     };
     refusal.map_or(Ok(()), Err)
 }

@@ -43,7 +43,7 @@
           "$HOME/Library/Application Support/local.ai.character/live2d-models/**"
         ]
       },
-      "csp": "default-src 'self' asset: https://asset.localhost http://asset.localhost https://tauri.localhost tauri:; script-src 'self' 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: asset: http://asset.localhost https://asset.localhost; font-src 'self' data:; connect-src 'self' blob: data: ipc: http://ipc.localhost https://ipc.localhost asset: http://asset.localhost https://asset.localhost https://tauri.localhost tauri: http://127.0.0.1:* http://localhost:*; worker-src 'self' blob: data:; media-src 'self' blob: data:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
+      "csp": "default-src 'self' asset: https://asset.localhost http://asset.localhost https://tauri.localhost tauri:; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: asset: http://asset.localhost https://asset.localhost; font-src 'self' data:; connect-src 'self' blob: data: ipc: http://ipc.localhost https://ipc.localhost asset: http://asset.localhost https://asset.localhost https://tauri.localhost tauri: http://127.0.0.1:* http://localhost:*; worker-src 'self' blob: data:; media-src 'self' blob: data:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
     },
     "macOSPrivateApi": true
   },
