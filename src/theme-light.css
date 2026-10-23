@@ -615,9 +615,6 @@
 :root[data-theme="light"] .ai-checkpoint-history-meta, :root[data-theme="light"] .ai-checkpoint-history-empty {
   color: rgba(31, 31, 31, 0.58)
 }
-:root[data-theme="light"] .ai-checkpoint-history-id {
-  color: rgba(31, 31, 31, 0.5)
-}
 :root[data-theme="light"] .ai-agent-advanced {
   border-top: 1px solid rgba(31, 31, 31, 0.08)
 }

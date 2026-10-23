@@ -305,7 +305,8 @@ pub fn sanitize_claude_extra_args(args: &[String]) -> Vec<String> {
         .collect()
 }
 
-fn user_home_dir() -> Option<PathBuf> {
+/// `USERPROFILE` on Windows, `HOME` elsewhere.
+pub(crate) fn user_home_dir() -> Option<PathBuf> {
     env::var_os("USERPROFILE")
         .or_else(|| env::var_os("HOME"))
         .map(PathBuf::from)

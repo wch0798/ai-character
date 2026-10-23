@@ -1,4 +1,5 @@
 import {
+  agentLabel,
   applyWorkspaceChanges,
   cancelAgent,
   discardWorkspaceChanges,
@@ -72,13 +73,6 @@ export function initializeAgentRuntimeUi(): void {
   } else {
     toolbar?.append(agentBadge);
   }
-
-  const agentLabel = (agent: string): string => ({
-    claude: "Claude",
-    codex: "Codex",
-    cursor: "Cursor",
-    antigravity: "Antigravity",
-  }[agent] ?? agent);
 
   const updateAgentBadge = (preferences: AppPreferences): void => {
     agentBadge.textContent = preferences.cradleEnabled

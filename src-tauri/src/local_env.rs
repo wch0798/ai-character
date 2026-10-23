@@ -205,7 +205,11 @@ pub fn load_on_startup() -> Option<PathBuf> {
         match fs::read_to_string(&path) {
             Ok(content) => {
                 if is_app_keys_file(&path) {
-                    let _ = restrict_to_owner(&path);
+                    // icacls takes a moment; the window does not wait for it.
+                    let locked = path.clone();
+                    std::thread::spawn(move || {
+                        let _ = restrict_to_owner(&locked);
+                    });
                 }
                 let applied = parse_and_apply(&content);
                 eprintln!(
@@ -270,15 +274,16 @@ fn restrict_to_owner(path: &Path) -> Result<(), String> {
         eprintln!("키 파일 권한 잠금 건너뜀: 사용자 SID를 찾지 못했습니다.");
         return Ok(());
     };
-    let mut command = std::process::Command::new(system_tool("icacls.exe"));
-    crate::windows_process::hide_console(&mut command);
-    let status = command
-        .arg(path)
-        .args(["/inheritance:r", "/grant:r", &format!("*{sid}:F"), "*S-1-5-18:F", "/Q"])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status();
-    if !status.map(|status| status.success()).unwrap_or(false) {
+    let args = [
+        path.to_string_lossy().into_owned(),
+        "/inheritance:r".to_string(),
+        "/grant:r".to_string(),
+        format!("*{sid}:F"),
+        "*S-1-5-18:F".to_string(),
+        "/Q".to_string(),
+    ];
+    let run = crate::process_util::run_command(&system_tool("icacls.exe"), &args, None, &[], SYSTEM_TOOL_TIMEOUT);
+    if !run.success {
         eprintln!("키 파일 권한 잠금 실패: {}", path.display());
     }
     Ok(())
@@ -294,15 +299,20 @@ fn system_tool(name: &str) -> std::path::PathBuf {
         .join(name)
 }
 
-/// `S-1-5-21-…` of the signed-in user, from `whoami /user`.
+#[cfg(windows)]
+const SYSTEM_TOOL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// `S-1-5-21-…` of the signed-in user, from `whoami /user`; it never changes while the app runs.
 #[cfg(windows)]
 fn current_user_sid() -> Option<String> {
-    let mut command = std::process::Command::new(system_tool("whoami.exe"));
-    crate::windows_process::hide_console(&mut command);
-    let output = command.args(["/user", "/fo", "csv", "/nh"]).output().ok()?;
-    let text = String::from_utf8_lossy(&output.stdout);
-    let sid = text.trim().rsplit(',').next()?.trim().trim_matches('"').to_string();
-    sid.starts_with("S-1-").then_some(sid)
+    static SID: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    SID.get_or_init(|| {
+        let args = ["/user", "/fo", "csv", "/nh"].map(String::from);
+        let run = crate::process_util::run_command(&system_tool("whoami.exe"), &args, None, &[], SYSTEM_TOOL_TIMEOUT);
+        let sid = run.output.trim().rsplit(',').next()?.trim().trim_matches('"').to_string();
+        sid.starts_with("S-1-").then_some(sid)
+    })
+    .clone()
 }
 
 #[cfg(not(any(unix, windows)))]

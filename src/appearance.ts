@@ -1,4 +1,5 @@
 /** Theme and chat font size, kept in this browser profile and applied as early as possible. */
+import { readStored as read, writeStored as write } from "./local-store";
 
 export type ThemeChoice = "system" | "light" | "dark";
 export type FontScaleChoice = "small" | "normal" | "large" | "xlarge";
@@ -12,22 +13,6 @@ export const FONT_SCALES: Record<FontScaleChoice, number> = {
   large: 1.15,
   xlarge: 1.3,
 };
-
-function read(key: string): string | null {
-  try {
-    return localStorage.getItem(key);
-  } catch {
-    return null;
-  }
-}
-
-function write(key: string, value: string): void {
-  try {
-    localStorage.setItem(key, value);
-  } catch {
-    // Appearance is a convenience; it still applies for this session.
-  }
-}
 
 export function readTheme(): ThemeChoice {
   const value = read(THEME_KEY);

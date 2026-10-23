@@ -1004,31 +1004,22 @@ pub fn cancel_agent(task_id: String) -> Result<(), String> {
     Ok(())
 }
 
-/// Workspace commands walk the whole project, so they run off the UI thread.
-async fn off_ui_thread<T: Send + 'static>(
-    work: impl FnOnce() -> Result<T, String> + Send + 'static,
-) -> Result<T, String> {
-    tauri::async_runtime::spawn_blocking(work)
-        .await
-        .map_err(|error| format!("작업 실행 실패: {error}"))?
-}
-
 #[tauri::command]
 pub async fn get_workspace_changes(conversation_id: String) -> Result<Vec<WorkspaceChange>, String> {
-    off_ui_thread(move || {
+    crate::process_util::off_ui_thread("작업 실행 실패", move || {
         let project_dir = configured_project_dir_for(Some(&conversation_id))?;
         workspace_changes::list_workspace_changes(&project_dir, conversation_id.trim())
     })
-    .await
+    .await?
 }
 
 #[tauri::command]
 pub async fn get_workspace_diff(conversation_id: String, path: String) -> Result<String, String> {
-    off_ui_thread(move || {
+    crate::process_util::off_ui_thread("작업 실행 실패", move || {
         let project_dir = configured_project_dir_for(Some(&conversation_id))?;
         workspace_changes::workspace_file_diff(&project_dir, conversation_id.trim(), path.trim())
     })
-    .await
+    .await?
 }
 
 const BULK_DELETE_THRESHOLD: usize = 5;
@@ -1071,11 +1062,11 @@ pub async fn apply_workspace_changes(
 
 #[tauri::command]
 pub async fn discard_workspace_changes(conversation_id: String) -> Result<(), String> {
-    off_ui_thread(move || {
+    crate::process_util::off_ui_thread("작업 실행 실패", move || {
         let project_dir = configured_project_dir_for(Some(&conversation_id))?;
         workspace_changes::discard_workspace_changes(&project_dir, conversation_id.trim())
     })
-    .await
+    .await?
 }
 
 #[tauri::command]
@@ -1086,11 +1077,11 @@ pub fn list_checkpoints(limit: Option<u32>) -> Result<Vec<CheckpointRecord>, Str
 
 #[tauri::command]
 pub async fn restore_checkpoint(checkpoint_id: String) -> Result<RestoreCheckpointResult, String> {
-    off_ui_thread(move || {
+    crate::process_util::off_ui_thread("작업 실행 실패", move || {
         let project_dir = configured_project_dir()?;
         workspace_changes::restore_checkpoint(&project_dir, checkpoint_id.trim())
     })
-    .await
+    .await?
 }
 
 #[tauri::command]

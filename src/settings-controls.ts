@@ -14,6 +14,13 @@ export function sectionShell(titleText: string): { section: HTMLElement; title: 
 }
 
 /** A one-line toggle; the longer explanation lives in the tooltip to keep the panel compact. */
+export function help(text: string): HTMLDivElement {
+  const node = document.createElement("div");
+  node.className = "ai-settings-help";
+  node.textContent = text;
+  return node;
+}
+
 export function toggleRow(label: string, tooltip?: string): { root: HTMLLabelElement; input: HTMLInputElement } {
   const root = document.createElement("label");
   root.className = "ai-settings-checkbox";

@@ -2,7 +2,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import type { ChatHistoryStore } from "./chat-history";
 
-function stamp(): string {
+/** File-name date stamp like 20261023-1405. */
+export function stamp(): string {
   const now = new Date();
   const pad = (value: number) => String(value).padStart(2, "0");
   return [

@@ -76,7 +76,6 @@ body {
   display: block;
 }
 
-
 /* -------------------------
    채팅창
 ------------------------- */
@@ -255,7 +254,6 @@ body {
   background: rgb(96, 128, 255);
 }
 
-
 /* -------------------------
    우클릭 메뉴
 ------------------------- */
@@ -364,7 +362,6 @@ body {
   background:
     rgba(255,255,255,.09);
 }
-
 
 /* -------------------------
    상태 메시지
@@ -579,7 +576,6 @@ body {
   display: none;
 }
 
-
 /* -------------------------
    Performance HUD
 ------------------------- */
@@ -628,7 +624,6 @@ body {
 
   pointer-events: none;
 }
-
 
 /* =========================
    Chat attachments
@@ -759,7 +754,6 @@ body {
   font-size: 18px;
   font-weight: 500;
 }
-
 
 /* =====================================
    Resizable chat / copy / drag-drop
@@ -2637,14 +2631,6 @@ body:has(#ai-settings-panel:not([hidden])) #performance-hud {
   line-height: 1.4;
 }
 
-.ai-checkpoint-history-id {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: rgba(255, 255, 255, 0.5);
-  font-size: 9px;
-}
-
 /* AI-Character compact agent advanced options */
 .ai-agent-settings-row {
   display: grid;
@@ -4399,7 +4385,6 @@ body:has(#automation-panel:not([hidden])) #performance-hud {
 #chat-folder-bar .chat-folder-menu button:hover { background: rgba(255, 255, 255, 0.08); }
 #chat-folder-bar .chat-folder-menu-title { padding: 4px 8px; font-weight: 700; color: rgba(255, 255, 255, 0.7); font-size: 11px; }
 #chat-folder-bar .chat-folder-menu-note { padding: 4px 8px 2px; color: rgba(255, 255, 255, 0.5); font-size: 10.5px; line-height: 1.4; }
-
 
 /* ---------- 화면 설정: 글자 크기 (appearance.ts). The light theme is src/theme-light.css. ---------- */
 

@@ -87,7 +87,6 @@ type Live2DLike = {
   internalModel?: {
     localTransform?: Matrix;
     getDrawableIDs?(): string[];
-    getDrawableIndex?(id: string): number;
     getDrawableBounds?(index: number, bounds?: Box): Box;
     coreModel?: {
       getDrawableOpacity?(index: number): number;
@@ -102,28 +101,29 @@ export function visiblePartBoxes(model: unknown): Box[] {
   const internal = live.internalModel;
   const world = live.worldTransform;
   const local = internal?.localTransform;
-  if (!internal?.getDrawableIDs || !internal.getDrawableIndex || !internal.getDrawableBounds || !world || !local) return [];
+  if (!internal?.getDrawableIDs || !internal.getDrawableBounds || !world || !local) return [];
   const core = internal.coreModel;
   const boxes: Box[] = [];
   const scratch: Box = { x: 0, y: 0, width: 0, height: 0 };
-  for (const id of internal.getDrawableIDs()) {
-    const index = internal.getDrawableIndex(id);
-    if (index < 0) continue;
+  const corner = { x: 0, y: 0 };
+  // Parts are numbered in ID order; looking each ID up again is a linear search per part.
+  const count = internal.getDrawableIDs().length;
+  for (let index = 0; index < count; index++) {
     if (core?.getDrawableDynamicFlagIsVisible && !core.getDrawableDynamicFlagIsVisible(index)) continue;
     if (core?.getDrawableOpacity && core.getDrawableOpacity(index) < 0.05) continue;
     const part = internal.getDrawableBounds(index, scratch);
     // All four corners: the character sways (rotates) while it works.
-    const corners = [
-      { x: part.x, y: part.y },
-      { x: part.x + part.width, y: part.y },
-      { x: part.x, y: part.y + part.height },
-      { x: part.x + part.width, y: part.y + part.height },
-    ].map((point) => world.apply(local.apply(point)));
-    const xs = corners.map((point) => point.x);
-    const ys = corners.map((point) => point.y);
-    const x = Math.min(...xs);
-    const y = Math.min(...ys);
-    boxes.push({ x, y, width: Math.max(...xs) - x, height: Math.max(...ys) - y });
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (let c = 0; c < 4; c++) {
+      corner.x = part.x + (c & 1 ? part.width : 0);
+      corner.y = part.y + (c & 2 ? part.height : 0);
+      const point = world.apply(local.apply(corner));
+      minX = Math.min(minX, point.x);
+      minY = Math.min(minY, point.y);
+      maxX = Math.max(maxX, point.x);
+      maxY = Math.max(maxY, point.y);
+    }
+    boxes.push({ x: minX, y: minY, width: maxX - minX, height: maxY - minY });
   }
   return boxes;
 }
