@@ -564,9 +564,11 @@ fn validate_prompt(prompt: &str) -> Result<String, String> {
     Ok(clean)
 }
 
+/// Korean message first, the provider's own text (masked, shortened) after "자세히:".
+/// "(HTTP status)" stays in the text: is_limited and failed_call_may_bill read it.
 fn limited_error(provider: &str, status: u16, body: &str) -> String {
     let lower = body.to_lowercase();
-    let body = mask_secrets(body);
+    let detail = error_detail(body);
     if status == 429
         || lower.contains("resource_exhausted")
         || lower.contains("quota")
@@ -574,12 +576,31 @@ fn limited_error(provider: &str, status: u16, body: &str) -> String {
         || lower.contains("rate_limit")
         || lower.contains("usage limit")
     {
-        return format!("PROVIDER_LIMITED|{provider}|HTTP {status}: {body}");
+        return format!("PROVIDER_LIMITED|{provider}|사용 한도에 걸렸습니다. 잠시 후 다시 시도하거나 다른 AI를 쓰세요. (HTTP {status}){detail}");
     }
     if status == 401 || status == 403 {
-        return format!("PROVIDER_AUTH|{provider}|HTTP {status}: {body}");
+        return format!("PROVIDER_AUTH|{provider}|API 키가 맞지 않거나 권한이 없습니다. 설정에서 키를 확인하세요. (HTTP {status}){detail}");
     }
-    format!("PROVIDER_FAILED|{provider}|HTTP {status}: {body}")
+    let message = match status {
+        404 => "요청한 모델을 찾지 못했습니다.",
+        400 | 413 | 422 => "AI 서비스가 요청 형식을 받아들이지 않았습니다.",
+        500..=599 => "AI 서비스 쪽 서버에 문제가 있습니다. 잠시 후 다시 시도하세요.",
+        _ => "AI 서비스가 요청을 처리하지 못했습니다.",
+    };
+    format!("PROVIDER_FAILED|{provider}|{message} (HTTP {status}){detail}")
+}
+
+/// " 자세히: …" with the provider's text masked, on one line and at most 200 characters.
+fn error_detail(body: &str) -> String {
+    let flat = mask_secrets(body).split_whitespace().collect::<Vec<_>>().join(" ");
+    if flat.is_empty() {
+        return String::new();
+    }
+    let mut short: String = flat.chars().take(200).collect();
+    if flat.chars().count() > 200 {
+        short.push('…');
+    }
+    format!(" 자세히: {short}")
 }
 
 fn http_client(timeout_secs: u64) -> Result<reqwest::Client, String> {
@@ -661,8 +682,15 @@ async fn send_with_retry_inner(
                     attempt += 1;
                     continue;
                 }
+                // A timeout may already have been billed (the provider got the request); a failed
+                // connection never reached it. failed_call_may_bill reads these words.
+                let message = if error.is_timeout() {
+                    "AI 서비스 응답 시간이 초과되었습니다. 잠시 후 다시 시도하세요."
+                } else {
+                    "AI 서비스에 연결하지 못했습니다. 인터넷 연결을 확인하세요."
+                };
                 return Err((
-                    format!("PROVIDER_FAILED|{provider}|요청 실패: {}", mask_secrets(&error.to_string())),
+                    format!("PROVIDER_FAILED|{provider}|{message}{}", error_detail(&error.to_string())),
                     attempt as i64,
                 ));
             }
@@ -1126,13 +1154,16 @@ async fn request_openai(prompt: &str, model: &str, max_retries: u64) -> Result<(
         ));
     }
     let usage = value.get("usage");
+    let input_tokens = as_i64(usage.and_then(|u| u.get("input_tokens")));
+    let output_tokens = as_i64(usage.and_then(|u| u.get("output_tokens")));
     Ok((
         ProviderReply {
             text: output,
-            input_tokens: as_i64(usage.and_then(|u| u.get("input_tokens"))),
-            output_tokens: as_i64(usage.and_then(|u| u.get("output_tokens"))),
+            input_tokens,
+            output_tokens,
             cached_tokens: as_i64(usage.and_then(|u| u.pointer("/input_tokens_details/cached_tokens"))),
-            cost_usd: 0.0,
+            // OpenAI reports tokens, not money: price them by model.
+            cost_usd: policy_engine::estimate_model_usd(model, input_tokens, output_tokens),
         },
         retries,
     ))
@@ -1148,6 +1179,33 @@ fn cache_key(provider: &str, model: &str, prompt: &str) -> String {
     format!("{:x}", hasher.finalize())
 }
 
+/// What a call counts against the daily paid limit. Paid calls are priced by model (never
+/// below the flat setting); a paid call that failed after the provider worked on it still
+/// counts its input, since it may have been billed.
+fn estimated_spend(
+    cost_class: &str,
+    model: &str,
+    prompt: &str,
+    reply: &ProviderReply,
+    error: Option<&str>,
+    flat_per_1k: f64,
+) -> f64 {
+    let flat = policy_engine::estimate_paid_usd(reply.input_tokens, reply.output_tokens, flat_per_1k);
+    if cost_class != "paid" {
+        return flat;
+    }
+    if let Some(error) = error {
+        return if policy_engine::failed_call_may_bill(error) {
+            policy_engine::estimate_model_usd(model, policy_engine::estimate_tokens(prompt), 0)
+        } else {
+            0.0
+        };
+    }
+    let input = if reply.input_tokens > 0 { reply.input_tokens } else { policy_engine::estimate_tokens(prompt) };
+    let output = if reply.output_tokens > 0 { reply.output_tokens } else { policy_engine::estimate_tokens(&reply.text) };
+    reply.cost_usd.max(flat).max(policy_engine::estimate_model_usd(model, input, output))
+}
+
 fn record(
     context: &CallContext,
     provider: &str,
@@ -1157,16 +1215,17 @@ fn record(
     started: Instant,
     outcome: &Result<(ProviderReply, i64), (String, i64)>,
     cache_hit: bool,
+    prompt: &str,
 ) {
     let (reply, retries, status, error) = match outcome {
         Ok((reply, retries)) => (reply.clone(), *retries, "ok", None),
         Err((error, retries)) => (ProviderReply::default(), *retries, "error", Some(error.clone())),
     };
-    let estimated = policy_engine::estimate_paid_usd(
-        reply.input_tokens,
-        reply.output_tokens,
-        policy.estimated_paid_usd_per_1k_tokens,
-    );
+    let estimated = if cache_hit {
+        0.0
+    } else {
+        estimated_spend(cost_class, model, prompt, &reply, error.as_deref(), policy.estimated_paid_usd_per_1k_tokens)
+    };
     usage_ledger::record_usage(&UsageEntry {
         session_id: context.session_id.clone(),
         task_id: context.task_id.clone(),
@@ -1178,7 +1237,7 @@ fn record(
         output_tokens: reply.output_tokens,
         cached_tokens: reply.cached_tokens,
         cost_usd: reply.cost_usd,
-        estimated_paid_usd: if cost_class == "paid" { reply.cost_usd.max(estimated) } else { estimated },
+        estimated_paid_usd: estimated,
         latency_ms: started.elapsed().as_millis().min(i64::MAX as u128) as i64,
         retries,
         cache_hit,
@@ -1218,6 +1277,7 @@ async fn call_model(
                     Instant::now(),
                     &Ok((ProviderReply { text: cached.clone(), ..Default::default() }, 0)),
                     true,
+                    prompt,
                 );
                 return Ok(cached);
             }
@@ -1241,7 +1301,7 @@ async fn call_model(
     if let (Err(_), Some(sink)) = (&outcome, context.stream.as_ref()) {
         sink(StreamEvent::Reset);
     }
-    record(context, provider, model, cost_class, policy, started, &outcome, false);
+    record(context, provider, model, cost_class, policy, started, &outcome, false, prompt);
     let (reply, _) = outcome.map_err(|(error, _)| error)?;
     if policy.prompt_cache_enabled && !fingerprint.is_empty() {
         if let Ok(connection) = usage_ledger::open_ledger() {
@@ -1595,6 +1655,29 @@ mod tests {
         assert!(!error.contains("AIzaSy"));
         assert!(limited_error("x", 401, "no").starts_with("PROVIDER_AUTH|"));
         assert!(limited_error("x", 500, "boom").starts_with("PROVIDER_FAILED|"));
+    }
+
+    #[test]
+    fn provider_errors_read_in_korean_with_a_short_detail() {
+        let auth = limited_error("openai_api", 401, "{\"error\":{\"message\":\"Incorrect API key\"}}");
+        assert!(auth.contains("API 키가 맞지 않거나") && auth.contains("(HTTP 401)") && auth.contains("자세히: "));
+        let server = limited_error("openai_api", 503, &"x".repeat(5000));
+        assert!(server.contains("서버에 문제") && server.contains("(HTTP 503)"));
+        assert!(server.chars().count() < 400);
+        assert!(is_limited(&server));
+        assert!(!limited_error("x", 500, "").contains("자세히"));
+    }
+
+    #[test]
+    fn paid_spend_is_priced_by_model_and_counts_billable_failures() {
+        let reply = ProviderReply { input_tokens: 1_000_000, output_tokens: 1_000_000, ..Default::default() };
+        assert!((estimated_spend("paid", "gpt-4o", "", &reply, None, 0.003) - 12.5).abs() < 1e-9);
+        let failed = ProviderReply::default();
+        let prompt = "a".repeat(2000);
+        let billed = estimated_spend("paid", "gpt-4o", &prompt, &failed, Some("PROVIDER_FAILED|openai_api|서버 (HTTP 502)"), 0.003);
+        assert!(billed > 0.0);
+        assert_eq!(estimated_spend("paid", "gpt-4o", &prompt, &failed, Some("PROVIDER_AUTH|openai_api|키 (HTTP 401)"), 0.003), 0.0);
+        assert_eq!(estimated_spend("free", "gpt-4o", &prompt, &failed, Some("PROVIDER_FAILED|x|(HTTP 502)"), 0.003), 0.0);
     }
 
     #[test]

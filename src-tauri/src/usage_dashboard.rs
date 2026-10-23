@@ -1,5 +1,4 @@
 use crate::settings::load_settings;
-use sha2::{Digest, Sha256};
 use std::env;
 use std::fs::File;
 use std::net::TcpStream;
@@ -7,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_opener::OpenerExt;
 use url::Url;
@@ -17,20 +16,20 @@ const DEFAULT_PORT: u16 = 4318;
 static DASHBOARD_CHILD: Mutex<Option<Child>> = Mutex::new(None);
 static DASHBOARD_AUTH: Mutex<Option<(u16, String)>> = Mutex::new(None);
 
-fn generate_usage_token() -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(std::process::id().to_le_bytes());
-    if let Ok(duration) = SystemTime::now().duration_since(UNIX_EPOCH) {
-        hasher.update(duration.as_nanos().to_le_bytes());
-    }
-    hasher.update(format!("{:?}", std::thread::current().id()).as_bytes());
-    let addr = &hasher as *const Sha256 as usize;
-    hasher.update(addr.to_le_bytes());
-    hasher
-        .finalize()
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
+fn generate_usage_token() -> Result<String, String> {
+    let mut buffer = [0u8; 32];
+    getrandom::getrandom(&mut buffer).map_err(|error| format!("난수 생성 실패: {error}"))?;
+    Ok(buffer.iter().map(|byte| format!("{byte:02x}")).collect())
+}
+
+/// Where the PID of the dashboard server we started is kept, so after an app restart we can
+/// tell our own leftover server apart from another program that happens to use the port.
+fn dashboard_pid_file() -> PathBuf {
+    env::temp_dir().join("ai-character-usage-dashboard.pid")
+}
+
+fn recorded_dashboard_pid() -> Option<u32> {
+    std::fs::read_to_string(dashboard_pid_file()).ok()?.trim().parse().ok()
 }
 
 fn current_usage_token() -> Option<String> {
@@ -125,7 +124,7 @@ fn http_get_127(port: u16, path: &str) -> Result<String, String> {
 fn kill_managed_child() {
     if let Ok(mut guard) = DASHBOARD_CHILD.lock() {
         if let Some(mut previous) = guard.take() {
-            let _ = previous.kill();
+            crate::process_util::kill_tree(&mut previous);
             let _ = previous.wait();
         }
     }
@@ -168,50 +167,65 @@ fn listening_pids_on_port(port: u16) -> std::collections::HashSet<u32> {
     pids
 }
 
-fn clear_port(port: u16) {
-    kill_managed_child();
-    #[cfg(target_os = "macos")]
-    {
-        let _ = Command::new("lsof")
-            .args(["-ti", &format!("tcp:{port}")])
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .output()
-            .ok()
-            .and_then(|output| {
-                let pids = String::from_utf8_lossy(&output.stdout);
-                for pid in pids.split_whitespace() {
-                    let _ = Command::new("kill")
-                        .args(["-9", pid])
-                        .stdout(Stdio::null())
-                        .stderr(Stdio::null())
-                        .status();
-                }
-                Some(())
-            });
-    }
-    #[cfg(windows)]
-    {
-        let self_pid = std::process::id();
-        for pid in listening_pids_on_port(port) {
-            if pid == self_pid {
-                continue;
-            }
-            let mut command = Command::new("taskkill");
-            crate::windows_process::hide_console(&mut command);
-            let _ = command
-                .args(["/PID", &pid.to_string(), "/F", "/T"])
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status();
-        }
-    }
+fn wait_until_closed(port: u16) -> bool {
     for _ in 0..20 {
         if !port_is_open(port) {
-            break;
+            return true;
         }
         thread::sleep(Duration::from_millis(50));
     }
+    !port_is_open(port)
+}
+
+/// Frees the port only from our own dashboard server (this run's child, or the one a previous
+/// run left behind). Anything else on the port belongs to another program and is left alone:
+/// 4318 is also the standard OpenTelemetry port.
+fn clear_port(port: u16) -> Result<(), String> {
+    kill_managed_child();
+    if wait_until_closed(port) {
+        return Ok(());
+    }
+    if let Some(pid) = recorded_dashboard_pid() {
+        #[cfg(target_os = "macos")]
+        {
+            let listed = Command::new("lsof")
+                .args(["-ti", &format!("tcp:{port}")])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .output()
+                .map(|output| {
+                    String::from_utf8_lossy(&output.stdout)
+                        .split_whitespace()
+                        .any(|item| item.parse() == Ok(pid))
+                })
+                .unwrap_or(false);
+            if listed {
+                let _ = Command::new("kill")
+                    .args(["-9", &pid.to_string()])
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status();
+            }
+        }
+        #[cfg(windows)]
+        {
+            if pid != std::process::id() && listening_pids_on_port(port).contains(&pid) {
+                let mut command = Command::new("taskkill");
+                crate::windows_process::hide_console(&mut command);
+                let _ = command
+                    .args(["/PID", &pid.to_string(), "/F", "/T"])
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status();
+            }
+        }
+        if wait_until_closed(port) {
+            return Ok(());
+        }
+    }
+    Err(format!(
+        "{port}번 포트를 다른 프로그램이 쓰고 있어 사용량 화면을 열지 못했습니다. 그 프로그램을 끄거나, 환경 변수 AI_CHARACTER_USAGE_PORT에 다른 포트 번호를 지정한 뒤 앱을 다시 시작하세요."
+    ))
 }
 
 fn resolve_dashboard_dir() -> Result<PathBuf, String> {
@@ -391,7 +405,7 @@ fn spawn_dashboard_server(dashboard_dir: &Path, app_dir: &Path, port: u16) -> Re
         .try_clone()
         .map_err(|error| format!("사용량 로그 복제 실패: {error}"))?;
 
-    let token = generate_usage_token();
+    let token = generate_usage_token()?;
     let mut child_cmd = Command::new(&node);
     crate::process_util::apply_process_env(&mut child_cmd);
     #[cfg(windows)]
@@ -421,6 +435,7 @@ fn spawn_dashboard_server(dashboard_dir: &Path, app_dir: &Path, port: u16) -> Re
         .map_err(|error| format!("사용량 대시보드 실행 실패: {error}"))?;
 
     store_usage_token(port, token);
+    let _ = std::fs::write(dashboard_pid_file(), child.id().to_string());
 
     if !wait_until_ready(port, Duration::from_secs(8)) {
         let _ = child.kill();
@@ -443,7 +458,7 @@ fn spawn_dashboard_server(dashboard_dir: &Path, app_dir: &Path, port: u16) -> Re
         .lock()
         .map_err(|_| "사용량 대시보드 상태 잠금에 실패했습니다.".to_string())?;
     if let Some(mut previous) = guard.take() {
-        let _ = previous.kill();
+        crate::process_util::kill_tree(&mut previous);
     }
     *guard = Some(child);
     Ok(())
@@ -455,7 +470,7 @@ fn ensure_dashboard_running() -> Result<u16, String> {
     let needs_start = !port_is_open(port) || !token_ok || !dashboard_api_is_current(port);
     if needs_start {
         if port_is_open(port) {
-            clear_port(port);
+            clear_port(port)?;
         }
         let dashboard_dir = resolve_dashboard_dir()?;
         let app_dir = resolve_app_dir()?;

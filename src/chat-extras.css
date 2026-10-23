@@ -1,0 +1,40 @@
+/* Chat additions kept apart from styles.css: answer source, pinned chats, voice buttons.
+   The light theme inverts the whole chat panel (styles.css), so these need no light variants. */
+
+.message-source {
+  margin-top: 4px;
+  font-size: 10.5px;
+  color: rgba(255, 255, 255, 0.5);
+}
+
+
+.chat-history-pin {
+  display: inline-block;
+  margin-right: 5px;
+  padding: 0 5px;
+  border-radius: 5px;
+  background: rgba(78, 112, 245, 0.45);
+  color: white;
+  font-size: 10px;
+  font-weight: 600;
+  vertical-align: 1px;
+}
+
+#chat-form .chat-voice-button {
+  flex: 0 0 auto;
+  width: 34px;
+  height: 36px;
+  border-radius: 11px;
+  background: rgba(255, 255, 255, 0.12);
+  color: white;
+  font-size: 15px;
+}
+
+#chat-form .chat-voice-button:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+#chat-form .chat-voice-button.is-on {
+  background: rgba(78, 112, 245, 0.85);
+}
+

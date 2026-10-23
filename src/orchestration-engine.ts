@@ -1,3 +1,4 @@
+import { personaInstruction } from "./persona";
 import {
   askAgentCompat,
   cancelAgent,
@@ -199,7 +200,7 @@ function setSessionStatus(
 
 function ensureNotCancelled(session: CradleSession): void {
   if (session.status === "cancelled") {
-    throw new Error("CRADLE 작업이 취소되었습니다.");
+    throw new Error("협업 작업이 취소되었습니다.");
   }
 }
 
@@ -681,8 +682,8 @@ function managerStatusMessage(provider: AutomaticApiTarget, stage: ManagerWebSta
           ? "추가 무료 AI(Groq·NVIDIA·GLM 등)"
           : "승인된 OpenAI 유료 API";
   return stage === "planning"
-    ? `${name}로 CRADLE 계획을 자동 생성합니다.`
-    : `${name}로 Worker 결과를 자동 취합합니다.`;
+    ? `${name}로 협업 계획을 자동 생성합니다.`
+    : `${name}로 작업 AI들의 결과를 자동 취합합니다.`;
 }
 
 export async function runAutomaticManager(
@@ -698,7 +699,7 @@ export async function runAutomaticManager(
   );
   const status = stage === "planning" ? "planning" : "synthesizing";
   const context: AutomaticCallContext = { sessionId: session.id, role: stage === "planning" ? "planner" : "reviewer" };
-  const approvalReason = stage === "planning" ? "CRADLE 작업 계획 생성" : "CRADLE Worker 결과 취합";
+  const approvalReason = stage === "planning" ? "협업 계획 만들기" : "작업 AI 결과 정리";
 
   for (const step of order) {
     if (step === "claude_cli") {
@@ -754,7 +755,7 @@ export async function runClaudeManagerWebFirst(
     "waiting_web",
     stage === "planning"
       ? "Claude Web 총괄에게 작업 계획을 요청합니다."
-      : "Claude Web 총괄에게 Worker 결과 취합·검토를 요청합니다."
+      : "Claude Web 총괄에게 작업 AI들의 결과 취합·검토를 요청합니다."
   );
 
   const key = managerWaiterKey(session.id, stage);
@@ -908,7 +909,7 @@ async function runAutomaticApiTask(
     role: "worker",
     cacheFingerprint: task.contextFingerprint || null,
   };
-  const reason = `CRADLE Worker 작업: ${task.title}`;
+  const reason = `협업 작업: ${task.title}`;
   try {
     task.output = compactWorkerOutput(
       (await callAutomaticProvider(provider, workerPrompt, context, reason)).trim(),
@@ -924,12 +925,12 @@ async function runAutomaticApiTask(
     if (alternative) {
       task.fallbackCount += 1;
       task.fallbackFrom = provider;
-      task.fallbackReason = `${provider} 사용 불가 → ${alternative.provider} 무료 Provider로 전환`;
+      task.fallbackReason = `${provider} 사용 불가 → ${alternative.provider} 무료 AI로 전환`;
       task.target = alternative.provider;
       task.output = compactWorkerOutput(alternative.response, task.mode);
       task.status = "completed";
     } else if (session.status === "cancelled") {
-      task.error = "CRADLE 작업이 취소되었습니다.";
+      task.error = "협업 작업이 취소되었습니다.";
       task.status = "cancelled";
     } else if (task.fallbackCount < 1) {
       task.fallbackCount += 1;
@@ -992,7 +993,7 @@ async function runAutomaticTask(
   try {
     task.output = compactWorkerOutput((await worker.result).trim(), task.mode);
     if (isSessionCancelled(session)) {
-      throw new Error("CRADLE 작업이 취소되었습니다.");
+      throw new Error("협업 작업이 취소되었습니다.");
     }
     if (worktree && session.conversationId) {
       mergeAttempted = true;
@@ -1017,7 +1018,7 @@ async function runAutomaticTask(
       await discardCoderWorktree(session.conversationId, task.id);
     }
     if (session.status === "cancelled") {
-      task.error = "CRADLE 작업이 취소되었습니다.";
+      task.error = "협업 작업이 취소되었습니다.";
       task.status = "cancelled";
     } else if (isQuotaOrLimitError(error)) {
       await fallbackCliTaskToWeb(session, task, error);
@@ -1136,7 +1137,7 @@ async function executePlanTasks(
       const failedDependency = dependencyFailed(session, task);
       if (failedDependency) {
         task.status = "failed";
-        task.error = `선행 작업 ${failedDependency}이 실패해 이 작업을 실행하지 않았습니다. CRADLE이 가능한 재배정을 모두 시도한 뒤 중단했습니다.`;
+        task.error = `선행 작업 ${failedDependency}이 실패해 이 작업을 실행하지 않았습니다. 협업 기능이 가능한 재배정을 모두 시도한 뒤 중단했습니다.`;
         continue;
       }
       if (task.status === "queued") {
@@ -1151,9 +1152,9 @@ async function executePlanTasks(
 
     const webPromises = webTasks.map((task) => waitForWebTask(session, task));
     if (webTasks.length > 0) {
-      setSessionStatus(session, "waiting_web", "자동 Provider/CLI 작업을 실행하면서 마지막 수동 Web 응답을 기다립니다.");
+      setSessionStatus(session, "waiting_web", "자동 AI·AI 프로그램 작업을 실행하면서 마지막 수동 Web 응답을 기다립니다.");
     } else {
-      setSessionStatus(session, "running", "자동 Provider와 필요한 CLI Worker를 실행 중입니다.");
+      setSessionStatus(session, "running", "자동 AI와 필요한 AI 프로그램를 실행 중입니다.");
     }
 
     await Promise.all([
@@ -1190,7 +1191,7 @@ async function synthesize(
   preferences: AppPreferences,
   sensitiveAcknowledged: boolean
 ): Promise<{ finalAnswer: string; revisionTasks: OrchestrationTaskSpec[] }> {
-  setSessionStatus(session, "synthesizing", "자동 총괄 Provider가 Worker 결과를 취합·검토합니다.");
+  setSessionStatus(session, "synthesizing", "총괄 AI가 작업 AI들의 결과를 취합·검토합니다.");
   const raw = await runAutomaticManager(
     session,
     "synthesis",
@@ -1219,15 +1220,15 @@ export function submitWebAgentResponse(
   response: string
 ): void {
   if (!activeSession || activeSession.id !== sessionId) {
-    throw new Error("현재 CRADLE 세션이 아닙니다.");
+    throw new Error("현재 협업 작업이 아닙니다.");
   }
   const task = findTask(activeSession, taskId);
   if (!isWebTarget(task.target) || task.status !== "waiting_web") {
-    throw new Error("응답을 기다리는 Web Agent 작업이 아닙니다.");
+    throw new Error("응답을 기다리는 웹 AI 작업이 아닙니다.");
   }
   const clean = response.trim();
   if (!clean) {
-    throw new Error("Web Agent 응답을 붙여넣어 주세요.");
+    throw new Error("웹 AI 응답을 붙여넣어 주세요.");
   }
   rememberedWebAvailability[task.target] = "available";
   activeSession.webAvailability[task.target] = "available";
@@ -1244,14 +1245,14 @@ export function submitWebAgentResponse(
 export function fallbackWebTaskToCli(
   sessionId: string,
   taskId: string,
-  reason = "Web Agent 한도 초과/사용 불가"
+  reason = "웹 AI 한도 초과/사용 불가"
 ): void {
   if (!activeSession || activeSession.id !== sessionId) {
-    throw new Error("현재 CRADLE 세션이 아닙니다.");
+    throw new Error("현재 협업 작업이 아닙니다.");
   }
   const task = findTask(activeSession, taskId);
   if (!isWebTarget(task.target) || task.status !== "waiting_web") {
-    throw new Error("CLI로 전환할 수 있는 Web Agent 작업이 아닙니다.");
+    throw new Error("CLI로 전환할 수 있는 웹 AI 작업이 아닙니다.");
   }
   const from = task.target;
   markWebAgentLimited(from);
@@ -1283,14 +1284,14 @@ export function fallbackWebTaskToCli(
 export function skipWebAgentTask(
   sessionId: string,
   taskId: string,
-  reason = "사용자가 Web Agent 작업을 건너뜀"
+  reason = "사용자가 웹 AI 작업을 건너뜀"
 ): void {
   if (!activeSession || activeSession.id !== sessionId) {
-    throw new Error("현재 CRADLE 세션이 아닙니다.");
+    throw new Error("현재 협업 작업이 아닙니다.");
   }
   const task = findTask(activeSession, taskId);
   if (!isWebTarget(task.target) || task.status !== "waiting_web") {
-    throw new Error("건너뛸 수 있는 Web Agent 작업이 아닙니다.");
+    throw new Error("건너뛸 수 있는 웹 AI 작업이 아닙니다.");
   }
   task.status = "failed";
   task.error = reason;
@@ -1337,13 +1338,13 @@ async function finishWithSynthesis(
 
   session.finalAnswer = withChatNotice(extractUserFacingAnswer(synthesis.finalAnswer) || synthesis.finalAnswer);
   session.error = null;
-  setSessionStatus(session, "completed", "CRADLE 작업이 완료되었습니다.");
+  setSessionStatus(session, "completed", "협업 작업이 완료되었습니다.");
   return session.finalAnswer;
 }
 
 export async function cancelCradleOrchestration(sessionId: string): Promise<void> {
   if (!activeSession || activeSession.id !== sessionId) {
-    throw new Error("현재 CRADLE 세션이 아닙니다.");
+    throw new Error("현재 협업 작업이 아닙니다.");
   }
   if (["completed", "cancelled"].includes(activeSession.status)) {
     return;
@@ -1351,12 +1352,12 @@ export async function cancelCradleOrchestration(sessionId: string): Promise<void
 
   const session = activeSession;
   session.status = "cancelled";
-  session.statusMessage = "CRADLE 작업을 중지했습니다.";
+  session.statusMessage = "협업 작업을 중지했습니다.";
   session.managerHandoff = null;
   for (const task of session.tasks) {
     if (["queued", "running", "waiting_web"].includes(task.status)) {
       task.status = "cancelled";
-      task.error = "CRADLE 작업이 취소되었습니다.";
+      task.error = "협업 작업이 취소되었습니다.";
     }
   }
 
@@ -1369,13 +1370,13 @@ export async function cancelCradleOrchestration(sessionId: string): Promise<void
   for (const [key, waiter] of [...managerWaiters.entries()]) {
     if (key.startsWith(`${session.id}:manager:`)) {
       managerWaiters.delete(key);
-      waiter.reject(new Error("CRADLE 작업이 취소되었습니다."));
+      waiter.reject(new Error("협업 작업이 취소되었습니다."));
     }
   }
   const synthesisWaiter = synthesisWaiters.get(session.id);
   if (synthesisWaiter) {
     synthesisWaiters.delete(session.id);
-    synthesisWaiter.reject(new Error("CRADLE 작업이 취소되었습니다."));
+    synthesisWaiter.reject(new Error("협업 작업이 취소되었습니다."));
   }
   dispatchSession(session);
 
@@ -1385,17 +1386,17 @@ export async function cancelCradleOrchestration(sessionId: string): Promise<void
 
 export async function retryCradleSynthesis(sessionId: string): Promise<string> {
   if (!activeSession || activeSession.id !== sessionId) {
-    throw new Error("현재 CRADLE 세션이 아닙니다.");
+    throw new Error("현재 협업 작업이 아닙니다.");
   }
   const session = activeSession;
   if (session.status !== "failed" || !canRetrySynthesis(session)) {
-    throw new Error("Worker 결과가 모두 끝난 합성 실패 상태에서만 다시 시도할 수 있습니다.");
+    throw new Error("작업 AI들의 결과가 모두 끝난 정리 실패 상태에서만 다시 시도할 수 있습니다.");
   }
 
   const preferences = await getAppPreferences();
   const sensitiveAcknowledged = await confirmSensitiveAgentAccess(preferences);
   if (!sensitiveAcknowledged) {
-    throw new Error("민감 파일 경고에서 Claude 합성 재시도를 취소했습니다.");
+    throw new Error("민감 파일 경고에서 Claude 정리 재시도를 취소했습니다.");
   }
   session.error = null;
   holdCradleActivity(session.id);
@@ -1409,7 +1410,7 @@ export async function retryCradleSynthesis(sessionId: string): Promise<string> {
     return answer;
   } catch (error) {
     session.error = error instanceof Error ? error.message : String(error);
-    setSessionStatus(session, "failed", "Claude 최종 합성에 실패했습니다. 합성만 다시 시도할 수 있습니다.");
+    setSessionStatus(session, "failed", "Claude 최종 정리에 실패했습니다. 정리만 다시 시도할 수 있습니다.");
     throw error;
   } finally {
     releaseCradleActivity(session.id);
@@ -1441,18 +1442,18 @@ export async function runCradleOrchestration(
   conversationContext = ""
 ): Promise<string> {
   if (activeSession && !["completed", "failed", "cancelled"].includes(activeSession.status)) {
-    throw new Error("이미 CRADLE 작업이 진행 중입니다. 현재 작업을 완료한 뒤 다시 시도해주세요.");
+    throw new Error("이미 협업 작업이 진행 중입니다. 현재 작업을 완료한 뒤 다시 시도해주세요.");
   }
   const staleWaiter = activeSession ? synthesisWaiters.get(activeSession.id) : undefined;
   if (activeSession && staleWaiter) {
     synthesisWaiters.delete(activeSession.id);
-    staleWaiter.reject(new Error("새 CRADLE 작업이 시작되어 이전 합성 재시도를 종료했습니다."));
+    staleWaiter.reject(new Error("새 협업 작업이 시작되어 이전 정리 재시도를 종료했습니다."));
   }
 
   const preferences = await getAppPreferences();
   const sensitiveAcknowledged = await confirmSensitiveAgentAccess(preferences);
   if (!sensitiveAcknowledged) {
-    throw new Error("민감 파일 경고에서 CRADLE 실행을 취소했습니다.");
+    throw new Error("민감 파일 경고에서 협업 작업 실행을 취소했습니다.");
   }
 
   if (conversationId) {
@@ -1478,7 +1479,7 @@ export async function runCradleOrchestration(
     planSummary: "",
     tasks: [],
     status: "planning",
-    statusMessage: "자동 Provider 상태를 확인하고 CRADLE 계획을 준비합니다.",
+    statusMessage: "AI 연결 상태를 확인하고 협업 계획을 준비합니다.",
     revisionRound: 0,
     finalAnswer: null,
     error: null,
@@ -1508,9 +1509,9 @@ export async function runCradleOrchestration(
     );
     const researchPromptBlock = session.webResearch.researchPromptBlock;
     if (session.webResearch.status === "ready") {
-      setSessionStatus(session, "planning", "웹 자료를 준비했습니다. 자동 총괄 Provider에게 계획을 요청합니다.");
+      setSessionStatus(session, "planning", "웹 자료를 준비했습니다. 총괄 AI에게 계획을 요청합니다.");
     } else if (session.webResearch.status === "failed") {
-      setSessionStatus(session, "planning", "웹 검색에 실패했습니다. 기존 CRADLE 흐름으로 계속합니다.");
+      setSessionStatus(session, "planning", "웹 검색에 실패했습니다. 기존 협업 흐름으로 계속합니다.");
     }
 
     const automaticApiTargets = usableAutomaticProviders(automaticProviderStatuses, preferences);
@@ -1536,7 +1537,7 @@ export async function runCradleOrchestration(
     );
     session.planSummary = plan.summary;
     session.tasks = plan.tasks.map(stateFromSpec);
-    setSessionStatus(session, "running", "CRADLE 계획을 검증했습니다. 무료 자동 Provider를 우선해 Worker 작업을 시작합니다.");
+    setSessionStatus(session, "running", "협업 계획을 검증했습니다. 무료 AI를 우선해 각 AI 작업을 시작합니다.");
 
     await executePlanTasks(session, plan, preferences, sensitiveAcknowledged);
 
@@ -1547,7 +1548,7 @@ export async function runCradleOrchestration(
         throw error;
       }
       session.error = error instanceof Error ? error.message : String(error);
-      setSessionStatus(session, "failed", "Claude 최종 합성에 실패했습니다. 합성만 다시 시도할 수 있습니다.");
+      setSessionStatus(session, "failed", "Claude 최종 정리에 실패했습니다. 정리만 다시 시도할 수 있습니다.");
       releaseCradleActivity(session.id);
       return await new Promise<string>((resolve, reject) => {
         synthesisWaiters.set(session.id, { resolve, reject });
@@ -1555,12 +1556,12 @@ export async function runCradleOrchestration(
     }
   } catch (error) {
     if (session.status === "cancelled") {
-      session.error = "CRADLE 작업이 취소되었습니다.";
+      session.error = "협업 작업이 취소되었습니다.";
       dispatchSession(session);
       throw new Error(session.error);
     }
     session.error = error instanceof Error ? error.message : String(error);
-    setSessionStatus(session, "failed", "CRADLE 실행 중 오류가 발생했습니다.");
+    setSessionStatus(session, "failed", "협업 작업 실행 중 오류가 발생했습니다.");
     throw error;
   } finally {
     for (const key of [...webWaiters.keys()]) {
@@ -1606,6 +1607,7 @@ function composeDirectPrompt(
     : "You are ChatGPT, answering this chat. Answer the user directly in their language.";
   return [
     role,
+    personaInstruction(),
     "Do not pretend to be another model. Do not create an orchestration plan, worker list, or CRADLE handoff.",
     "Do not edit files unless the user asked for a file change.",
     conversationContext ? `Recent conversation (compact):\n${compactText(conversationContext, 2_400)}` : "",

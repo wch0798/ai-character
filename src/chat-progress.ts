@@ -113,8 +113,15 @@ export function initializeChatProgressUi(): void {
       track.dataset.mode = "determinate";
       bar.style.width = `${view.percent}%`;
     }
-    messages.append(row);
-    messages.scrollTop = messages.scrollHeight;
+    // Follow the bottom only when the user is already there, so they can scroll up and read
+    // earlier messages while a long job runs.
+    const atBottom = messages.scrollHeight - messages.scrollTop - messages.clientHeight < 48;
+    if (messages.lastElementChild !== row) {
+      messages.append(row);
+    }
+    if (atBottom) {
+      messages.scrollTop = messages.scrollHeight;
+    }
   };
 
   const show = (next: Partial<ChatProgressView>) => {

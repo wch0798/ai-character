@@ -246,7 +246,66 @@ fn restrict_to_owner(path: &Path) -> Result<(), String> {
         .map_err(|error| format!("키 파일 권한을 잠그지 못했습니다: {error}"))
 }
 
-#[cfg(not(unix))]
+/// Windows: the key file stops inheriting its folder's permissions and only the current user
+/// (plus SYSTEM, for backups) may open it. Best effort: a failure is logged, never fatal.
+/// icacls is a separate program, so it runs again only when the file changed (a save replaces
+/// the file, and the new one inherits the folder's permissions).
+#[cfg(windows)]
+fn restrict_to_owner(path: &Path) -> Result<(), String> {
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+    static LOCKED: Mutex<Option<HashMap<std::path::PathBuf, std::time::SystemTime>>> = Mutex::new(None);
+    let modified = fs::metadata(path).and_then(|meta| meta.modified()).ok();
+    {
+        let mut locked = LOCKED.lock().unwrap_or_else(|e| e.into_inner());
+        let locked = locked.get_or_insert_with(HashMap::new);
+        if modified.is_some() && locked.get(path) == modified.as_ref() {
+            return Ok(());
+        }
+        if let Some(modified) = modified {
+            locked.insert(path.to_path_buf(), modified);
+        }
+    }
+    let Some(sid) = current_user_sid() else {
+        eprintln!("키 파일 권한 잠금 건너뜀: 사용자 SID를 찾지 못했습니다.");
+        return Ok(());
+    };
+    let mut command = std::process::Command::new(system_tool("icacls.exe"));
+    crate::windows_process::hide_console(&mut command);
+    let status = command
+        .arg(path)
+        .args(["/inheritance:r", "/grant:r", &format!("*{sid}:F"), "*S-1-5-18:F", "/Q"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+    if !status.map(|status| status.success()).unwrap_or(false) {
+        eprintln!("키 파일 권한 잠금 실패: {}", path.display());
+    }
+    Ok(())
+}
+
+/// Windows' own tool by full path: a `whoami` from Git Bash earlier on PATH prints something else.
+#[cfg(windows)]
+fn system_tool(name: &str) -> std::path::PathBuf {
+    std::env::var_os("SystemRoot")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from(r"C:\Windows"))
+        .join("System32")
+        .join(name)
+}
+
+/// `S-1-5-21-…` of the signed-in user, from `whoami /user`.
+#[cfg(windows)]
+fn current_user_sid() -> Option<String> {
+    let mut command = std::process::Command::new(system_tool("whoami.exe"));
+    crate::windows_process::hide_console(&mut command);
+    let output = command.args(["/user", "/fo", "csv", "/nh"]).output().ok()?;
+    let text = String::from_utf8_lossy(&output.stdout);
+    let sid = text.trim().rsplit(',').next()?.trim().trim_matches('"').to_string();
+    sid.starts_with("S-1-").then_some(sid)
+}
+
+#[cfg(not(any(unix, windows)))]
 fn restrict_to_owner(_path: &Path) -> Result<(), String> {
     Ok(())
 }

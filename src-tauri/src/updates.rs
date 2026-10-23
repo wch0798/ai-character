@@ -678,6 +678,10 @@ fn git(repo: &Path, git_args: &[&str], timeout: Duration) -> Result<String, Stri
     }
 }
 
+/// Source-mode updates used to install and test each new upstream commit automatically. Off:
+/// that runs unreviewed code (npm install scripts, tests). The path stays for an explicit opt-in.
+const SOURCE_AUTO_VERIFY: bool = false;
+
 fn update_from_source(repo: &Path) -> UpdateOutcome {
     let target = "app-source";
     let short = Duration::from_secs(60);
@@ -708,6 +712,15 @@ fn update_from_source(repo: &Path) -> UpdateOutcome {
         return outcome("failed").message("원격 커밋을 확인하지 못했습니다.");
     };
     let upstream_short: String = upstream.chars().take(7).collect();
+    if !SOURCE_AUTO_VERIFY {
+        // Checking a new commit means running its npm install scripts and tests, i.e. code
+        // nobody has reviewed yet, on this computer. Only say it is there.
+        return outcome("skipped")
+            .versions(head, Some(upstream_short))
+            .message(format!(
+                "원격 저장소에 새 커밋 {behind}개가 있습니다. 개발 모드에서는 검토하지 않은 코드를 자동으로 실행하지 않으니, 내용을 확인한 뒤 직접 git pull 하세요."
+            ));
+    }
 
     let worktree = std::env::temp_dir().join("ai-character-update-check");
     let _ = git(repo, &["worktree", "remove", "--force", &worktree.to_string_lossy()], short);

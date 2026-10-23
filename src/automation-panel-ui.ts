@@ -270,10 +270,17 @@ export function initializeAutomationPanel(options: { setChatOpen(open: boolean):
         stoppingJobs.add(id);
         stop.disabled = true;
         stop.textContent = "중지 중…";
-        void cancelScheduledJob(id).then(async (accepted) => {
-          setMessage(accepted ? `'${job?.title ?? id}' 중지를 요청했습니다.` : "이미 끝난 작업입니다.");
-          await refresh();
-        });
+        void cancelScheduledJob(id)
+          .then((accepted) => {
+            setMessage(accepted ? `'${job?.title ?? id}' 중지를 요청했습니다.` : "이미 끝난 작업입니다.");
+          })
+          .catch((error) => {
+            setMessage(`'${job?.title ?? id}'을(를) 멈추지 못했습니다: ${error instanceof Error ? error.message : String(error)}`);
+          })
+          .finally(() => {
+            stoppingJobs.delete(id);
+            void refresh();
+          });
       });
       head.append(stop);
       card.append(head);

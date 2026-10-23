@@ -179,15 +179,15 @@ export function initializeCradleOrchestrationUi(): void {
   const header = document.createElement("div");
   header.className = "ai-cradle-header";
   const title = document.createElement("strong");
-  title.textContent = "CRADLE 자동 분배";
+  title.textContent = "여러 AI 협업";
   const manager = document.createElement("span");
   manager.className = "ai-cradle-manager";
   manager.textContent = "채팅만 하면 됩니다";
   const headerActions = document.createElement("div");
   headerActions.className = "ai-cradle-header-actions";
-  const retryButton = button("합성 다시 시도", "ai-cradle-action ai-cradle-retry");
+  const retryButton = button("정리 다시 시도", "ai-cradle-action ai-cradle-retry");
   retryButton.hidden = true;
-  const stopButton = button("CRADLE 중지", "ai-cradle-action ai-cradle-secondary");
+  const stopButton = button("협업 중지", "ai-cradle-action ai-cradle-secondary");
   stopButton.hidden = true;
   const hideButton = button("닫기", "ai-cradle-action ai-cradle-secondary");
   hideButton.title = "작업 패널 닫기. 로그에서 다시 볼 수 있습니다.";
@@ -209,7 +209,7 @@ export function initializeCradleOrchestrationUi(): void {
   const technicalStatus = document.createElement("details");
   technicalStatus.className = "ai-cradle-technical-status";
   const technicalSummary = document.createElement("summary");
-  technicalSummary.textContent = "자세한 상태 · 자동 Provider 우선";
+  technicalSummary.textContent = "자세한 상태 · 자동 AI 우선";
   const technicalBody = document.createElement("div");
   technicalBody.className = "ai-cradle-technical-body";
   technicalStatus.append(technicalSummary, technicalBody, manager);
@@ -287,14 +287,14 @@ export function initializeCradleOrchestrationUi(): void {
     if (!lastSession) {
       return;
     }
-    if (!safeConfirm("현재 CRADLE 작업을 중지할까요? 실행 중인 CLI 작업에도 중지 요청을 보냅니다.")) {
+    if (!safeConfirm("현재 협업 작업을 중지할까요? 실행 중인 AI 프로그램 작업에도 중지 요청을 보냅니다.")) {
       return;
     }
     stopButton.disabled = true;
     try {
       await cancelCradleOrchestration(lastSession.id);
     } catch (error) {
-      setMessage(`CRADLE 중지 실패: ${errorText(error)}`);
+      setMessage(`협업 중지 실패: ${errorText(error)}`);
     } finally {
       stopButton.disabled = false;
     }
@@ -314,7 +314,7 @@ export function initializeCradleOrchestrationUi(): void {
       return;
     }
     void cancelCradleOrchestration(lastSession.id).catch((error) => {
-      setMessage(`CRADLE 중지 실패: ${errorText(error)}`);
+      setMessage(`협업 중지 실패: ${errorText(error)}`);
     });
   });
 
@@ -323,11 +323,11 @@ export function initializeCradleOrchestrationUi(): void {
       return;
     }
     retryButton.disabled = true;
-    setMessage("Claude 최종 합성만 다시 시도합니다. Worker는 다시 실행하지 않습니다.");
+    setMessage("Claude 최종 정리만 다시 시도합니다. 작업 AI는 다시 실행하지 않습니다.");
     try {
       await retryCradleSynthesis(lastSession.id);
     } catch (error) {
-      setMessage(`합성 재시도 실패: ${errorText(error)}`);
+      setMessage(`정리 재시도 실패: ${errorText(error)}`);
     } finally {
       retryButton.disabled = false;
     }

@@ -124,8 +124,13 @@ export function chatLimitNotices(report: UsageReport): string[] {
         : `ChatGPT(Codex) ${meter.label} ${Math.round(meter.pct)}% 사용 중입니다.${reset}`
     );
   }
-  if (report.alerts?.paidBlocked || report.alerts?.level === "over") {
+  // "막기" decides what happens at the limit: say "free only" only when paid calls really stop.
+  if (report.alerts?.paidBlocked) {
     lines.push("오늘 유료 API 한도를 다 썼습니다. 무료 AI만 사용합니다.");
+  } else if (report.alerts?.level === "over") {
+    lines.push(
+      `오늘 유료 API 한도($${report.alerts.dailyCostLimitUsd})를 넘었습니다. '한도에 닿으면 유료 호출 막기'가 꺼져 있어 유료 호출은 계속됩니다.`
+    );
   }
   return lines;
 }

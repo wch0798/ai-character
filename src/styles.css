@@ -646,6 +646,71 @@ body {
   display: flex;
 }
 
+/* Questions typed while an answer runs; sent one by one afterwards. */
+#chat-queue {
+  display: grid;
+  gap: 4px;
+  padding: 6px 9px 0;
+  flex-shrink: 0;
+}
+
+#chat-queue[hidden] {
+  display: none;
+}
+
+.chat-queue-title {
+  font-size: 11px;
+  color: rgba(255,255,255,.6);
+}
+
+.chat-queue-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  border-radius: 9px;
+  background: rgba(255,255,255,.08);
+  font-size: 12px;
+  color: rgba(255,255,255,.88);
+}
+
+.chat-queue-item em {
+  flex: 0 0 auto;
+  padding: 1px 6px;
+  border-radius: 6px;
+  font-size: 10px;
+  font-style: normal;
+  font-weight: 600;
+  background: rgba(78,112,245,.45);
+  color: white;
+}
+
+.chat-queue-item.is-next em {
+  background: rgba(255,255,255,.16);
+}
+
+.chat-queue-item span {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-queue-item button {
+  flex: 0 0 auto;
+  border: 0;
+  background: transparent;
+  color: rgba(255,255,255,.6);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+}
+
+.chat-queue-item button:hover {
+  color: white;
+}
+
 .attachment-chip {
   display: inline-flex;
   align-items: center;
@@ -4334,3 +4399,108 @@ body:has(#automation-panel:not([hidden])) #performance-hud {
 #chat-folder-bar .chat-folder-menu button:hover { background: rgba(255, 255, 255, 0.08); }
 #chat-folder-bar .chat-folder-menu-title { padding: 4px 8px; font-weight: 700; color: rgba(255, 255, 255, 0.7); font-size: 11px; }
 #chat-folder-bar .chat-folder-menu-note { padding: 4px 8px 2px; color: rgba(255, 255, 255, 0.5); font-size: 10.5px; line-height: 1.4; }
+
+
+/* ---------- 화면 설정: 밝은 테마 · 글자 크기 (appearance.ts) ---------- */
+
+/*
+ * The panels were designed dark, with light text set in over a hundred rules. The light theme
+ * flips each panel as a whole and turns pictures back, so every control stays readable without
+ * a second copy of every color.
+ */
+:root[data-theme="light"] #chat-panel,
+:root[data-theme="light"] #work-log-overlay,
+:root[data-theme="light"] #rightclick-test-menu {
+  filter: invert(0.92) hue-rotate(180deg);
+}
+
+:root[data-theme="light"] #chat-panel img,
+:root[data-theme="light"] #chat-panel video,
+:root[data-theme="light"] #chat-panel canvas,
+:root[data-theme="light"] #work-log-overlay img {
+  filter: invert(1) hue-rotate(180deg);
+}
+
+/* Chat messages and the input follow the chosen size (보통 = 1). */
+#messages {
+  zoom: var(--chat-font-scale, 1);
+}
+
+#chat-input {
+  font-size: calc(13px * var(--chat-font-scale, 1)) !important;
+}
+
+/* ---------- 설정: 선택 버튼 · 말투 입력 · 단축키 ---------- */
+
+.ai-settings-choice-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 6px 0;
+}
+
+.ai-settings-choice-label {
+  flex: 0 0 auto;
+  min-width: 96px;
+  font-size: 12px;
+  color: rgb(214, 218, 228);
+}
+
+.ai-settings-segmented {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.ai-settings-segmented button {
+  border: 0;
+  padding: 5px 10px;
+  border-radius: 7px;
+  background: transparent;
+  color: rgb(190, 196, 210);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.ai-settings-segmented button[aria-checked="true"] {
+  background: rgb(78, 112, 245);
+  color: white;
+  font-weight: 600;
+}
+
+.ai-settings-textarea {
+  width: 100%;
+  box-sizing: border-box;
+  margin: 6px 0 2px;
+  padding: 8px 10px;
+  border: 1px solid rgb(48, 52, 64);
+  border-radius: 9px;
+  background: rgb(22, 25, 33);
+  color: rgb(236, 238, 244);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.5;
+  resize: vertical;
+}
+
+.ai-settings-shortcut {
+  flex: 0 1 180px;
+  min-width: 0;
+  padding: 6px 10px;
+  border: 1px solid rgb(48, 52, 64);
+  border-radius: 8px;
+  background: rgb(22, 25, 33);
+  color: rgb(236, 238, 244);
+  font-size: 12px;
+  text-align: center;
+  cursor: pointer;
+}
+
+.ai-settings-shortcut:focus {
+  outline: 2px solid rgb(78, 112, 245);
+  outline-offset: 1px;
+}

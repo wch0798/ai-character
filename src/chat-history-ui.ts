@@ -49,13 +49,18 @@ export function getShownConversationId(): string | null {
 export type ChatHistoryManager = {
   getActiveId(): string;
   getContext(): string;
-  append(role: ChatRole, content: string): void;
+  append(role: ChatRole, content: string, source?: string): void;
+  /**
+   * Saves into a given conversation, which may no longer be on screen (the user switched while
+   * the answer was on its way). Returns whether that conversation is the one showing.
+   */
+  appendTo(conversationId: string, role: ChatRole, content: string, source?: string): boolean;
   refresh(): void;
 };
 
 type SetupOptions = {
   messages: HTMLDivElement;
-  addMessage(text: string, type: ChatRole, createdAt?: number): void;
+  addMessage(text: string, type: ChatRole, createdAt?: number, source?: string): void;
   showWelcome?: () => void;
 };
 
@@ -174,7 +179,7 @@ export function setupChatHistory(options: SetupOptions): ChatHistoryManager {
     }
 
     for (const message of conversation.messages) {
-      options.addMessage(message.content, message.role, message.createdAt);
+      options.addMessage(message.content, message.role, message.createdAt, message.source);
     }
     options.messages.scrollTop = options.messages.scrollHeight;
   };
@@ -276,6 +281,13 @@ export function setupChatHistory(options: SetupOptions): ChatHistoryManager {
       const titleLine = document.createElement("span");
       titleLine.className = "chat-history-title";
       titleLine.textContent = conversation.title;
+      if (conversation.pinned) {
+        row.classList.add("pinned");
+        const pin = document.createElement("span");
+        pin.className = "chat-history-pin";
+        pin.textContent = "고정";
+        titleLine.prepend(pin);
+      }
       openButton.append(titleLine);
       openButton.title = new Date(
         conversation.updatedAt
@@ -330,6 +342,16 @@ export function setupChatHistory(options: SetupOptions): ChatHistoryManager {
         startRename(row, openButton, conversation);
       });
 
+      const pinButton = document.createElement("button");
+      pinButton.type = "button";
+      pinButton.className = "chat-history-action";
+      pinButton.textContent = conversation.pinned ? "고정 해제" : "맨 위에 고정";
+      pinButton.addEventListener("click", (event) => {
+        event.stopPropagation();
+        store.setPinned(conversation.id, !conversation.pinned);
+        renderList();
+      });
+
       const deleteButton = document.createElement("button");
       deleteButton.type = "button";
       deleteButton.className = "chat-history-action danger";
@@ -372,6 +394,7 @@ export function setupChatHistory(options: SetupOptions): ChatHistoryManager {
       });
 
       rowMenu.append(
+        pinButton,
         renameButton,
         copyButton,
         saveButton,
@@ -458,11 +481,12 @@ export function setupChatHistory(options: SetupOptions): ChatHistoryManager {
       );
     },
 
-    append(role, content) {
+    append(role, content, source) {
       store.appendMessage(
         active.id,
         role,
-        content
+        content,
+        { source }
       );
 
       active =
@@ -470,6 +494,20 @@ export function setupChatHistory(options: SetupOptions): ChatHistoryManager {
         active;
 
       renderList();
+    },
+
+    appendTo(conversationId, role, content, source) {
+      if (conversationId === active.id) {
+        this.append(role, content, source);
+        return true;
+      }
+      try {
+        store.appendMessage(conversationId, role, content, { activate: false, source });
+      } catch {
+        // The conversation was deleted while the answer was on its way.
+      }
+      renderList();
+      return false;
     },
 
     refresh() {

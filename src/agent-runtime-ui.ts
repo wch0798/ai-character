@@ -55,8 +55,8 @@ export function initializeAgentRuntimeUi(): void {
   const agentBadge = document.createElement("button");
   agentBadge.type = "button";
   agentBadge.id = "agent-runtime-agent";
-  agentBadge.textContent = "여러 Agent";
-  agentBadge.title = "Agent 설정 열기";
+  agentBadge.textContent = "여러 AI";
+  agentBadge.title = "AI 프로그램 설정 열기";
   agentBadge.addEventListener("click", (event) => {
     event.preventDefault();
     event.stopPropagation();
@@ -81,15 +81,15 @@ export function initializeAgentRuntimeUi(): void {
 
   const updateAgentBadge = (preferences: AppPreferences): void => {
     agentBadge.textContent = preferences.cradleEnabled
-      ? "여러 Agent"
-      : `Agent: ${agentLabel(preferences.defaultAgent)}`;
+      ? "여러 AI"
+      : `AI: ${agentLabel(preferences.defaultAgent)}`;
     agentBadge.title = preferences.cradleEnabled
       ? "질문은 바로 답하고, 파일 작업은 설치된 Cursor·Codex·Claude 등에 나눕니다. 클릭하면 설정이 열립니다."
-      : "현재 기본 Agent. 클릭하면 설정이 열립니다.";
+      : "현재 기본 AI 프로그램. 클릭하면 설정이 열립니다.";
   };
 
   void getAppPreferences().then(updateAgentBadge).catch(() => {
-    agentBadge.textContent = "Agent: 확인 실패";
+    agentBadge.textContent = "AI 프로그램: 확인 실패";
   });
 
   window.addEventListener("ai-character:preferences-updated", (event: Event) => {
@@ -127,7 +127,7 @@ export function initializeAgentRuntimeUi(): void {
 
   const output = document.createElement("pre");
   output.id = "agent-runtime-output";
-  output.setAttribute("aria-label", "Agent 실시간 출력");
+  output.setAttribute("aria-label", "AI 프로그램 실시간 출력");
 
   const technicalDetails = document.createElement("details");
   technicalDetails.id = "agent-runtime-details";
@@ -321,7 +321,7 @@ export function initializeAgentRuntimeUi(): void {
       output.textContent = "";
       technicalOutput.textContent = "";
       technicalDetails.hidden = true;
-      agentBadge.textContent = `Agent: ${agentLabel(detail.agent)}`;
+      agentBadge.textContent = `AI: ${agentLabel(detail.agent)}`;
       status.textContent =
         detail.kind === "chat"
           ? "답변 중…"

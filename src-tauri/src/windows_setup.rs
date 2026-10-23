@@ -319,6 +319,12 @@ $asset = $rel.assets | Where-Object { $_.name -match '^Git-.*-64-bit\.exe$' } | 
 if (-not $asset) { throw 'Git 설치 파일을 찾지 못했습니다.' }
 $exe = Join-Path $dir $asset.name
 Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $exe -UseBasicParsing
+# Run only an installer signed by the Git for Windows maintainer.
+$sig = Get-AuthenticodeSignature -LiteralPath $exe
+if ($sig.Status -ne 'Valid' -or $sig.SignerCertificate.Subject -notmatch 'Johannes Schindelin|Git for Windows') {
+  Remove-Item -Force -LiteralPath $exe -ErrorAction SilentlyContinue
+  throw 'Git 설치 파일의 디지털 서명이 올바르지 않아 설치를 멈췄습니다. 네트워크를 확인한 뒤 다시 시도하거나 git-scm.com에서 직접 설치하세요.'
+}
 $target = Join-Path $env:LOCALAPPDATA 'Programs\Git'
 $proc = Start-Process -FilePath $exe -ArgumentList @('/VERYSILENT','/NORESTART','/NOCANCEL','/SP-','/CLOSEAPPLICATIONS',"/DIR=$target") -Wait -PassThru -WindowStyle Hidden
 if ($proc.ExitCode -ne 0 -and $proc.ExitCode -ne 3010) { throw "Git installer exit $($proc.ExitCode)" }
@@ -360,6 +366,15 @@ $ver = $lts.version
 $zipName = "node-$ver-win-x64.zip"
 $zip = Join-Path $dir $zipName
 Invoke-WebRequest -Uri "https://nodejs.org/dist/$ver/$zipName" -OutFile $zip -UseBasicParsing
+# Use the archive only if it matches the checksum nodejs.org publishes for that release.
+$sums = Invoke-RestMethod -Uri "https://nodejs.org/dist/$ver/SHASUMS256.txt"
+$line = ($sums -split "`n") | ForEach-Object { $_.Trim() } | Where-Object { $_ -match ('\s' + [regex]::Escape($zipName) + '$') } | Select-Object -First 1
+$expected = if ($line) { ($line -split '\s+')[0].ToLower() } else { '' }
+$actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $zip).Hash.ToLower()
+if (-not $expected -or $expected -ne $actual) {
+  Remove-Item -Force -LiteralPath $zip -ErrorAction SilentlyContinue
+  throw 'Node.js 설치 파일의 확인값(SHA256)이 공식 값과 달라 설치를 멈췄습니다. 네트워크를 확인한 뒤 다시 시도하세요.'
+}
 $extract = Join-Path $dir "node-$ver-win-x64"
 if (Test-Path $extract) { Remove-Item -Recurse -Force $extract }
 Expand-Archive -LiteralPath $zip -DestinationPath $dir -Force

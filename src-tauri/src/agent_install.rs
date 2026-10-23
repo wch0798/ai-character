@@ -103,8 +103,15 @@ fn agent_status(agent: AgentKind) -> RuntimeComponentStatus {
     }
 }
 
+/// Looking up each program can start PowerShell and other tools, so the UI asks off its thread.
 #[tauri::command]
-pub fn get_runtime_setup_status() -> RuntimeSetupStatus {
+pub async fn get_runtime_setup_status() -> Result<RuntimeSetupStatus, String> {
+    tauri::async_runtime::spawn_blocking(runtime_setup_status)
+        .await
+        .map_err(|error| format!("설치 상태 확인 실패: {error}"))
+}
+
+pub fn runtime_setup_status() -> RuntimeSetupStatus {
     #[cfg(windows)]
     {
         crate::windows_setup::refresh_process_path();
@@ -338,6 +345,7 @@ pub async fn install_all_required_runtimes() -> Result<Vec<InstallStepResult>, S
 pub fn launch_agent_login(app: tauri::AppHandle, agent: String) -> Result<String, String> {
     crate::window_stack::suppress_main_always_on_top(&app);
     let agent = AgentKind::parse(&agent)?;
+    crate::login_status::note_login_started();
     let settings = load_settings().ok();
     let saved = settings
         .as_ref()

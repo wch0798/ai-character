@@ -1,8 +1,9 @@
 use crate::agent_core::{
-    canonical_existing_dir, claude_plugin_dir_args, inspect_agent_runtime,
+    canonical_existing_dir, claude_plugin_dir_args, inspect_agent_runtime, isolate_claude_from_project,
+    user_claude_plugin_dir_args,
     managed_workspace_permission_args, merge_extra_args, merge_plugin_dir_args, request_cancel,
     resolve_agent_binary,
-    run_request_streaming, sanitize_claude_extra_args, seed_claude_project_settings, AgentKind,
+    run_request_streaming, sanitize_claude_extra_args, AgentKind,
     AgentRequest, AgentStreamChunk,
 };
 use crate::settings::{load_settings, save_settings};
@@ -822,13 +823,15 @@ where
         let mut extra_args = settings.agent_extra_args(agent).to_vec();
         if agent == AgentKind::Claude {
             extra_args = sanitize_claude_extra_args(&extra_args);
-            if managed_workspace {
-                seed_claude_project_settings(&configured_project, &working_dir);
-            }
-            extra_args = merge_plugin_dir_args(
-                &extra_args,
-                &claude_plugin_dir_args(&configured_project, &working_dir),
-            );
+            // A project's own plugins may carry hooks (code that runs on every tool call), so in
+            // the managed workspace, where Claude runs with every permission, only the user's
+            // own plugins load.
+            let plugin_dirs = if managed_workspace {
+                user_claude_plugin_dir_args()
+            } else {
+                claude_plugin_dir_args(&configured_project, &working_dir)
+            };
+            extra_args = merge_plugin_dir_args(&extra_args, &plugin_dirs);
             if managed_workspace {
                 match crate::claude_integration::prepare_claude_workspace(&working_dir) {
                     Ok(integration_args) => {
@@ -843,7 +846,8 @@ where
                             extra_args.push(value);
                         }
                     }
-                    Err(error) => eprintln!("Claude 통합 준비 경고: {error}"),
+                    // Without the workspace guard Claude must not run with every permission.
+                    Err(error) => return Err(format!("Claude 작업 폴더 보호를 준비하지 못해 실행하지 않았습니다: {error}")),
                 }
             }
         }
@@ -854,6 +858,9 @@ where
                 &extra_args,
                 &managed_workspace_permission_args(agent),
             );
+            if agent == AgentKind::Claude {
+                extra_args = isolate_claude_from_project(&extra_args);
+            }
         }
 
         let mut request = AgentRequest {
@@ -981,16 +988,31 @@ pub fn cancel_agent(task_id: String) -> Result<(), String> {
     Ok(())
 }
 
-#[tauri::command]
-pub fn get_workspace_changes(conversation_id: String) -> Result<Vec<WorkspaceChange>, String> {
-    let project_dir = configured_project_dir_for(Some(&conversation_id))?;
-    workspace_changes::list_workspace_changes(&project_dir, conversation_id.trim())
+/// Workspace commands walk the whole project, so they run off the UI thread.
+async fn off_ui_thread<T: Send + 'static>(
+    work: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    tauri::async_runtime::spawn_blocking(work)
+        .await
+        .map_err(|error| format!("작업 실행 실패: {error}"))?
 }
 
 #[tauri::command]
-pub fn get_workspace_diff(conversation_id: String, path: String) -> Result<String, String> {
-    let project_dir = configured_project_dir_for(Some(&conversation_id))?;
-    workspace_changes::workspace_file_diff(&project_dir, conversation_id.trim(), path.trim())
+pub async fn get_workspace_changes(conversation_id: String) -> Result<Vec<WorkspaceChange>, String> {
+    off_ui_thread(move || {
+        let project_dir = configured_project_dir_for(Some(&conversation_id))?;
+        workspace_changes::list_workspace_changes(&project_dir, conversation_id.trim())
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn get_workspace_diff(conversation_id: String, path: String) -> Result<String, String> {
+    off_ui_thread(move || {
+        let project_dir = configured_project_dir_for(Some(&conversation_id))?;
+        workspace_changes::workspace_file_diff(&project_dir, conversation_id.trim(), path.trim())
+    })
+    .await
 }
 
 const BULK_DELETE_THRESHOLD: usize = 5;
@@ -1032,9 +1054,12 @@ pub async fn apply_workspace_changes(
 }
 
 #[tauri::command]
-pub fn discard_workspace_changes(conversation_id: String) -> Result<(), String> {
-    let project_dir = configured_project_dir_for(Some(&conversation_id))?;
-    workspace_changes::discard_workspace_changes(&project_dir, conversation_id.trim())
+pub async fn discard_workspace_changes(conversation_id: String) -> Result<(), String> {
+    off_ui_thread(move || {
+        let project_dir = configured_project_dir_for(Some(&conversation_id))?;
+        workspace_changes::discard_workspace_changes(&project_dir, conversation_id.trim())
+    })
+    .await
 }
 
 #[tauri::command]
@@ -1044,9 +1069,12 @@ pub fn list_checkpoints(limit: Option<u32>) -> Result<Vec<CheckpointRecord>, Str
 }
 
 #[tauri::command]
-pub fn restore_checkpoint(checkpoint_id: String) -> Result<RestoreCheckpointResult, String> {
-    let project_dir = configured_project_dir()?;
-    workspace_changes::restore_checkpoint(&project_dir, checkpoint_id.trim())
+pub async fn restore_checkpoint(checkpoint_id: String) -> Result<RestoreCheckpointResult, String> {
+    off_ui_thread(move || {
+        let project_dir = configured_project_dir()?;
+        workspace_changes::restore_checkpoint(&project_dir, checkpoint_id.trim())
+    })
+    .await
 }
 
 #[tauri::command]

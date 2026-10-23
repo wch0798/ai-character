@@ -1,3 +1,6 @@
+// Pixi builds shader code with new Function() unless this is loaded first; with it the app can
+// run under a CSP without 'unsafe-eval' (tauri.conf.json).
+import "pixi.js/unsafe-eval";
 import { confirmOnSecondClick } from "./settings-controls";
 import { initializeCradleOrchestrationUi } from "./orchestration-ui";
 import { askCradleCompat } from "./orchestration-engine";
@@ -6,7 +9,12 @@ import { initializeAgentRuntimeUi } from "./agent-runtime-ui";
 import { initializeChatProgressUi } from "./chat-progress";
 import { openWorkLogWindow } from "./work-log-window";
 import { renderMarkdown } from "./chat-markdown";
-import { renderWelcome, setupComposer, setupScrollFollow, type Composer, type ScrollFollower } from "./chat-composer";
+import { additionsPrompt, mergedPrompt, renderWelcome, setupComposer, setupScrollFollow, type Composer, type ScrollFollower } from "./chat-composer";
+import { classifyRequestIntent } from "./request-intent";
+import { formatAnswerSource, lookupAnswerSource } from "./answer-source";
+import { friendlyChatError } from "./chat-errors";
+import { SPEAKING_EVENT, setupVoiceButtons, speakAnswer, stopSpeaking } from "./voice";
+import { HISTORY_SAVE_FAILED_EVENT } from "./chat-history";
 import { initializeAutomationPanel } from "./automation-panel-ui";
 import { notificationPreview, notifyDesktop, shouldNotifyCompletion } from "./alerts-client";
 import { startLiveReply, type LiveReply } from "./chat-stream";
@@ -53,6 +61,7 @@ import {
   windowPositionKeepingCharacter,
 } from "./window-layout";
 import "./styles.css";
+import "./chat-extras.css";
 
 import {
   Application,
@@ -117,6 +126,7 @@ import {
 import {
   stageAttachment,
   removeStagedAttachment,
+  savePastedImage,
 } from "./attachment-staging";
 
 import {
@@ -2323,6 +2333,27 @@ async function startLive2D() {
     model.rotation = 0;
   });
 
+  // While an answer is read aloud the mouth moves. Set just before the model applies its
+  // parameters, so motions playing at the same time don't overwrite it.
+  let speakingSince = 0;
+  window.addEventListener(SPEAKING_EVENT, (event: Event) => {
+    speakingSince = (event as CustomEvent<boolean>).detail ? performance.now() : 0;
+  });
+  const lipModel = (model as unknown as {
+    internalModel?: {
+      on?(event: string, listener: () => void): void;
+      coreModel?: { setParameterValueById?(id: string, value: number): void };
+      motionManager?: { lipSyncIds?: string[] };
+    };
+  }).internalModel;
+  lipModel?.on?.("beforeModelUpdate", () => {
+    if (!speakingSince) return;
+    const t = (performance.now() - speakingSince) / 1000;
+    const open = Math.max(0, Math.min(1, 0.15 + 0.7 * Math.abs(Math.sin(t * 9)) * (0.6 + 0.4 * Math.sin(t * 2.3))));
+    const ids = lipModel.motionManager?.lipSyncIds?.length ? lipModel.motionManager.lipSyncIds : ["ParamMouthOpenY"];
+    for (const id of ids) lipModel.coreModel?.setParameterValueById?.(id, open);
+  });
+
   /*
    * 마우스 휠로 캐릭터 크기 조절
    */
@@ -2378,10 +2409,24 @@ async function startLive2D() {
    */
   const composer: Composer | null =
     chatForm && chatInput
-      ? setupComposer(chatForm, chatInput, () => {
-          window.dispatchEvent(new Event("ai-character:stop-active-work"));
+      ? setupComposer(chatForm, chatInput, {
+          onStop: () => {
+            // Stopping halfway through a file change can leave some files changed and others not.
+            if (
+              runningRequest?.project &&
+              !window.confirm("지금 파일을 고치는 중입니다. 멈추면 일부 파일만 바뀐 채로 남을 수 있습니다.\n그래도 멈출까요?")
+            ) {
+              return;
+            }
+            window.dispatchEvent(new Event("ai-character:stop-active-work"));
+          },
+          onAdd: (text) => restartWithAddition(text),
         })
       : null;
+
+  if (chatForm && chatInput) {
+    setupVoiceButtons(chatForm, chatInput, (text) => flashStatus(text, "error", 4200));
+  }
 
   const scrollFollower: ScrollFollower | null =
     messages && chatForm ? setupScrollFollow(messages, chatForm) : null;
@@ -2428,7 +2473,9 @@ async function startLive2D() {
   function addMessage(
     text: string,
     type: "user" | "assistant",
-    createdAt: number = Date.now()
+    createdAt: number = Date.now(),
+    source?: string,
+    failed = false
   ) {
     if (!messages) return;
     messages.querySelector(".chat-welcome")?.remove();
@@ -2449,12 +2496,20 @@ async function startLive2D() {
     actions.className = "message-actions";
     actions.append(
       messageAction("복사", "메시지 전체 복사", (button) => {
-        void copyText(text).then(() => {
-          button.textContent = "복사됨";
-          window.setTimeout(() => {
-            button.textContent = "복사";
-          }, 900);
-        });
+        void copyText(text).then(
+          () => {
+            button.textContent = "복사됨";
+            window.setTimeout(() => {
+              button.textContent = "복사";
+            }, 900);
+          },
+          () => {
+            button.textContent = "복사 실패";
+            window.setTimeout(() => {
+              button.textContent = "복사";
+            }, 1600);
+          }
+        );
       })
     );
     if (type === "user") {
@@ -2465,12 +2520,21 @@ async function startLive2D() {
       );
     }
 
-    const isError = type === "assistant" && (text.includes("기술 로그") || text.startsWith("연결 오류:"));
+    const isError = failed || (type === "assistant" && (text.includes("기술 로그") || text.startsWith("연결 오류:")));
     if (isError) {
       bubble.classList.add("is-error");
       const retry = retryLastRequest;
       if (retry) {
-        actions.append(messageAction("다시 시도", "같은 질문을 다시 보냅니다", () => retry()));
+        actions.append(
+          messageAction("다시 시도", "같은 질문을 다시 보냅니다", () => {
+            // While another request runs, submitting means "stop" — never let an old retry do that.
+            if (composer?.isBusy()) {
+              flashStatus("지금 작업이 끝난 뒤에 다시 시도해 주세요", "error", 2400);
+              return;
+            }
+            retry();
+          })
+        );
       }
       actions.append(
         messageAction("기술 로그 열기", "기술 로그를 새 창에서 봅니다", () => {
@@ -2479,21 +2543,45 @@ async function startLive2D() {
       );
     }
 
-    bubble.append(content, actions);
+    if (source && type === "assistant") {
+      // Which AI answered and what it cost, so a paid answer is never a surprise.
+      const sourceLine = document.createElement("div");
+      sourceLine.className = "message-source";
+      sourceLine.textContent = source;
+      bubble.append(content, sourceLine, actions);
+    } else {
+      bubble.append(content, actions);
+    }
     messages.appendChild(bubble);
     scrollFollower?.follow(type === "user");
   }
 
+  // A CRADLE run's answer arrives twice (session event and awaited result); post it once per
+  // request. Reset on every new request, so asking the same thing again still gets its answer.
   let lastAssistantReply = "";
+  // The conversation the running request was sent from; its answer belongs there even if the
+  // user has switched to another conversation meanwhile.
+  let requestConversationId: string | null = null;
+  // What is running now, to decide whether a note added mid-way can restart it.
+  let runningRequest: { prompt: string; answering: boolean; project: boolean } | null = null;
 
-  function postAssistantReply(text: string): void {
+  function postAssistantReply(text: string, source?: string): void {
     const clean = text.trim();
     if (!clean || clean === lastAssistantReply) {
       return;
     }
     lastAssistantReply = clean;
-    addMessage(clean, "assistant");
-    chatHistory?.append("assistant", clean);
+    const target = requestConversationId ?? chatHistory?.getActiveId();
+    const shown = target && chatHistory ? chatHistory.appendTo(target, "assistant", clean, source) : true;
+    if (shown) {
+      addMessage(clean, "assistant", Date.now(), source);
+      speakAnswer(clean);
+    }
+  }
+
+  /** Whether the running request's conversation is the one on screen. */
+  function requestConversationShown(): boolean {
+    return !requestConversationId || requestConversationId === chatHistory?.getActiveId();
   }
 
   if (messages) {
@@ -2507,6 +2595,13 @@ async function startLive2D() {
       });
   }
 
+  let historyWarnedAt = 0;
+  window.addEventListener(HISTORY_SAVE_FAILED_EVENT, () => {
+    if (Date.now() - historyWarnedAt < 60_000) return;
+    historyWarnedAt = Date.now();
+    flashStatus("대화 기록 저장 공간이 가득 찼습니다. 오래된 대화를 Markdown으로 저장한 뒤 지워 주세요", "error", 6000);
+  });
+
   window.addEventListener("ai-character:cradle-session", (event: Event) => {
     const session = (event as CustomEvent<{
       status?: string;
@@ -2516,7 +2611,8 @@ async function startLive2D() {
     if (activity) {
       characterActivity?.setActivity(activity);
     }
-    if (session?.status === "completed" && session.finalAnswer) {
+    // A chat request posts its own answer (with who answered and the cost) when it returns.
+    if (session?.status === "completed" && session.finalAnswer && !runningRequest) {
       postAssistantReply(session.finalAnswer);
     }
   });
@@ -3244,6 +3340,25 @@ async function startLive2D() {
     };
 
 
+  // Ctrl+V of a screenshot: images become attachments; text pastes as usual.
+  chatInput?.addEventListener("paste", (event) => {
+    const images = [...(event.clipboardData?.items ?? [])]
+      .filter((item) => item.kind === "file" && item.type.startsWith("image/"))
+      .map((item) => item.getAsFile())
+      .filter((file): file is File => file !== null);
+    if (!images.length) return;
+    event.preventDefault();
+    void (async () => {
+      for (const image of images) {
+        try {
+          await addAttachmentPaths([await savePastedImage(image)]);
+        } catch (error) {
+          flashStatus(`그림을 붙여넣지 못했습니다: ${error instanceof Error ? error.message : String(error)}`, "error", 3200);
+        }
+      }
+    })();
+  });
+
   attachmentButton?.addEventListener(
     "click",
     async () => {
@@ -3358,14 +3473,54 @@ async function startLive2D() {
   let activeRequestId = 0;
   let stoppedRequestId = 0;
   let liveReply: LiveReply | null = null;
+  // The next submit sends this prompt instead of the input text (input text is still shown).
+  let promptOverride: string | null = null;
+  let restarting = false;
+
+  /** Sends `display` as the user's message with `prompt` as what the AI actually receives. */
+  function sendWithPrompt(display: string, prompt: string): void {
+    // The submit handler reads the input synchronously, so a draft being typed can go straight back.
+    const draft = chatInput?.value ?? "";
+    promptOverride = prompt;
+    composer?.fill(display);
+    chatForm?.requestSubmit();
+    promptOverride = null;
+    if (draft.trim()) {
+      composer?.fill(draft);
+    }
+  }
+
+  /**
+   * A note typed while a task runs. Before any answer has appeared (and when no files are being
+   * changed) the task restarts at once with the note folded in; otherwise it waits and follows up.
+   */
+  function restartWithAddition(text: string): boolean {
+    const running = runningRequest;
+    if (!running || running.answering || running.project) {
+      return false;
+    }
+    restarting = true;
+    window.dispatchEvent(new Event("ai-character:stop-active-work"));
+    restarting = false;
+    window.setTimeout(() => sendWithPrompt(text, mergedPrompt(running.prompt, [text])), 0);
+    return true;
+  }
 
   window.addEventListener("ai-character:stop-active-work", () => {
     if (!composer?.isBusy()) {
       return;
     }
     stoppedRequestId = activeRequestId;
+    runningRequest = null;
     liveReply?.dispose();
+    stopSpeaking();
     composer.setBusy(false);
+    if (restarting) {
+      // Restarting with an added note: not a user stop, so no stop message and keep the queue.
+      return;
+    }
+    // Stopping means "not like this": waiting questions go back to the input, unsent.
+    composer.returnQueuedToInput();
     characterActivity?.setActivity("idle");
     window.dispatchEvent(new Event("ai-character:chat-progress-hide"));
     addMessage("답변을 중지했습니다. 질문은 입력창에서 ↑ 키로 다시 불러올 수 있어요.", "assistant");
@@ -3383,6 +3538,8 @@ async function startLive2D() {
 
       const text =
         chatInput?.value.trim();
+      // Set only for the duration of a sendWithPrompt call, so read it before any await.
+      const promptText = promptOverride ?? text ?? "";
 
       if (
         !text &&
@@ -3449,10 +3606,12 @@ async function startLive2D() {
         "user",
         userDisplayText
       );
+      requestConversationId = chatHistory?.getActiveId() ?? null;
+      lastAssistantReply = "";
 
       const requestPrompt =
         buildAttachmentPrompt(
-          text ?? "",
+          promptText,
           pendingAttachments
         );
 
@@ -3462,6 +3621,12 @@ async function startLive2D() {
       const requestId = ++activeRequestId;
       const isStopped = () => stoppedRequestId === requestId;
       const startedAt = Date.now();
+      const thisRequest = {
+        prompt: promptText,
+        answering: false,
+        project: classifyRequestIntent(promptText, previousConversationContext) === "project",
+      };
+      runningRequest = thisRequest;
 
       characterActivity?.setActivity("working");
       window.dispatchEvent(new Event("ai-character:chat-progress-start"));
@@ -3470,7 +3635,10 @@ async function startLive2D() {
         ? startLiveReply(`chat-${requestId}-${startedAt}`, {
             messages,
             render: (target, partial) => target.append(renderMarkdown(partial, markdownHandlers)),
-            onFirstText: () => window.dispatchEvent(new Event("ai-character:chat-progress-hide")),
+            onFirstText: () => {
+              thisRequest.answering = true;
+              window.dispatchEvent(new Event("ai-character:chat-progress-hide"));
+            },
             onUpdate: () => scrollFollower?.follow(false),
           })
         : null;
@@ -3490,8 +3658,13 @@ async function startLive2D() {
           return;
         }
 
+        const source = await lookupAnswerSource(startedAt - 1_000).catch(() => null);
+        if (isStopped()) {
+          return;
+        }
         postAssistantReply(
-          answer || "작업을 마쳤지만 채팅에 넣을 답이 비어 있습니다."
+          answer || "작업을 마쳤지만 채팅에 넣을 답이 비어 있습니다.",
+          source ? formatAnswerSource(source) : undefined
         );
         window.dispatchEvent(new Event("ai-character:usage-refresh"));
         notifyIfAway(startedAt, "답변이 도착했습니다", answer || "작업을 마쳤습니다.");
@@ -3547,10 +3720,16 @@ async function startLive2D() {
           composer?.fill(failedText);
           chatForm?.requestSubmit();
         };
-        addMessage(
-          message.includes("사용량") || message.includes("한도") ? message : `연결 오류: ${message}`,
-          "assistant"
-        );
+        // Only on screen if the user is still looking at the conversation the request came from.
+        if (requestConversationShown()) {
+          addMessage(
+            friendlyChatError(message),
+            "assistant",
+            Date.now(),
+            undefined,
+            true
+          );
+        }
         window.dispatchEvent(new Event("ai-character:usage-refresh"));
         notifyIfAway(startedAt, "작업이 실패했습니다", message);
         retryLastRequest = null;
@@ -3563,9 +3742,25 @@ async function startLive2D() {
         if (liveReply === live) {
           liveReply = null;
         }
+        // A stopped request settles later, possibly while a newer one runs: leave that one alone.
+        if (requestId === activeRequestId) {
+          // A failed or finished request must not leave the progress row ticking under the chat.
+          window.dispatchEvent(new Event("ai-character:chat-progress-hide"));
+          requestConversationId = null;
+          runningRequest = null;
+        }
         if (!isStopped()) {
           composer?.setBusy(false);
           chatInput?.focus();
+          // Notes added to this task go out first, together, as its follow-up; then separate
+          // questions, one at a time.
+          const additions = composer?.takeAdditions() ?? [];
+          const next = additions.length ? undefined : composer?.takeQueued();
+          if (additions.length) {
+            window.setTimeout(() => sendWithPrompt(additions.join("\n"), additionsPrompt(additions)), 0);
+          } else if (next) {
+            window.setTimeout(() => sendWithPrompt(next, next), 0);
+          }
         }
       }
     }

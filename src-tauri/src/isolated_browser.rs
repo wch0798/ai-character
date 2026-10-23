@@ -126,9 +126,11 @@ pub fn open_url(profile_id: &str, url: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// The URL is only ever expanded late (`!TARGET!`) and inside quotes, so `&`, `|`, `^` or `%`
+/// in it stay part of the URL instead of becoming cmd commands.
 fn launcher_body(browser: &Path, profile: &Path) -> String {
     format!(
-        "@echo off\r\nsetlocal\r\nset \"TARGET=%*\"\r\necho %TARGET% | findstr /I /C:\"github.com\" /C:\"gist.github.com\" >nul\r\nif not errorlevel 1 (\r\n  start \"\" %TARGET%\r\n  exit /b 0\r\n)\r\nstart \"\" \"{browser}\" --user-data-dir=\"{profile}\" --no-first-run --no-default-browser-check --new-window %TARGET%\r\n",
+        "@echo off\r\nsetlocal DisableDelayedExpansion\r\nset \"TARGET=%~1\"\r\nsetlocal EnableDelayedExpansion\r\nif not defined TARGET exit /b 1\r\nset \"TARGET=!TARGET:\"=!\"\r\nif /I not \"!TARGET:github.com=!\"==\"!TARGET!\" (\r\n  start \"\" \"!TARGET!\"\r\n  exit /b 0\r\n)\r\nstart \"\" \"{browser}\" --user-data-dir=\"{profile}\" --no-first-run --no-default-browser-check --new-window \"!TARGET!\"\r\n",
         browser = browser.display(),
         profile = profile.display(),
     )

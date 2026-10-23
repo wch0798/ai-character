@@ -41,6 +41,11 @@ describe("usage brief", () => {
     expect(chatLimitNotices({ ...base, alerts: { calls: 1, paidCalls: 1, costUsd: 1, dailyCostLimitUsd: 1, level: "over", paidBlocked: true } })).toEqual([
       "오늘 유료 API 한도를 다 썼습니다. 무료 AI만 사용합니다.",
     ]);
+    // Over the limit with 막기 off: paid calls go on, so never claim "free only".
+    const unblocked = chatLimitNotices({ ...base, alerts: { calls: 1, paidCalls: 1, costUsd: 2, dailyCostLimitUsd: 1, level: "over", paidBlocked: false } });
+    expect(unblocked).toHaveLength(1);
+    expect(unblocked[0]).toContain("유료 호출은 계속됩니다");
+    expect(unblocked[0]).not.toContain("무료 AI만");
   });
 
   it("formats numbers and provider ids", () => {
