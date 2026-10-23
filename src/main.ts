@@ -15,6 +15,7 @@ import { formatAnswerSource, lookupAnswerSource } from "./answer-source";
 import { friendlyChatError } from "./chat-errors";
 import { SPEAKING_EVENT, setupVoiceButtons, speakAnswer, stopSpeaking } from "./voice";
 import { choiceFor, setupChatModelMenu } from "./chat-model-menu";
+import { rectsFromBoxes, silhouetteFits, visiblePartBoxes } from "./character-silhouette";
 import { setChatModelChoice } from "./agent-client";
 import { HISTORY_SAVE_FAILED_EVENT } from "./chat-history";
 import { initializeAutomationPanel } from "./automation-panel-ui";
@@ -2786,15 +2787,31 @@ async function startLive2D() {
     characterHitLayer.style.right = "auto";
     characterHitLayer.style.bottom = "auto";
   };
+  // The character's outline (see character-silhouette.ts), refreshed a few times a second; the
+  // old single box covered empty space beside a small character and caught clicks meant for
+  // the window behind.
+  let silhouette: ReturnType<typeof rectsFromBoxes> = [];
+  let silhouetteAt = 0;
+  const refreshSilhouette = () => {
+    const now = performance.now();
+    if (now - silhouetteAt < 300) return;
+    silhouetteAt = now;
+    silhouette = rectsFromBoxes(visiblePartBoxes(model));
+  };
   const collectClickThroughRegions = () => {
-    const regions = [
+    refreshSilhouette();
+    // Safety net: an outline that doesn't sit inside the old box would leave the character
+    // unclickable, so fall back to the box.
+    const box = getCharacterHitBox();
+    const characterRects = silhouetteFits(silhouette, box) ? silhouette : [box];
+    const regions = characterRects.map((rect) =>
       toScreenRegion(
         clickThroughWindowPosition.x,
         clickThroughWindowPosition.y,
         clickThroughScaleFactor,
-        getCharacterHitBox()
-      ),
-    ];
+        rect
+      )
+    );
     const overlaySelectors = [
       "#chat-panel.open",
       "#ai-settings-panel",
@@ -3175,6 +3192,56 @@ async function startLive2D() {
         window.addEventListener("pointercancel", onUp, true);
       });
     }
+  }
+
+  // 작게 · 중간 · 크게 next to ×: the same result as dragging the edge (size kept, app window
+  // refitted), for people who don't find the edge.
+  const CHAT_SIZE_PRESETS: Array<{ label: string; title: string; width: number; height: number }> = [
+    { label: "작게", title: "채팅창을 작게", width: 420, height: 480 },
+    { label: "중간", title: "채팅창을 중간 크기로", width: 640, height: 640 },
+    { label: "크게", title: "채팅창을 크게 (화면에 맞춰 최대)", width: MAX_CHAT_WIDTH, height: MAX_CHAT_HEIGHT },
+  ];
+  const closeButton = document.querySelector<HTMLButtonElement>("#chat-close-button");
+  if (chatPanel && closeButton) {
+    const group = document.createElement("div");
+    group.className = "chat-size-presets";
+    group.setAttribute("role", "group");
+    group.setAttribute("aria-label", "채팅창 크기");
+    const paintPresets = () => {
+      // The preset closest to the current size shows as selected.
+      const nearest = CHAT_SIZE_PRESETS.reduce((best, preset) =>
+        Math.abs(preset.width - chatPanelWidth) + Math.abs(preset.height - chatPanelHeight) <
+        Math.abs(best.width - chatPanelWidth) + Math.abs(best.height - chatPanelHeight)
+          ? preset
+          : best
+      );
+      for (const [index, button] of [...group.children].entries()) {
+        button.setAttribute("aria-pressed", String(CHAT_SIZE_PRESETS[index] === nearest));
+      }
+    };
+    for (const preset of CHAT_SIZE_PRESETS) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent = preset.label;
+      button.title = preset.title;
+      button.addEventListener("click", (event) => {
+        event.stopPropagation();
+        // Not limited by the current window yet (it is about to be resized for this size).
+        applyChatPanelSize(preset.width, preset.height, false);
+        persistChatPanelSize();
+        void fitChatModeWindow().then(() => {
+          // The window grew or shrank: fit the panel to it once more (크게 = as big as fits).
+          applyChatPanelSize(preset.width, preset.height);
+          persistChatPanelSize();
+          paintPresets();
+          pushNativeClickThrough(true);
+        });
+        paintPresets();
+      });
+      group.append(button);
+    }
+    closeButton.before(group);
+    paintPresets();
   }
 
 
