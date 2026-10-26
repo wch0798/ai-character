@@ -8,6 +8,8 @@ export type ChatProgressView = {
   percent: number | null;
   elapsedMs: number;
   canStop: boolean;
+  /** What the program is doing right now ("📄 읽는 중: main.py"), when it says. */
+  activity?: string;
 };
 
 export function chatProgressLabel(
@@ -39,10 +41,11 @@ export function cradleProgressPercent(finished: number, total: number): number |
 export function formatChatProgress(view: ChatProgressView): string {
   const seconds = Math.max(0, Math.round(view.elapsedMs / 1000));
   const time = seconds > 0 ? ` · ${seconds}초` : "";
+  const activity = view.activity ? ` · ${view.activity}` : "";
   if (view.percent == null) {
-    return `${view.label}${time}`;
+    return `${view.label}${time}${activity}`;
   }
-  return `${view.label} ${view.percent}%${time}`;
+  return `${view.label} ${view.percent}%${time}${activity}`;
 }
 
 export function initializeChatProgressUi(): void {
@@ -129,6 +132,7 @@ export function initializeChatProgressUi(): void {
   const show = (next: Partial<ChatProgressView>) => {
     if (row.hidden) {
       startedAt = performance.now();
+      view.activity = undefined;
     }
     view = { ...view, ...next };
     row.hidden = false;
@@ -175,7 +179,16 @@ export function initializeChatProgressUi(): void {
       label: chatProgressLabel(kind, detail?.agent),
       percent: kind === "file" ? view.percent : null,
       canStop: true,
+      activity: undefined,
     });
+  });
+
+  // From any run, CRADLE workers included (agent-client's WORK_ACTIVITY_EVENT).
+  window.addEventListener("ai-character:work-activity", (event: Event) => {
+    const activity = (event as CustomEvent<{ text?: string }>).detail?.text?.trim();
+    if (activity && !row.hidden) {
+      show({ activity });
+    }
   });
 
   window.addEventListener("ai-character:agent-task-end", (event: Event) => {

@@ -249,6 +249,15 @@ fn is_binary(path: &Path) -> Result<bool, String> {
     Ok(sample.contains(&0) || std::str::from_utf8(sample).is_err())
 }
 
+/// Both are regular files with the same bytes.
+fn same_file_content(a: &Path, b: &Path) -> bool {
+    let (Ok(meta_a), Ok(meta_b)) = (fs::symlink_metadata(a), fs::symlink_metadata(b)) else { return false };
+    if !meta_a.is_file() || !meta_b.is_file() || meta_a.len() != meta_b.len() {
+        return false;
+    }
+    matches!((fs::read(a), fs::read(b)), (Ok(x), Ok(y)) if x == y)
+}
+
 fn workspace_project_dir(project_root: &Path, conversation_id: &str) -> Result<PathBuf, String> {
     validate_conversation_id(conversation_id)?;
     ensure_project_snapshot(project_root, conversation_id)
@@ -300,6 +309,15 @@ pub fn list_workspace_changes(
         };
 
         let current_original = project_root.join(validate_relative_path(&path)?);
+        // The original already looks like the work copy (the same edit was made there, or an
+        // earlier apply got this far): nothing to apply, and not a conflict either.
+        let already_there = match workspace {
+            Some(workspace) => same_file_content(&workspace.absolute, &current_original),
+            None => !current_original.exists(),
+        };
+        if already_there {
+            continue;
+        }
         let conflict = !baseline_entry_matches_path(&baseline, &path, &current_original)?;
         let conflict_reason = conflict.then(|| {
             "원본이 작업 시작 후 변경되었습니다. 최신 원본을 확인한 뒤 작업을 다시 실행해주세요."

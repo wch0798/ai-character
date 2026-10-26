@@ -83,6 +83,8 @@ pub struct AgentRequest {
 pub enum AgentStreamKind {
     Stdout,
     Stderr,
+    /// One line on what the program is doing now ("📄 읽는 중: main.py"), for the work log.
+    Activity,
 }
 
 impl AgentStreamKind {
@@ -90,6 +92,7 @@ impl AgentStreamKind {
         match self {
             Self::Stdout => "stdout",
             Self::Stderr => "stderr",
+            Self::Activity => "activity",
         }
     }
 }

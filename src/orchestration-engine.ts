@@ -6,11 +6,14 @@ import {
   confirmSensitiveAgentAccess,
   detectAgent,
   getAppPreferences,
+  getWorkspaceChanges,
   prepareCradleEnvironment,
   runAgentTask,
   type AgentKind,
   type AppPreferences,
   type ModelChoice,
+  type WorkActivityEvent,
+  WORK_ACTIVITY_EVENT,
 } from "./agent-client";
 import { collectWebResearch } from "./web-research";
 import { buildTaskContext } from "./context-client";
@@ -24,7 +27,14 @@ import {
   summarizeTestRun,
   type TestRunSummary,
 } from "./cradle-workspace-client";
-import { classifyRequestIntent, extractCurrentUserRequest, needsLocalFiles } from "./request-intent";
+import {
+  extractCurrentUserRequest,
+  judgeRequestIntent,
+  needsLocalFiles,
+  type RequestIntent,
+} from "./request-intent";
+import type { RequestMode } from "./request-mode";
+import { formatResumeTime, isUsageLimitMessage, limitedUntil } from "./subscription-limits";
 import { compactText, compactWorkerOutput, WORKER_RESULT_SCHEMA } from "./worker-result";
 import {
   classifyAutomaticProviderError,
@@ -143,6 +153,7 @@ function preferredCliFallbackForWeb(
 }
 
 export function isQuotaOrLimitError(error: unknown): boolean {
+  if (isUsageLimitMessage(error instanceof Error ? error.message : String(error))) return true;
   const text = (error instanceof Error ? error.message : String(error)).toLowerCase();
   const markers = [
     "quota exceeded",
@@ -421,7 +432,9 @@ export function normalizePlanForAutomaticProviders(
   plan: OrchestrationPlan,
   automaticApiTargets: AutomaticApiTarget[],
   automaticCliTargets: OrchestrationCliTarget[],
-  availability: Record<WebAgentTarget, WebAvailability>
+  availability: Record<WebAgentTarget, WebAvailability>,
+  /** 무료 AI 먼저 쓰기. Off: analysis goes to the installed (subscribed) programs. */
+  freeFirst = true
 ): OrchestrationPlan {
   const freeTargets = automaticApiTargets.filter((target) => isFreeAutomaticProvider(target));
   const freeAutomatic: AutomaticApiTarget | null = freeTargets[0] ?? null;
@@ -449,6 +462,19 @@ export function normalizePlanForAutomaticProviders(
         return { ...task, dependsOn: [...task.dependsOn] };
       }
 
+      // Reading the work folder needs a program running inside it: free and web AIs cannot see
+      // the files and would stall (or ask the user to paste them). Without 무료 AI 먼저 쓰기,
+      // the subscribed programs take every task they can.
+      const localFiles = needsLocalFiles(`${task.title}\n${task.prompt}`);
+      if (localFiles || !freeFirst) {
+        const reader = isCliTarget(task.target) && automaticCliTargets.includes(task.target)
+          ? task.target
+          : automaticCliTargets[0];
+        if (reader) {
+          return { ...task, target: reader, dependsOn: [...task.dependsOn] };
+        }
+      }
+
       if (isAutomaticApiTarget(task.target)) {
         if (task.target === "openai_api" && freeAutomatic) {
           return { ...task, target: freeAutomatic, dependsOn: [...task.dependsOn] };
@@ -468,6 +494,15 @@ export function normalizePlanForAutomaticProviders(
 
       if (freeAutomatic && (isCliTarget(task.target) || isWebTarget(task.target))) {
         return { ...task, target: freeAutomatic, dependsOn: [...task.dependsOn] };
+      }
+
+      // No free AI: an installed program answers rather than a web page that waits for the
+      // user to copy and paste.
+      if ((isCliTarget(task.target) || isWebTarget(task.target)) && automaticCliTargets.length > 0) {
+        const program = isCliTarget(task.target) && automaticCliTargets.includes(task.target)
+          ? task.target
+          : automaticCliTargets[0];
+        return { ...task, target: program, dependsOn: [...task.dependsOn] };
       }
 
       if (isCliTarget(task.target)) {
@@ -884,13 +919,16 @@ async function fallbackCliTaskToWeb(
 
 async function runAutomaticApiTask(
   session: CradleSession,
-  task: CradleTaskState
+  task: CradleTaskState,
+  preferences: AppPreferences,
+  sensitiveAcknowledged: boolean
 ): Promise<void> {
   if (!isAutomaticApiTarget(task.target)) {
     throw new Error(`automatic API worker cannot execute target: ${task.target}`);
   }
   const provider = task.target;
   task.status = "running";
+  reportWork("자동 AI", `🌐 맡김: ${task.title}`);
   task.error = null;
   task.handoffPrompt = null;
   dispatchSession(session);
@@ -934,6 +972,20 @@ async function runAutomaticApiTask(
     } else if (session.status === "cancelled") {
       task.error = "협업 작업이 취소되었습니다.";
       task.status = "cancelled";
+    } else if (task.fallbackCount < 1 && session.automaticCliTargets.length > 0) {
+      // No free AI answered: an installed program does the task rather than a web page that
+      // waits for the user to copy and paste.
+      const program = session.automaticCliTargets[0];
+      task.fallbackCount += 1;
+      task.fallbackFrom = provider;
+      task.fallbackReason = `${provider} 사용 불가 → ${program} 프로그램으로 전환`;
+      task.target = program;
+      task.status = "queued";
+      task.error = null;
+      reportWork("자동 AI", `↪ 무료 AI가 답하지 못해 ${agentLabel(program)}에게 넘깁니다: ${task.title}`);
+      dispatchSession(session);
+      await runAutomaticTask(session, task, preferences, sensitiveAcknowledged);
+      return;
     } else if (task.fallbackCount < 1) {
       task.fallbackCount += 1;
       task.fallbackFrom = provider;
@@ -1047,6 +1099,7 @@ async function waitForWebTask(session: CradleSession, task: CradleTaskState): Pr
   task.status = "waiting_web";
   task.error = null;
   task.handoffPrompt = buildWorkerPrompt(session, task);
+  reportWork("웹 AI", `✋ 웹 응답을 붙여넣기를 기다리는 중: ${task.title}`);
   dispatchSession(session);
   return new Promise<void>((resolve) => {
     webWaiters.set(webWaiterKey(session.id, task.id), { resolve });
@@ -1117,10 +1170,12 @@ async function runQueuedCliTasks(
 
 async function runQueuedApiTasks(
   session: CradleSession,
-  tasks: CradleTaskState[]
+  tasks: CradleTaskState[],
+  preferences: AppPreferences,
+  sensitiveAcknowledged: boolean
 ): Promise<void> {
   await runLimited(tasks.filter((task) => isAutomaticApiTarget(task.target)), 3, (task) =>
-    runAutomaticApiTask(session, task)
+    runAutomaticApiTask(session, task, preferences, sensitiveAcknowledged)
   );
 }
 
@@ -1160,7 +1215,7 @@ async function executePlanTasks(
     }
 
     await Promise.all([
-      runQueuedApiTasks(session, apiTasks),
+      runQueuedApiTasks(session, apiTasks, preferences, sensitiveAcknowledged),
       runQueuedCliTasks(session, cliTasks, preferences, sensitiveAcknowledged),
     ]);
     await Promise.all(webPromises);
@@ -1329,7 +1384,8 @@ async function finishWithSynthesis(
       normalizePlanForWebFirst(revisionRawPlan, session.webAvailability),
       usableAutomaticProviders(automaticProviderStatuses, preferences),
       session.automaticCliTargets,
-      session.webAvailability
+      session.webAvailability,
+      preferences.freeAiFirst
     );
     session.tasks.push(...revisionPlan.tasks.map(stateFromSpec));
     setSessionStatus(session, "running", "Claude 검토 결과에 따라 한 번 더 보완 작업을 실행합니다.");
@@ -1468,7 +1524,8 @@ export async function runCradleOrchestration(
     }
   }
 
-  const automaticCliTargets = await detectAutomaticTargets();
+  // Programs over their subscription limit sit this session out; the free AIs take their tasks.
+  const automaticCliTargets = (await detectAutomaticTargets()).filter((target) => !limitedUntil(target));
   try {
     automaticProviderStatuses = await getAutomaticProviderStatuses();
   } catch {
@@ -1535,7 +1592,8 @@ export async function runCradleOrchestration(
       normalizePlanForWebFirst(parsedPlan, session.webAvailability),
       automaticApiTargets,
       automaticCliTargets,
-      session.webAvailability
+      session.webAvailability,
+      preferences.freeAiFirst
     );
     session.planSummary = plan.summary;
     session.tasks = plan.tasks.map(stateFromSpec);
@@ -1581,6 +1639,12 @@ export async function runCradleOrchestration(
   }
 }
 
+/** A line for the work log and progress bar about where CRADLE sent a task. */
+function reportWork(agent: string, text: string): void {
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(new CustomEvent<WorkActivityEvent>(WORK_ACTIVITY_EVENT, { detail: { agent, text } }));
+}
+
 let pendingChatNotice = "";
 
 function withChatNotice(text: string): string {
@@ -1602,7 +1666,8 @@ function composeDirectPrompt(
   prompt: string,
   conversationContext: string,
   researchBlock: string,
-  mode: "chat" | "facts"
+  mode: "chat" | "facts",
+  answerOnly = false
 ): string {
   const role = mode === "facts"
     ? "You answer a factual question. Use the research block when it is present. Do not invent numbers, dates, or prices. Say what you could not verify."
@@ -1611,7 +1676,9 @@ function composeDirectPrompt(
     role,
     personaInstruction(),
     "Do not pretend to be another model. Do not create an orchestration plan, worker list, or CRADLE handoff.",
-    "Do not edit files unless the user asked for a file change.",
+    answerOnly
+      ? "The user chose chat mode: do not create, edit or delete any files. Answer in the reply only."
+      : "Do not edit files unless the user asked for a file change.",
     conversationContext ? `Recent conversation (compact):\n${compactText(conversationContext, 2_400)}` : "",
     researchBlock,
     "USER REQUEST:",
@@ -1626,7 +1693,10 @@ async function answerDirectly(
   researchBlock = "",
   streamId: string | null = null,
   mode: "chat" | "facts" = "chat",
-  choice: ModelChoice | null = null
+  choice: ModelChoice | null = null,
+  /** "file" when the request is program work but CRADLE is off: the progress and apply screens
+   * show. "answer-only": the user picked 💬 채팅, so no files are touched. */
+  runKind: "chat" | "file" | "answer-only" = "chat"
 ): Promise<string> {
   pendingChatNotice = "";
   const preferences = await getAppPreferences();
@@ -1635,7 +1705,8 @@ async function answerDirectly(
   } catch {
     automaticProviderStatuses = [];
   }
-  const composed = composeDirectPrompt(prompt, conversationContext, researchBlock, mode);
+  const composed = composeDirectPrompt(prompt, conversationContext, researchBlock, mode, runKind === "answer-only");
+  const agentKind = runKind === "file" ? "file" : "chat";
   const apis = usableAutomaticProviders(automaticProviderStatuses, preferences);
   const context: AutomaticCallContext = { sessionId: conversationId ?? null, role: mode === "facts" ? "researcher" : "chat" };
   const freeApis = apis.filter(isFreeAutomaticProvider);
@@ -1646,17 +1717,37 @@ async function answerDirectly(
   };
   // The program picked in the chat menu for this conversation (else 기본 프로그램 in settings)
   // answers first; its name is used in notices.
-  const primary = choice?.agent ?? preferences.defaultAgent;
-  const primaryModel = choice?.model || null;
+  // A program over its subscription limit is skipped until it resets: the other program
+  // answers, or the free AIs when both are over.
+  const picked = choice?.agent ?? preferences.defaultAgent;
+  const otherProgram: AgentKind = picked === "claude" ? "codex" : "claude";
+  const pickedUntil = limitedUntil(picked);
+  const otherUntil = limitedUntil(otherProgram);
+  const primary: AgentKind = pickedUntil && !otherUntil ? otherProgram : picked;
+  const primaryModel = primary === picked ? choice?.model || null : null;
   const primaryName = agentLabel(primary);
+  if (pickedUntil && !otherUntil) {
+    reportWork("구독 한도", `${agentLabel(picked)} 사용량 초과 — ${formatResumeTime(pickedUntil)}까지 ${primaryName}가 대신 답합니다`);
+  }
+  if (pickedUntil && otherUntil) {
+    reportWork("구독 한도", `${agentLabel(picked)}·${agentLabel(otherProgram)} 모두 사용량 초과 — 무료 AI가 먼저 답합니다`);
+    const free = await tryAutomaticProviders(freeApis, composed, { ...context, streamId }, "구독 사용량 초과로 무료 AI가 답변");
+    if (free) {
+      pendingChatNotice = `구독 프로그램 사용량을 다 써서 무료 AI가 답했습니다. ${formatResumeTime(Math.min(pickedUntil, otherUntil))}부터 다시 구독 프로그램을 씁니다.`;
+      return withChatNotice(free.response);
+    }
+  }
 
-  if (mode === "facts") {
+  // 무료 AI 먼저 쓰기 (off by default): facts go to the free AIs before the subscribed program.
+  // Otherwise every question takes the path below: the picked program, then the other
+  // subscribed program, and free AIs only as the last fallback.
+  if (mode === "facts" && preferences.freeAiFirst) {
     const free = await tryAutomaticProviders(freeApis, composed, { ...context, streamId }, "정보 조사");
     if (free) {
       return free.response;
     }
     try {
-      const text = await askAgentCompat(primary, composed, conversationId, primaryModel);
+      const text = await askAgentCompat(primary, composed, conversationId, primaryModel, agentKind);
       pendingChatNotice = `무료 AI로 정보를 확인하지 못해 ${primaryName}가 답했습니다.`;
       return withChatNotice(text);
     } catch (error) {
@@ -1678,13 +1769,14 @@ async function answerDirectly(
   }
 
   try {
-    return await askAgentCompat(primary, composed, conversationId, primaryModel);
+    return await askAgentCompat(primary, composed, conversationId, primaryModel, agentKind);
   } catch (error) {
     if (blocked(error)) {
       throw error instanceof Error ? error : new Error(error instanceof Error ? error.message : String(error));
     }
     const backup: AgentKind = primary === "claude" ? "codex" : "claude";
-    if (needsLocalFiles(prompt)) {
+    const backupUsable = !limitedUntil(backup);
+    if (needsLocalFiles(prompt) && backupUsable) {
       // Web-only AIs cannot see the work folder and would only ask the user to paste files,
       // so a file question goes to the other program that runs inside the folder.
       const primaryReason = isQuotaOrLimitError(error) ? "사용량을 다 썼습니다" : "응답하지 못했습니다";
@@ -1705,6 +1797,17 @@ async function answerDirectly(
 ` +
           "설정 → 프로그램 · 로그인에서 두 프로그램의 로그인 상태를 확인해 주세요."
         );
+      }
+    }
+    if (!preferences.freeAiFirst && backupUsable) {
+      try {
+        const text = await askAgentCompat(backup, composed, conversationId, null, agentKind);
+        pendingChatNotice = `${primaryName}가 ${isQuotaOrLimitError(error) ? "사용량을 다 썼습니다" : "응답하지 못했습니다"}. 이 답은 ${agentLabel(backup)}가 이어받았습니다.`;
+        return withChatNotice(text);
+      } catch (backupError) {
+        if (blocked(backupError)) {
+          throw backupError instanceof Error ? backupError : new Error(String(backupError));
+        }
       }
     }
     pendingChatNotice = isQuotaOrLimitError(error)
@@ -1734,30 +1837,98 @@ async function answerDirectly(
   }
 }
 
+/** How a request was routed, for the note under the answer. */
+export type RouteDecision = { intent: RequestIntent; decidedBy: "words" | "ai" | "user" };
+
+/**
+ * When the words leave it open ("이 부분 제대로 고쳐"), a free AI answers one word: is this a
+ * change to the program/files or a chat question? No answer within a few seconds: chat.
+ */
+async function askAiForIntent(
+  current: string,
+  history: string,
+  conversationId: string | null | undefined
+): Promise<RequestIntent | null> {
+  const preferences = await getAppPreferences();
+  let statuses: AutomaticProviderStatus[] = [];
+  try {
+    statuses = await getAutomaticProviderStatuses();
+  } catch {
+    return null;
+  }
+  const free = usableAutomaticProviders(statuses, preferences).filter(isFreeAutomaticProvider);
+  if (!free.length) return null;
+  const question = [
+    "Classify the user's latest message in a desktop coding assistant.",
+    "PROGRAM = they want files, code or the program in their work folder created, changed, fixed or run.",
+    "CHAT = a question, explanation, or text to write or edit in the reply itself.",
+    "Answer with exactly one word: PROGRAM or CHAT.",
+    history ? `Recent conversation:\n${compactText(history, 1_200)}` : "",
+    `Latest message:\n${compactText(current, 1_200)}`,
+  ].filter(Boolean).join("\n\n");
+  const timeout = new Promise<null>((resolve) => window.setTimeout(() => resolve(null), 6_000));
+  const answer = await Promise.race([
+    tryAutomaticProviders(free.slice(0, 2), question, { sessionId: conversationId ?? null, role: "chat" }, "요청 종류 판단"),
+    timeout,
+  ]);
+  const word = answer?.response.trim().toUpperCase() ?? "";
+  if (word.startsWith("PROGRAM")) return "project";
+  if (word.startsWith("CHAT")) return "chat";
+  return null;
+}
+
+async function routeRequest(
+  current: string,
+  history: string,
+  conversationId: string | null | undefined,
+  mode: RequestMode
+): Promise<RouteDecision> {
+  const judged = judgeRequestIntent(current, history);
+  if (mode === "program") return { intent: "project", decidedBy: "user" };
+  if (mode === "chat") {
+    return { intent: judged.intent === "project" ? "chat" : judged.intent, decidedBy: "user" };
+  }
+  if (judged.sure) return { intent: judged.intent, decidedBy: "words" };
+  // The conversation already has file changes waiting: "고쳐" is about those files.
+  if (conversationId) {
+    const pending = await getWorkspaceChanges(conversationId).catch(() => []);
+    if (pending.length) return { intent: "project", decidedBy: "words" };
+  }
+  const byAi = await askAiForIntent(current, history, conversationId).catch(() => null);
+  return byAi ? { intent: byAi, decidedBy: "ai" } : { intent: judged.intent, decidedBy: "words" };
+}
+
 export async function askCradleCompat(
   prompt: string,
   conversationId?: string | null,
   conversationContext = "",
   streamId: string | null = null,
   /** The program and model picked in the chat menu for this conversation. */
-  choice: ModelChoice | null = null
+  choice: ModelChoice | null = null,
+  /** 🤖 AI 모드 / 💬 채팅 / 🛠 프로그램 from the chat's mode button. */
+  mode: RequestMode = "auto",
+  onRouted?: (decision: RouteDecision) => void
 ): Promise<string> {
   const preferences = await getAppPreferences();
   const current = extractCurrentUserRequest(prompt);
   const history = compactText(conversationContext.trim(), 2_400);
 
+  const decision = await routeRequest(current, history, conversationId, mode);
+  onRouted?.(decision);
+  const intent = decision.intent;
+  const runKind = intent === "project" ? "file" : mode === "chat" ? "answer-only" : "chat";
+
   if (!preferences.cradleEnabled) {
-    return answerDirectly(current, conversationId, history, "", streamId, "chat", choice);
+    return answerDirectly(current, conversationId, history, "", streamId, "chat", choice, runKind);
   }
 
-  const intent = classifyRequestIntent(current, history);
   if (intent === "chat" || intent === "research") {
     let researchBlock = "";
     if (intent === "research" && preferences.autoWebSearch) {
       const research = await collectWebResearch(current, true);
       researchBlock = research.researchPromptBlock;
     }
-    return answerDirectly(current, conversationId, history, researchBlock, streamId, intent === "research" ? "facts" : "chat", choice);
+    return answerDirectly(current, conversationId, history, researchBlock, streamId, intent === "research" ? "facts" : "chat", choice, runKind);
   }
 
   return runCradleOrchestration(current, conversationId, history);

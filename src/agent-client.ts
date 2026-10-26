@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { safeConfirm } from "./safe-confirm";
+import { isUsageLimitMessage, noteRunFailure, noteRunSuccess } from "./subscription-limits";
 import { setWorkLogStatus, setWorkLogTechnical } from "./work-log-store";
 
 export type AgentKind =
@@ -39,6 +40,8 @@ export type RunAgentOptions = {
   kind?: "chat" | "file";
   /** Model to run instead of the one in settings; "" or omitted keeps the settings. */
   model?: string | null;
+  /** No work-log or progress lines: a side answer while other work is on screen. */
+  quiet?: boolean;
   onStream?: (event: AgentStreamEvent) => void;
 };
 
@@ -57,6 +60,9 @@ export type AppPreferences = {
   cradleEnabled: boolean;
   autoWebSearch: boolean;
   geminiApiEnabled: boolean;
+  /** Free AIs (Gemini) before the subscribed programs. Off: ChatGPT and Claude answer first,
+   * free AIs are the last fallback. */
+  freeAiFirst: boolean;
   allowPaidOpenAiApi: boolean;
   closeWebAccountAfterHandoff: boolean;
   closeWebAccountWhenCradleDone: boolean;
@@ -74,9 +80,15 @@ export type AgentTask = {
 
 export type AgentStreamEvent = {
   taskId: string;
-  stream: "stdout" | "stderr";
+  /** "activity" is one line on what the program is doing now, for the work log. */
+  stream: "stdout" | "stderr" | "activity";
   text: string;
 };
+
+/** One line on what a running program is doing ("📄 읽는 중: main.py"), from any run. */
+export const WORK_ACTIVITY_EVENT = "ai-character:work-activity";
+/** `agent`: a program id, or a plain name such as "자동 AI" for CRADLE's other workers. */
+export type WorkActivityEvent = { agent: string; text: string };
 
 export type AgentTaskStartEvent = {
   taskId: string;
@@ -181,6 +193,10 @@ function errorMessage(error: unknown): string {
 
 export function userFacingAgentError(message: string): string {
   const lower = message.toLowerCase();
+  if (isUsageLimitMessage(message)) {
+    // Keeps "사용량 초과" so callers can tell a limit from other failures.
+    return "AI 프로그램 구독 사용량 초과입니다. 한도가 풀릴 때까지 다른 AI가 대신 답하고, 풀리면 다시 이 프로그램을 씁니다.";
+  }
   if (message.includes("CLI를 찾을 수 없습니다") || message.includes("실행 파일을 찾을 수 없습니다") || lower.includes("enoent")) {
     return "선택한 AI 프로그램를 찾을 수 없습니다. 설정에서 설치 상태와 실행 파일 경로를 확인해주세요.";
   }
@@ -312,6 +328,7 @@ export async function setAppPreferences(
     agentExtraArgs: preferences.agentExtraArgs,
     agentModels: preferences.agentModels,
     agentModelPresets: preferences.agentModelPresets,
+    freeAiFirst: preferences.freeAiFirst,
   });
 }
 
@@ -527,6 +544,30 @@ export function runAgentTask(options: RunAgentOptions): AgentTask {
           return;
         }
         options.onStream?.(event.payload);
+        // What a program is doing is shown for every run, including CRADLE's planner and
+        // workers, which keep their other output to their own screen.
+        if (event.payload.stream === "activity") {
+          if (options.quiet) return;
+          window.dispatchEvent(
+            new CustomEvent<WorkActivityEvent>(WORK_ACTIVITY_EVENT, {
+              detail: { agent: options.agent, text: event.payload.text.trim() },
+            })
+          );
+          return;
+        }
+        // A CRADLE worker's own output stays on its screen; programs that do not report steps
+        // (Codex, Cursor) still show their latest line as what they are doing.
+        if (options.emitRuntimeEvents === false && !options.quiet && event.payload.stream === "stdout" && options.agent !== "claude") {
+          const last = event.payload.text.split("\n").map((line) => line.trim()).filter(Boolean).pop();
+          // JSON is a worker's machine-readable result, not a step to show.
+          if (last && !/^[{[]/.test(last)) {
+            window.dispatchEvent(
+              new CustomEvent<WorkActivityEvent>(WORK_ACTIVITY_EVENT, {
+                detail: { agent: options.agent, text: last.length > 120 ? `${last.slice(0, 120)}…` : last },
+              })
+            );
+          }
+        }
         if (options.emitRuntimeEvents !== false) {
           window.dispatchEvent(
             new CustomEvent("ai-character:agent-stream", { detail: event.payload })
@@ -562,6 +603,7 @@ export function runAgentTask(options: RunAgentOptions): AgentTask {
         timeoutSeconds: options.timeoutSeconds,
         sensitiveAcknowledged: options.sensitiveAcknowledged ?? true,
         model: options.model || null,
+        kind: options.kind ?? "file",
       });
 
       const endDetail: AgentTaskEndEvent = {
@@ -576,9 +618,12 @@ export function runAgentTask(options: RunAgentOptions): AgentTask {
           new CustomEvent("ai-character:agent-task-end", { detail: endDetail })
         );
       }
+      noteRunSuccess(options.agent);
       return answer;
     } catch (error) {
       const message = errorMessage(error);
+      // Over the subscription limit: skipped until it resets (subscription-limits).
+      noteRunFailure(options.agent, message);
       const cancelled =
         message.includes("취소") ||
         message.toLowerCase().includes("cancel");
@@ -665,7 +710,8 @@ export async function askAgentCompat(
   agent: AgentKind,
   prompt: string,
   conversationId?: string | null,
-  model?: string | null
+  model?: string | null,
+  kind: "chat" | "file" = "chat"
 ): Promise<string> {
   const preferences = await getAppPreferences();
   const sensitiveAcknowledged = await confirmSensitiveAgentAccess(preferences);
@@ -680,7 +726,7 @@ export async function askAgentCompat(
       conversationId: conversationId ?? null,
       timeoutSeconds: preferences.timeoutSeconds,
       sensitiveAcknowledged,
-      kind: "chat",
+      kind,
       model,
     });
   } catch (error) {

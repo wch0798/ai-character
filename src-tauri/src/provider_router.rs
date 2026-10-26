@@ -17,7 +17,8 @@ const LMSTUDIO_PROVIDER: &str = "lmstudio_local";
 const REMOTE_OLLAMA_PROVIDER: &str = "ollama_remote";
 const MAX_MODELS_PER_FREE_SERVICE: usize = 2;
 const DEFAULT_GEMINI_MODEL: &str = "gemini-3.8-flash";
-const DEFAULT_GEMINI_FREE_MODELS: &str = "gemini-3.8-flash,gemini-2.5-flash,gemini-2.5-flash-lite,gemini-2.0-flash";
+// Fallbacks Google still serves; the 2.x models now answer 404 ("no longer available").
+const DEFAULT_GEMINI_FREE_MODELS: &str = "gemini-3.8-flash,gemini-3.5-flash-lite,gemini-3.5-flash,gemini-3.1-flash-lite";
 const DEFAULT_OPENAI_MODEL: &str = "gpt-5-mini";
 const MAX_PROMPT_CHARS: usize = 80_000;
 const MODEL_REFRESH_MS: i64 = 24 * 60 * 60 * 1000;
@@ -1712,7 +1713,7 @@ mod tests {
         assert!(factual_rank("google/gemma-4-31b-it:free") < factual_rank("dots-studio/dots-3-note-preview:free"));
         assert_eq!(gemini_model(), "gemini-3.8-flash");
         assert_eq!(gemini_candidates()[0], "gemini-3.8-flash");
-        assert!(gemini_candidates().contains(&"gemini-2.5-flash".to_string()));
+        assert!(gemini_candidates().contains(&"gemini-3.5-flash-lite".to_string()));
     }
 
     #[test]

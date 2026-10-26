@@ -302,3 +302,32 @@ select {
     font-size: 13px;
   }
 }
+
+/* 🤖 AI 모드 / 💬 채팅 / 🛠 프로그램 — next to the attach button. */
+#request-mode-button {
+  flex: 0 0 auto;
+  height: 38px;
+  min-height: 38px;
+  padding: 0 10px;
+  border-radius: 12px;
+  background: rgb(32, 36, 48);
+  color: rgb(220, 226, 236);
+  font-size: 12.5px;
+  white-space: nowrap;
+}
+
+#request-mode-button[data-mode="chat"] {
+  box-shadow: inset 0 0 0 1px rgba(120, 200, 140, 0.55);
+}
+
+#request-mode-button[data-mode="program"] {
+  box-shadow: inset 0 0 0 1px rgba(240, 170, 90, 0.65);
+}
+
+@container chat-panel (max-width: 420px) {
+  #request-mode-button {
+    max-width: 44px;
+    overflow: hidden;
+    padding: 0 8px;
+  }
+}

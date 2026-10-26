@@ -3,14 +3,18 @@
 import "pixi.js/unsafe-eval";
 import { confirmOnSecondClick } from "./settings-controls";
 import { initializeCradleOrchestrationUi } from "./orchestration-ui";
-import { askCradleCompat } from "./orchestration-engine";
+import { askCradleCompat, type RouteDecision } from "./orchestration-engine";
+import { nextRequestMode, readRequestMode, REQUEST_MODES, writeRequestMode, type RequestMode } from "./request-mode";
 import { initializeSettingsUi } from "./settings-ui";
 import { initializeAgentRuntimeUi } from "./agent-runtime-ui";
 import { initializeChatProgressUi } from "./chat-progress";
 import { openWorkLogWindow } from "./work-log-window";
 import { renderMarkdown } from "./chat-markdown";
 import { SHORTCUT_HELP, additionsPrompt, mergedPrompt, renderWelcome, setupComposer, setupScrollFollow, type Composer, type ScrollFollower } from "./chat-composer";
-import { classifyRequestIntent } from "./request-intent";
+import { classifyRequestIntent, isQuestionAboutWork } from "./request-intent";
+import { getWorkLogSnapshot } from "./work-log-store";
+import { limitedUntil } from "./subscription-limits";
+import { runAgentTask } from "./agent-client";
 import { formatAnswerSource, lookupAnswerSource } from "./answer-source";
 import { friendlyChatError } from "./chat-errors";
 import { SPEAKING_EVENT, setupVoiceButtons, speakAnswer, stopSpeaking } from "./voice";
@@ -2639,6 +2643,13 @@ async function startLive2D() {
   // can restart it.
   let runningRequest: { conversationId: string | null; prompt: string; answering: boolean; project: boolean } | null = null;
 
+  /** "💬 채팅으로 답함 (AI 판단)" — how the message was handled, under the answer. */
+  function describeRoute(route: RouteDecision): string {
+    const how = route.intent === "project" ? "🛠 프로그램 작업으로 처리" : "💬 채팅으로 답함";
+    const by = route.decidedBy === "user" ? "직접 선택" : route.decidedBy === "ai" ? "AI 판단" : "자동";
+    return `${how} (${by})`;
+  }
+
   function postAssistantReply(text: string, source?: string): void {
     const clean = text.trim();
     if (!clean || clean === lastAssistantReply) {
@@ -3263,6 +3274,30 @@ async function startLive2D() {
     closeButton.before(sizeButton);
   }
 
+  // 🤖 AI 모드 / 💬 채팅 / 🛠 프로그램: how messages are handled, next to the attach button.
+  const attachButton = document.querySelector<HTMLButtonElement>("#attachment-button");
+  if (attachButton) {
+    const modeButton = document.createElement("button");
+    modeButton.type = "button";
+    modeButton.id = "request-mode-button";
+    const paintMode = (mode: RequestMode) => {
+      const info = REQUEST_MODES.find((item) => item.id === mode) ?? REQUEST_MODES[0];
+      modeButton.textContent = info.label;
+      modeButton.dataset.mode = mode;
+      modeButton.title = `${info.title} (누를 때마다 바뀝니다)`;
+      modeButton.setAttribute("aria-label", `처리 방식: ${info.label}`);
+    };
+    paintMode(readRequestMode());
+    modeButton.addEventListener("click", () => {
+      const next = nextRequestMode(readRequestMode());
+      writeRequestMode(next);
+      paintMode(next);
+      const info = REQUEST_MODES.find((item) => item.id === next);
+      if (info) flashStatus(`${info.label}: ${info.title}`, "info", 2600);
+    });
+    attachButton.after(modeButton);
+  }
+
 
   const renderAttachments =
     () => {
@@ -3691,13 +3726,65 @@ async function startLive2D() {
    */
   function restartWithAddition(text: string): boolean {
     const running = runningRequest;
-    if (!running || running.answering || running.project) {
+    if (!running) {
+      return false;
+    }
+    // A question about running program work is answered now; the work goes on. Instructions
+    // ("이것도 고쳐줘") wait and follow once it finishes.
+    if (running.project && isQuestionAboutWork(text)) {
+      void answerWhileWorking(text, running);
+      return true;
+    }
+    if (running.answering || running.project) {
       return false;
     }
     // Other screens listen too and stop the running program; `restart` tells this one to keep the queue.
     window.dispatchEvent(new CustomEvent("ai-character:stop-active-work", { detail: { restart: true } }));
     window.setTimeout(() => sendWithPrompt(text, mergedPrompt(running.prompt, [text])), 0);
     return true;
+  }
+
+  /**
+   * Answers a question about the program work that is still running, from its request, the
+   * latest work log and the files as they are now. Read-only and quiet: the running work, its
+   * progress bar and its log are left alone.
+   */
+  async function answerWhileWorking(question: string, running: NonNullable<typeof runningRequest>): Promise<void> {
+    const conversationId = running.conversationId;
+    const onScreen = () => !conversationId || conversationId === chatHistory?.getActiveId();
+    const post = (role: "user" | "assistant", text: string, source?: string, failed = false) => {
+      const shown = conversationId && chatHistory ? chatHistory.appendTo(conversationId, role, text, source) : true;
+      if (shown && onScreen()) addMessage(text, role, Date.now(), source, failed);
+    };
+    post("user", question);
+    flashStatus("작업은 계속하고, 이 질문에는 바로 답합니다", "info", 2600);
+
+    const recentLog = getWorkLogSnapshot().output.trim().split("\n").slice(-30).join("\n");
+    const prompt = [
+      "Another AI is still working on the user's request in this work folder. The user asked a question about that work.",
+      "Answer from the request, the latest work log and the files as they are now. Do not create, edit or delete files and do not run commands that change anything. Answer briefly, in the user's language. Say so if the work has not reached that part yet.",
+      `Request being worked on:\n${running.prompt}`,
+      recentLog ? `Latest work log:\n${recentLog}` : "",
+      `User's question:\n${question}`,
+    ].filter(Boolean).join("\n\n");
+    // The conversation's program, or the other one while it is over its usage limit.
+    const choice = choiceFor(conversationId);
+    const other = choice.agent === "claude" ? "codex" : "claude";
+    const agent = limitedUntil(choice.agent) && !limitedUntil(other) ? other : choice.agent;
+    try {
+      const answer = await runAgentTask({
+        agent,
+        prompt,
+        conversationId,
+        kind: "chat",
+        model: agent === choice.agent ? choice.model || null : null,
+        emitRuntimeEvents: false,
+        quiet: true,
+      }).result;
+      post("assistant", answer.trim() || "답을 받지 못했습니다.", "💬 작업 중 질문에 바로 답함 (작업은 계속 진행)");
+    } catch (error) {
+      post("assistant", friendlyChatError(error instanceof Error ? error.message : String(error)), undefined, true);
+    }
   }
 
   /** Stops the running request. A restart (a note folded in) is not a user stop: no stop
@@ -3733,7 +3820,12 @@ async function startLive2D() {
 
   /** Sends `text` as the user's message; `prompt` (else the text) is what the AI receives.
    * `fromInput` clears the input box, which only holds this text when it was typed there. */
-  async function sendRequest(text: string, prompt: string | null, fromInput: boolean): Promise<void> {
+  async function sendRequest(
+    text: string,
+    prompt: string | null,
+    fromInput: boolean,
+    mode: RequestMode = readRequestMode()
+  ): Promise<void> {
     if (composer?.isBusy()) {
       return;
     }
@@ -3822,11 +3914,14 @@ async function startLive2D() {
     const requestId = ++activeRequestId;
     const isStopped = () => stoppedRequestId === requestId;
     const startedAt = Date.now();
+    let route: RouteDecision | null = null;
     const thisRequest = {
       conversationId: thisConversationId,
       prompt: promptText,
       answering: false,
-      project: classifyRequestIntent(promptText, previousConversationContext) === "project",
+      // Program work is never restarted by a note added mid-way (that would throw away the
+      // changes made so far); the note follows once it finishes. Corrected once routed below.
+      project: mode === "program" || (mode === "auto" && classifyRequestIntent(promptText, previousConversationContext) === "project"),
     };
     runningRequest = thisRequest;
 
@@ -3854,7 +3949,12 @@ async function startLive2D() {
           chatHistory?.getActiveId() ?? null,
           previousConversationContext,
           `chat-${requestId}-${startedAt}`,
-          modelChoice
+          modelChoice,
+          mode,
+          (decision) => {
+            route = decision;
+            thisRequest.project = decision.intent === "project";
+          }
         );
 
       live?.dispose();
@@ -3866,10 +3966,27 @@ async function startLive2D() {
       if (isStopped()) {
         return;
       }
+      // Set inside the callback above, which TypeScript does not follow.
+      const routed = route as RouteDecision | null;
+      const routeNote = routed ? describeRoute(routed) : "";
       postAssistantReply(
         answer || "작업을 마쳤지만 채팅에 넣을 답이 비어 있습니다.",
-        source ? formatAnswerSource(source) : undefined
+        [routeNote, source ? formatAnswerSource(source) : ""].filter(Boolean).join(" · ") || undefined
       );
+      if (routed && requestConversationShown()) {
+        // Handled the wrong way? One click sends the same message the other way.
+        const redoAs: RequestMode = routed.intent === "project" ? "chat" : "program";
+        const lastAnswer = [...(messages?.querySelectorAll<HTMLElement>(".message.assistant") ?? [])].pop();
+        const redo = messageAction(
+          redoAs === "program" ? "🛠 프로그램 작업으로 다시" : "💬 채팅으로 다시",
+          redoAs === "program" ? "파일을 고치는 작업으로 다시 보냅니다" : "파일은 건드리지 않고 답만 다시 받습니다",
+          (button) => {
+            button.disabled = true;
+            void sendRequest(text, promptText, false, redoAs);
+          }
+        );
+        lastAnswer?.querySelector(".message-actions")?.append(redo);
+      }
       window.dispatchEvent(new Event("ai-character:usage-refresh"));
       notifyIfAway(startedAt, "답변이 도착했습니다", answer || "작업을 마쳤습니다.");
 
