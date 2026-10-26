@@ -190,7 +190,7 @@ export function setupComposer(
     if (!queue.length) return;
     const title = document.createElement("div");
     title.className = "chat-queue-title";
-    title.textContent = "답변 중에 넣은 내용 · 지금 작업이 끝나면 차례로 보냅니다";
+    title.textContent = "작업 중에 넣은 지시 · 지금 작업이 끝나면 이어서 반영합니다";
     queueBox.append(title);
     queue.forEach((item, index) => {
       const row = document.createElement("div");
@@ -313,7 +313,7 @@ export function setupComposer(
     setBusy(next) {
       busy = next;
       form.classList.toggle("is-busy", next);
-      input.placeholder = next ? "답변 중에도 입력하면 지금 작업에 반영합니다 (Ctrl+Enter: 다음 질문)" : idlePlaceholder;
+      input.placeholder = next ? "작업 중 질문은 바로 답하고, 지시는 끝난 뒤 반영합니다 (Ctrl+Enter: 다음 질문)" : idlePlaceholder;
       paintSubmit();
     },
     isBusy: () => busy,

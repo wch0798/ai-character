@@ -40,6 +40,8 @@ export type RunAgentOptions = {
   kind?: "chat" | "file";
   /** Model to run instead of the one in settings; "" or omitted keeps the settings. */
   model?: string | null;
+  /** No work-log or progress lines: a side answer while other work is on screen. */
+  quiet?: boolean;
   onStream?: (event: AgentStreamEvent) => void;
 };
 
@@ -545,6 +547,7 @@ export function runAgentTask(options: RunAgentOptions): AgentTask {
         // What a program is doing is shown for every run, including CRADLE's planner and
         // workers, which keep their other output to their own screen.
         if (event.payload.stream === "activity") {
+          if (options.quiet) return;
           window.dispatchEvent(
             new CustomEvent<WorkActivityEvent>(WORK_ACTIVITY_EVENT, {
               detail: { agent: options.agent, text: event.payload.text.trim() },
@@ -554,7 +557,7 @@ export function runAgentTask(options: RunAgentOptions): AgentTask {
         }
         // A CRADLE worker's own output stays on its screen; programs that do not report steps
         // (Codex, Cursor) still show their latest line as what they are doing.
-        if (options.emitRuntimeEvents === false && event.payload.stream === "stdout" && options.agent !== "claude") {
+        if (options.emitRuntimeEvents === false && !options.quiet && event.payload.stream === "stdout" && options.agent !== "claude") {
           const last = event.payload.text.split("\n").map((line) => line.trim()).filter(Boolean).pop();
           // JSON is a worker's machine-readable result, not a step to show.
           if (last && !/^[{[]/.test(last)) {

@@ -193,6 +193,22 @@ export function needsLocalFiles(prompt: string): boolean {
   return LOCAL_FILE_MARKERS.some((marker) => lower.includes(marker)) || FILE_NAME_PATTERN.test(text);
 }
 
+// "왜 그렇게 했어", "어떻게 처리하고 있어?", "지금 뭐 해" — asking, not telling.
+const QUESTION_PATTERN =
+  /[?？]\s*$|(?:^|\s)(?:왜|어떻게|뭐|뭘|무엇|무슨|언제|어디|어느|몇|얼마나)(?=\s|$|[을를이가은는도로에의])|(?:나요|니까|는지|인가요?|인지|일까|을까|ㄹ까|냐|니|나|어\?|why|how|what|when|where|which)\s*[?？.!]*\s*$/i;
+
+/**
+ * A message typed while work runs that asks about it ("지금 그 부분은 어떻게 처리하고 있어?")
+ * rather than telling it to do more ("이것도 고쳐줘"). Questions are answered at once without
+ * stopping the work; instructions follow once it finishes.
+ */
+export function isQuestionAboutWork(text: string): boolean {
+  const current = text.trim();
+  if (!current || !QUESTION_PATTERN.test(current)) return false;
+  // "왜 안 돼? 고쳐줘" asks for a change.
+  return !includesAny(current, [...EDIT_VERBS, ...PROJECT_MARKERS, "해줘", "해 줘", "해라", "하세요", "해주세요"]);
+}
+
 export function classifyRequestIntent(
   prompt: string,
   conversationContext = ""

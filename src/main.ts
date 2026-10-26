@@ -11,7 +11,10 @@ import { initializeChatProgressUi } from "./chat-progress";
 import { openWorkLogWindow } from "./work-log-window";
 import { renderMarkdown } from "./chat-markdown";
 import { SHORTCUT_HELP, additionsPrompt, mergedPrompt, renderWelcome, setupComposer, setupScrollFollow, type Composer, type ScrollFollower } from "./chat-composer";
-import { classifyRequestIntent } from "./request-intent";
+import { classifyRequestIntent, isQuestionAboutWork } from "./request-intent";
+import { getWorkLogSnapshot } from "./work-log-store";
+import { limitedUntil } from "./subscription-limits";
+import { runAgentTask } from "./agent-client";
 import { formatAnswerSource, lookupAnswerSource } from "./answer-source";
 import { friendlyChatError } from "./chat-errors";
 import { SPEAKING_EVENT, setupVoiceButtons, speakAnswer, stopSpeaking } from "./voice";
@@ -3723,13 +3726,65 @@ async function startLive2D() {
    */
   function restartWithAddition(text: string): boolean {
     const running = runningRequest;
-    if (!running || running.answering || running.project) {
+    if (!running) {
+      return false;
+    }
+    // A question about running program work is answered now; the work goes on. Instructions
+    // ("이것도 고쳐줘") wait and follow once it finishes.
+    if (running.project && isQuestionAboutWork(text)) {
+      void answerWhileWorking(text, running);
+      return true;
+    }
+    if (running.answering || running.project) {
       return false;
     }
     // Other screens listen too and stop the running program; `restart` tells this one to keep the queue.
     window.dispatchEvent(new CustomEvent("ai-character:stop-active-work", { detail: { restart: true } }));
     window.setTimeout(() => sendWithPrompt(text, mergedPrompt(running.prompt, [text])), 0);
     return true;
+  }
+
+  /**
+   * Answers a question about the program work that is still running, from its request, the
+   * latest work log and the files as they are now. Read-only and quiet: the running work, its
+   * progress bar and its log are left alone.
+   */
+  async function answerWhileWorking(question: string, running: NonNullable<typeof runningRequest>): Promise<void> {
+    const conversationId = running.conversationId;
+    const onScreen = () => !conversationId || conversationId === chatHistory?.getActiveId();
+    const post = (role: "user" | "assistant", text: string, source?: string, failed = false) => {
+      const shown = conversationId && chatHistory ? chatHistory.appendTo(conversationId, role, text, source) : true;
+      if (shown && onScreen()) addMessage(text, role, Date.now(), source, failed);
+    };
+    post("user", question);
+    flashStatus("작업은 계속하고, 이 질문에는 바로 답합니다", "info", 2600);
+
+    const recentLog = getWorkLogSnapshot().output.trim().split("\n").slice(-30).join("\n");
+    const prompt = [
+      "Another AI is still working on the user's request in this work folder. The user asked a question about that work.",
+      "Answer from the request, the latest work log and the files as they are now. Do not create, edit or delete files and do not run commands that change anything. Answer briefly, in the user's language. Say so if the work has not reached that part yet.",
+      `Request being worked on:\n${running.prompt}`,
+      recentLog ? `Latest work log:\n${recentLog}` : "",
+      `User's question:\n${question}`,
+    ].filter(Boolean).join("\n\n");
+    // The conversation's program, or the other one while it is over its usage limit.
+    const choice = choiceFor(conversationId);
+    const other = choice.agent === "claude" ? "codex" : "claude";
+    const agent = limitedUntil(choice.agent) && !limitedUntil(other) ? other : choice.agent;
+    try {
+      const answer = await runAgentTask({
+        agent,
+        prompt,
+        conversationId,
+        kind: "chat",
+        model: agent === choice.agent ? choice.model || null : null,
+        emitRuntimeEvents: false,
+        quiet: true,
+      }).result;
+      post("assistant", answer.trim() || "답을 받지 못했습니다.", "💬 작업 중 질문에 바로 답함 (작업은 계속 진행)");
+    } catch (error) {
+      post("assistant", friendlyChatError(error instanceof Error ? error.message : String(error)), undefined, true);
+    }
   }
 
   /** Stops the running request. A restart (a note folded in) is not a user stop: no stop
