@@ -38,6 +38,9 @@ pub struct AppPreferences {
     cradle_enabled: bool,
     auto_web_search: bool,
     gemini_api_enabled: bool,
+    /// Free AIs (Gemini) answer before the subscribed programs; off by default, so ChatGPT and
+    /// Claude answer first and free AIs are the last fallback.
+    free_ai_first: bool,
     allow_paid_open_ai_api: bool,
     close_web_account_after_handoff: bool,
     close_web_account_when_cradle_done: bool,
@@ -47,6 +50,8 @@ pub struct AppPreferences {
     agent_models: HashMap<String, String>,
     agent_model_presets: HashMap<String, Vec<String>>,
 }
+
+const FREE_AI_FIRST: &str = "ai.free_first";
 
 fn preferences_from_settings(settings: &crate::settings::AppSettings) -> AppPreferences {
     let agent_extra_args = [
@@ -94,6 +99,7 @@ fn preferences_from_settings(settings: &crate::settings::AppSettings) -> AppPref
         cradle_enabled: settings.cradle_enabled,
         auto_web_search: settings.auto_web_search,
         gemini_api_enabled: settings.gemini_api_enabled,
+        free_ai_first: settings.extra_bool(FREE_AI_FIRST, false),
         allow_paid_open_ai_api: settings.allow_paid_openai_api,
         close_web_account_after_handoff: settings.close_web_account_after_handoff,
         close_web_account_when_cradle_done: settings.close_web_account_when_cradle_done,
@@ -492,6 +498,7 @@ pub fn set_app_preferences(
     agent_extra_args: HashMap<String, Vec<String>>,
     agent_models: HashMap<String, String>,
     agent_model_presets: HashMap<String, Vec<String>>,
+    free_ai_first: Option<bool>,
 ) -> Result<AppPreferences, String> {
     if !(10..=3600).contains(&timeout_seconds) {
         return Err("Timeout은 10초에서 3600초 사이여야 합니다.".to_string());
@@ -509,6 +516,9 @@ pub fn set_app_preferences(
     settings.agent_extra_args = validate_agent_extra_args(agent_extra_args)?;
     settings.agent_models = validate_agent_models(agent_models)?;
     settings.agent_model_presets = validate_agent_model_presets(agent_model_presets)?;
+    if let Some(value) = free_ai_first {
+        settings.set_extra(FREE_AI_FIRST, Some(value.to_string()));
+    }
     save_settings(&settings)?;
     Ok(preferences_from_settings(&settings))
 }
@@ -522,6 +532,7 @@ pub struct BasicPreferencesPatch {
     pub cradle_enabled: Option<bool>,
     pub auto_web_search: Option<bool>,
     pub gemini_api_enabled: Option<bool>,
+    pub free_ai_first: Option<bool>,
     pub allow_paid_open_ai_api: Option<bool>,
     pub close_web_account_after_handoff: Option<bool>,
     pub close_web_account_when_cradle_done: Option<bool>,
@@ -552,6 +563,9 @@ pub(crate) fn apply_basic_preferences(patch: BasicPreferencesPatch) -> Result<Ap
         if let Some(value) = value {
             *target = value;
         }
+    }
+    if let Some(value) = patch.free_ai_first {
+        settings.set_extra(FREE_AI_FIRST, Some(value.to_string()));
     }
     save_settings(&settings)?;
     Ok(preferences_from_settings(&settings))
@@ -739,6 +753,7 @@ fn run_agent_blocking<F>(
     timeout_seconds: Option<u64>,
     sensitive_acknowledged: Option<bool>,
     requested_model: Option<String>,
+    chat_only: bool,
     mut on_chunk: F,
 ) -> Result<String, String>
 where
@@ -847,17 +862,18 @@ where
             };
             extra_args = merge_plugin_dir_args(&extra_args, &plugin_dirs);
             if managed_workspace {
-                match crate::claude_integration::prepare_claude_workspace(&working_dir) {
+                match crate::claude_integration::prepare_claude_workspace(&working_dir, chat_only) {
                     Ok(integration_args) => {
                         let has_format = extra_args.iter().any(|arg| arg == "--output-format");
-                        let mut iter = integration_args.into_iter();
+                        let mut iter = integration_args.into_iter().peekable();
                         while let Some(arg) = iter.next() {
-                            let value = iter.next().unwrap_or_default();
-                            if arg == "--output-format" && has_format {
+                            // Options come as `--name value`, except bare switches like --verbose.
+                            let value = iter.next_if(|next| !next.starts_with("--"));
+                            if (arg == "--output-format" || arg == "--verbose") && has_format {
                                 continue;
                             }
                             extra_args.push(arg);
-                            extra_args.push(value);
+                            extra_args.extend(value);
                         }
                     }
                     // Without the workspace guard Claude must not run with every permission.
@@ -866,7 +882,9 @@ where
             }
         }
         let claude_json_mode = agent == AgentKind::Claude
-            && extra_args.windows(2).any(|pair| pair[0] == "--output-format" && pair[1] == "json");
+            && extra_args
+                .windows(2)
+                .any(|pair| pair[0] == "--output-format" && (pair[1] == "json" || pair[1] == "stream-json"));
         if managed_workspace {
             extra_args = merge_extra_args(
                 &extra_args,
@@ -888,9 +906,20 @@ where
             timeout,
         };
 
+        // In JSON mode stdout is events, not the answer: each finished line becomes work-log
+        // lines, and the answer is sent once at the end.
+        let mut pending_line = String::new();
         let first_result = run_request_streaming(&request, |chunk: AgentStreamChunk| {
             if !(claude_json_mode && chunk.kind == crate::agent_core::AgentStreamKind::Stdout) {
                 on_chunk(chunk);
+                return;
+            }
+            pending_line.push_str(&chunk.text);
+            while let Some(end) = pending_line.find('\n') {
+                let line: String = pending_line.drain(..=end).collect();
+                for text in crate::claude_integration::describe_claude_event(&line) {
+                    on_chunk(AgentStreamChunk { kind: crate::agent_core::AgentStreamKind::Activity, text: format!("{text}\n") });
+                }
             }
         });
         if claude_json_mode {
@@ -957,9 +986,12 @@ pub async fn run_agent(
     timeout_seconds: Option<u64>,
     sensitive_acknowledged: Option<bool>,
     model: Option<String>,
+    kind: Option<String>,
 ) -> Result<String, String> {
     let agent = AgentKind::parse(&agent)?;
     let event_task_id = task_id.clone();
+    // "chat" runs answer a question; anything else may change files and gets every tool.
+    let chat_only = kind.as_deref() == Some("chat");
 
     tauri::async_runtime::spawn_blocking(move || {
         run_agent_blocking(
@@ -971,6 +1003,7 @@ pub async fn run_agent(
             timeout_seconds,
             sensitive_acknowledged,
             model,
+            chat_only,
             move |chunk| {
                 let Some(task_id) = event_task_id.as_ref() else {
                     return;
@@ -1096,6 +1129,7 @@ pub async fn ask_claude(
         "claude".to_string(),
         prompt,
         Some(project_dir),
+        None,
         None,
         None,
         None,

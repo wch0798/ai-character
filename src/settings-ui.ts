@@ -433,6 +433,21 @@ export function initializeSettingsUi(): void {
   geminiApiCopy.append(geminiApiText, geminiApiHelp);
   geminiApiLabel.append(geminiApiCheckbox, geminiApiCopy);
 
+  const freeFirstLabel = document.createElement("label");
+  freeFirstLabel.className = "ai-settings-checkbox";
+  const freeFirstCheckbox = document.createElement("input");
+  freeFirstCheckbox.type = "checkbox";
+  const freeFirstText = document.createElement("span");
+  freeFirstText.textContent = "무료 AI 먼저 쓰기";
+  const freeFirstHelp = document.createElement("small");
+  freeFirstHelp.className = "ai-settings-help";
+  freeFirstHelp.textContent =
+    "켜면 무료 Gemini가 먼저 답하고, 안 될 때 ChatGPT·Claude가 이어받습니다. 끄면(기본) 구독 중인 ChatGPT·Claude가 먼저 답하고 무료 AI는 마지막 예비로만 씁니다.";
+  const freeFirstCopy = document.createElement("span");
+  freeFirstCopy.className = "ai-settings-checkbox-copy";
+  freeFirstCopy.append(freeFirstText, freeFirstHelp);
+  freeFirstLabel.append(freeFirstCheckbox, freeFirstCopy);
+
   const openAiApiLabel = document.createElement("label");
   openAiApiLabel.className = "ai-settings-checkbox";
   const openAiApiCheckbox = document.createElement("input");
@@ -506,6 +521,7 @@ export function initializeSettingsUi(): void {
     cradleLabel,
     webSearchLabel,
     geminiApiLabel,
+    freeFirstLabel,
     openAiApiLabel,
     saveRuntimeButton
   );
@@ -1331,6 +1347,7 @@ export function initializeSettingsUi(): void {
       cradleCheckbox.checked = preferences.cradleEnabled;
       webSearchCheckbox.checked = preferences.autoWebSearch;
       geminiApiCheckbox.checked = preferences.geminiApiEnabled;
+      freeFirstCheckbox.checked = preferences.freeAiFirst;
       openAiApiCheckbox.checked = preferences.allowPaidOpenAiApi;
       closeAfterHandoffCheckbox.checked = preferences.closeWebAccountAfterHandoff;
       closeWhenDoneCheckbox.checked = preferences.closeWebAccountWhenCradleDone;
@@ -2020,6 +2037,7 @@ export function initializeSettingsUi(): void {
     cradleCheckbox,
     webSearchCheckbox,
     geminiApiCheckbox,
+    freeFirstCheckbox,
     openAiApiCheckbox,
     closeAfterHandoffCheckbox,
     closeWhenDoneCheckbox,
@@ -2071,6 +2089,7 @@ export function initializeSettingsUi(): void {
         cradleEnabled: cradleCheckbox.checked,
         autoWebSearch: webSearchCheckbox.checked,
         geminiApiEnabled: geminiApiCheckbox.checked,
+        freeAiFirst: freeFirstCheckbox.checked,
         allowPaidOpenAiApi: openAiApiCheckbox.checked,
         closeWebAccountAfterHandoff: closeAfterHandoffCheckbox.checked,
         closeWebAccountWhenCradleDone: closeWhenDoneCheckbox.checked,
@@ -2084,6 +2103,7 @@ export function initializeSettingsUi(): void {
       cradleCheckbox.checked = saved.cradleEnabled;
       webSearchCheckbox.checked = saved.autoWebSearch;
       geminiApiCheckbox.checked = saved.geminiApiEnabled;
+      freeFirstCheckbox.checked = saved.freeAiFirst;
       openAiApiCheckbox.checked = saved.allowPaidOpenAiApi;
       closeAfterHandoffCheckbox.checked = saved.closeWebAccountAfterHandoff;
       closeWhenDoneCheckbox.checked = saved.closeWebAccountWhenCradleDone;
@@ -2181,6 +2201,7 @@ export function initializeSettingsUi(): void {
       cradleCheckbox.checked = saved.cradleEnabled;
       webSearchCheckbox.checked = saved.autoWebSearch;
       geminiApiCheckbox.checked = saved.geminiApiEnabled;
+      freeFirstCheckbox.checked = saved.freeAiFirst;
       openAiApiCheckbox.checked = saved.allowPaidOpenAiApi;
       invalidateSettings("basic");
       invalidateSettings("advanced");

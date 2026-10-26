@@ -117,6 +117,31 @@ describe("Cloud-First 무료 우선 라우팅", () => {
     expect(normalized.tasks[1]?.target).toBe("openrouter_api");
   });
 
+  it("작업 폴더를 읽어야 하는 분석은 무료·웹 AI가 아니라 폴더 안에서 도는 프로그램이 맡는다", () => {
+    const plan: OrchestrationPlan = {
+      summary: "s",
+      tasks: [
+        { id: "t1", title: "ext4-reader 파일 목록 확인", target: "claude", mode: "analyze", role: "reviewer", prompt: "작업공간에서 폴더의 파일 목록을 확인하세요", dependsOn: [] },
+        { id: "t2", title: "개념 설명", target: "claude", mode: "analyze", role: "reviewer", prompt: "ext4 저널링 개념을 설명하세요", dependsOn: [] },
+        { id: "t3", title: "소스 검토", target: "gemini_web", mode: "analyze", role: "reviewer", prompt: "main.py 코드를 검토하세요", dependsOn: [] },
+      ],
+    };
+    const normalized = normalizePlanForAutomaticProviders(plan, ["gemini_api"], ["claude", "codex"], availability);
+    expect(normalized.tasks.map((task) => task.target)).toEqual(["claude", "gemini_api", "claude"]);
+  });
+
+  it("무료 AI 먼저 쓰기를 끄면 분석도 구독 프로그램이 먼저 맡는다", () => {
+    const plan: OrchestrationPlan = {
+      summary: "s",
+      tasks: [
+        { id: "t1", title: "개념 설명", target: "gemini_api", mode: "analyze", role: "reviewer", prompt: "ext4 저널링 개념을 설명하세요", dependsOn: [] },
+        { id: "t2", title: "자료 조사", target: "codex", mode: "analyze", role: "reviewer", prompt: "SteamOS 포맷 옵션을 조사하세요", dependsOn: [] },
+      ],
+    };
+    const normalized = normalizePlanForAutomaticProviders(plan, ["gemini_api"], ["claude", "codex"], availability, false);
+    expect(normalized.tasks.map((task) => task.target)).toEqual(["claude", "codex"]);
+  });
+
   it("계획 파서가 openrouter_api 대상을 허용한다", () => {
     const plan = parseOrchestrationPlan(
       JSON.stringify({

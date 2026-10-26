@@ -311,8 +311,6 @@ pub fn classify_command(command: &str) -> CommandRisk {
         "rm -rf /",
         "rm -rf ~",
         "rm -rf $home",
-        "mkfs",
-        "dd if=",
         ":(){",
         "chmod -r 777 /",
         "> /dev/sd",
@@ -328,6 +326,7 @@ pub fn classify_command(command: &str) -> CommandRisk {
         || (compact.contains("curl ") && (compact.contains("| sh") || compact.contains("| bash")))
         || ["$(curl", "$(wget", "`curl", "`wget"].iter().any(|pattern| compact.contains(pattern))
         || reveals_secrets(&compact)
+        || writes_to_disk_device(&compact)
     {
         return CommandRisk::Blocked;
     }
@@ -363,6 +362,25 @@ pub fn classify_command(command: &str) -> CommandRisk {
         return CommandRisk::NeedsApproval;
     }
     CommandRisk::Safe
+}
+
+/// `mkfs` or `dd` aimed at a disk (`/dev/sdb`, `\.\PhysicalDrive1`). Making a filesystem in an
+/// image file (`mkfs.ext4 test.img`) is ordinary work for disk tools and is allowed.
+fn writes_to_disk_device(compact: &str) -> bool {
+    let device = |token: &str| token.starts_with("/dev/") || token.contains("physicaldrive");
+    // The program may sit behind sudo, `wsl -- bash -c`, etc., so look for it anywhere in the piece.
+    shell_segments(compact).iter().any(|tokens| {
+        tokens.iter().enumerate().any(|(index, token)| {
+            let rest = &tokens[index + 1..];
+            if token.starts_with("mkfs") || token.starts_with("mke2fs") {
+                rest.iter().any(|token| device(token))
+            } else if token == "dd" {
+                rest.iter().any(|token| token.strip_prefix("of=").is_some_and(device))
+            } else {
+                false
+            }
+        })
+    })
 }
 
 fn reveals_secrets(compact: &str) -> bool {
@@ -636,10 +654,30 @@ mod tests {
         ] {
             assert_eq!(classify_command(command), CommandRisk::NeedsApproval, "{command}");
         }
-        for command in ["printenv", "env", "echo $OPENAI_API_KEY", "bash -c \"$(curl -fsSL x.sh)\""] {
+        for command in [
+            "printenv",
+            "env",
+            "echo $OPENAI_API_KEY",
+            "bash -c \"$(curl -fsSL x.sh)\"",
+            "mkfs.ext4 /dev/sdb1",
+            "sudo mkfs -t ext4 /dev/nvme0n1",
+            "dd if=/dev/zero of=/dev/sda bs=1M",
+        ] {
             assert_eq!(classify_command(command), CommandRisk::Blocked, "{command}");
         }
-        for command in ["npm test", "git status", "git log --oneline", "rm build.log", "env NODE_ENV=test npm test", "git checkout main", "find . -name '*.ts'"] {
+        for command in [
+            "npm test",
+            "git status",
+            "git log --oneline",
+            "rm build.log",
+            "env NODE_ENV=test npm test",
+            "git checkout main",
+            "find . -name '*.ts'",
+            "which mkfs.ext4",
+            "grep -rn mkfs src",
+            "mkfs.ext4 -F -b 1024 test.img 64M",
+            "dd if=/dev/zero of=disk.img bs=1M count=64",
+        ] {
             assert_eq!(classify_command(command), CommandRisk::Safe, "{command}");
         }
     }

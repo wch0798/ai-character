@@ -196,7 +196,7 @@ export function setupComposer(
       const row = document.createElement("div");
       row.className = `chat-queue-item is-${item.kind}`;
       const tag = document.createElement("em");
-      tag.textContent = item.kind === "add" ? "지금 작업에 반영" : "다음 질문";
+      tag.textContent = item.kind === "add" ? "이어서 반영" : "다음 질문";
       const label = document.createElement("span");
       label.textContent = item.text;
       label.title = item.text;

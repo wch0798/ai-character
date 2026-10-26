@@ -1227,3 +1227,7 @@
 :root[data-theme="light"] #chat-size-menu button:hover {
   background: rgb(229, 231, 237)
 }
+:root[data-theme="light"] #request-mode-button {
+  background: rgb(231, 233, 239);
+  color: rgb(32, 42, 59)
+}

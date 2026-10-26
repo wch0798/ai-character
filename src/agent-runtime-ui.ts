@@ -1,4 +1,5 @@
 import {
+  WORK_ACTIVITY_EVENT,
   agentLabel,
   applyWorkspaceChanges,
   cancelAgent,
@@ -11,6 +12,7 @@ import {
   type AgentStreamEvent,
   type AgentTaskEndEvent,
   type AgentTaskStartEvent,
+  type WorkActivityEvent,
   type WorkspaceChange,
 } from "./agent-client";
 import {
@@ -349,6 +351,18 @@ export function initializeAgentRuntimeUi(): void {
       }
     }
   );
+
+  // Steps a program reports, from this screen's task or any CRADLE worker: time-stamped in
+  // the work log and shown as the current state.
+  window.addEventListener(WORK_ACTIVITY_EVENT, (event: Event) => {
+    const detail = (event as CustomEvent<WorkActivityEvent>).detail;
+    if (!detail?.text) return;
+    const time = new Date().toLocaleTimeString("ko-KR", { hour12: false });
+    const line = `[${time}] ${agentLabel(detail.agent)} · ${detail.text}\n`;
+    appendOutput(output, line);
+    appendWorkLogOutput(line);
+    setWorkLogStatus(detail.text);
+  });
 
   window.addEventListener(
     "ai-character:agent-stream",

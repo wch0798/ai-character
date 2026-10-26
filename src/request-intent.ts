@@ -35,6 +35,10 @@ const EDIT_VERBS = [
   "수정해",
   "수정하",
   "고쳐",
+  "고치",
+  "반영해",
+  "적용을 해",
+  "적용 해",
   "만들어줘",
   "만들어 줘",
   "만들어줄",
@@ -119,13 +123,22 @@ export function extractCurrentUserRequest(prompt: string): string {
 // Whole words only: "ui" is inside "build", "app" inside "happy".
 const CODE_CONTEXT_EN = /\b(ui|ux|api|css|html|bug|function|component|script|app|test)\b/i;
 
+// Dotted program or module names such as mkfs.ext4, os.path or ext4lib.fs.
+const DOTTED_NAME = /\b[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*\b/i;
+
 function includesAny(text: string, markers: string[]): boolean {
   const lower = text.toLowerCase();
   return markers.some((marker) => lower.includes(marker.toLowerCase()));
 }
 
 function mentionsCodeOrFiles(text: string): boolean {
-  return includesAny(text, CODE_CONTEXT) || CODE_CONTEXT_EN.test(text) || includesAny(text, LOCAL_FILE_MARKERS) || FILE_NAME_PATTERN.test(text);
+  return (
+    includesAny(text, CODE_CONTEXT) ||
+    CODE_CONTEXT_EN.test(text) ||
+    DOTTED_NAME.test(text) ||
+    includesAny(text, LOCAL_FILE_MARKERS) ||
+    FILE_NAME_PATTERN.test(text)
+  );
 }
 
 function includesProjectMarker(text: string): boolean {
@@ -184,14 +197,28 @@ export function classifyRequestIntent(
   prompt: string,
   conversationContext = ""
 ): RequestIntent {
+  return judgeRequestIntent(prompt, conversationContext).intent;
+}
+
+/**
+ * The intent and whether the words settle it. Not sure: an edit verb with nothing pointing at
+ * code or files ("이 부분 제대로 고쳐"), which may be about text or about the program; the
+ * caller can then ask an AI or look at the conversation's files.
+ */
+export function judgeRequestIntent(
+  prompt: string,
+  conversationContext = ""
+): { intent: RequestIntent; sure: boolean } {
   const current = extractCurrentUserRequest(prompt);
-  if (!current) return "chat";
-  if (includesProjectMarker(current)) return "project";
-  if (isProjectConfirmation(current) && historyLooksLikeProject(conversationContext)) {
-    return "project";
+  if (!current) return { intent: "chat", sure: true };
+  if (includesProjectMarker(current)) return { intent: "project", sure: true };
+  // In a conversation that is already about the project, "고쳐줘" or "진행해" means the files.
+  if ((isProjectConfirmation(current) || includesAny(current, EDIT_VERBS)) && historyLooksLikeProject(conversationContext)) {
+    return { intent: "project", sure: true };
   }
+  const unsure = includesAny(current, EDIT_VERBS);
   // A question about the user's files must not be sent to web research first.
-  if (needsLocalFiles(current)) return "chat";
-  if (shouldAutoWebSearch(current)) return "research";
-  return "chat";
+  if (needsLocalFiles(current)) return { intent: "chat", sure: !unsure };
+  if (shouldAutoWebSearch(current)) return { intent: "research", sure: !unsure };
+  return { intent: "chat", sure: !unsure };
 }

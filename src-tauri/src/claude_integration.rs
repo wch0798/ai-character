@@ -255,7 +255,10 @@ fn github_token_present() -> bool {
 /// Writes CLAUDE.md, the CRADLE plugin (skills, subagents, hooks) and MCP
 /// config next to the managed workspace, never inside the project snapshot,
 /// so none of it is offered for apply to the user's project.
-pub fn prepare_claude_workspace(working_dir: &Path) -> Result<Vec<String>, String> {
+/// `chat_only`: a chat answer. Claude then starts without the browser tool, skills and
+/// subagents (each costs seconds on every start and a long tool list in every prompt); the
+/// workspace guard and the quality hooks stay.
+pub fn prepare_claude_workspace(working_dir: &Path, chat_only: bool) -> Result<Vec<String>, String> {
     let Some(conversation_dir) = conversation_dir_for(working_dir) else { return Ok(Vec::new()) };
     let settings = integration_settings(&load_settings()?);
     let integration_dir = conversation_dir.join("claude-integration");
@@ -288,7 +291,8 @@ pub fn prepare_claude_workspace(working_dir: &Path) -> Result<Vec<String>, Strin
         args.push(instructions_path.to_string_lossy().into_owned());
     }
 
-    let plugin = integration_dir.join("plugin");
+    // Its own folder, so a chat run never strips the skills a file run uses.
+    let plugin = integration_dir.join(if chat_only { "plugin-chat" } else { "plugin" });
     write_if_changed(
         &plugin.join(".claude-plugin").join("plugin.json"),
         &serde_json::to_string_pretty(&json!({
@@ -298,14 +302,14 @@ pub fn prepare_claude_workspace(working_dir: &Path) -> Result<Vec<String>, Strin
         }))
         .unwrap_or_default(),
     )?;
-    if settings.skills {
+    if settings.skills && !chat_only {
         for (name, body) in skills() {
             write_if_changed(&plugin.join("skills").join(name).join("SKILL.md"), &body)?;
         }
     } else {
         remove_dir(&plugin.join("skills"));
     }
-    if settings.subagents {
+    if settings.subagents && !chat_only {
         for (name, body) in subagents() {
             write_if_changed(&plugin.join("agents").join(format!("{name}.md")), &body)?;
         }
@@ -322,8 +326,13 @@ pub fn prepare_claude_workspace(working_dir: &Path) -> Result<Vec<String>, Strin
     args.push("--plugin-dir".to_string());
     args.push(plugin.to_string_lossy().into_owned());
 
+    if chat_only {
+        // Also leaves out the skill list of the user's own plugins (tens of KB per prompt).
+        args.push("--disable-slash-commands".to_string());
+    }
+
     let mcp_path = integration_dir.join("mcp.json");
-    match settings.mcp.then(|| mcp_config(&settings, find_tool("npx").as_deref(), github_token_present())).flatten() {
+    match (settings.mcp && !chat_only).then(|| mcp_config(&settings, find_tool("npx").as_deref(), github_token_present())).flatten() {
         Some(config) => {
             write_if_changed(&mcp_path, &serde_json::to_string_pretty(&config).unwrap_or_default())?;
             args.push("--mcp-config".to_string());
@@ -335,8 +344,11 @@ pub fn prepare_claude_workspace(working_dir: &Path) -> Result<Vec<String>, Strin
     }
 
     if settings.json_output {
+        // One JSON event per line while Claude works, so the work log can say what it is
+        // doing; the last line is the same result object `json` would give.
         args.push("--output-format".to_string());
-        args.push("json".to_string());
+        args.push("stream-json".to_string());
+        args.push("--verbose".to_string());
     }
     Ok(args)
 }
@@ -354,10 +366,15 @@ pub struct ClaudeJsonResult {
 }
 
 pub fn parse_claude_json(raw: &str) -> Option<ClaudeJsonResult> {
-    let value: Value = serde_json::from_str(raw.trim()).ok()?;
-    let value = match value {
-        Value::Array(items) => items.into_iter().rev().find(|item| item.get("type").and_then(Value::as_str) == Some("result"))?,
-        other => other,
+    let value = match serde_json::from_str::<Value>(raw.trim()) {
+        Ok(Value::Array(items)) => items.into_iter().rev().find(|item| item.get("type").and_then(Value::as_str) == Some("result"))?,
+        Ok(other) => other,
+        // stream-json: one event per line, the result last.
+        Err(_) => raw
+            .lines()
+            .rev()
+            .filter_map(|line| serde_json::from_str::<Value>(line.trim()).ok())
+            .find(|item| item.get("type").and_then(Value::as_str) == Some("result"))?,
     };
     if value.get("type").and_then(Value::as_str) != Some("result") {
         return None;
@@ -379,6 +396,90 @@ pub fn parse_claude_json(raw: &str) -> Option<ClaudeJsonResult> {
         model,
         duration_ms: value.get("duration_ms").and_then(Value::as_i64).unwrap_or(0),
     })
+}
+
+/// Work-log lines for one stream-json event: the tools Claude calls and what it says between
+/// them. Answers and tool results themselves are left out.
+pub fn describe_claude_event(line: &str) -> Vec<String> {
+    let Ok(event) = serde_json::from_str::<Value>(line.trim()) else { return Vec::new() };
+    match event.get("type").and_then(Value::as_str) {
+        Some("system") if event.get("subtype").and_then(Value::as_str) == Some("init") => {
+            let model = event.get("model").and_then(Value::as_str).unwrap_or("Claude");
+            vec![format!("▶ Claude 시작 ({model})")]
+        }
+        Some("assistant") => event
+            .pointer("/message/content")
+            .and_then(Value::as_array)
+            .map(|items| items.iter().filter_map(describe_content).collect())
+            .unwrap_or_default(),
+        Some("user") => event
+            .pointer("/message/content")
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter(|item| item.get("type").and_then(Value::as_str) == Some("tool_result"))
+                    .filter_map(|item| {
+                        let text = item.get("content").map(|content| content.to_string()).unwrap_or_default();
+                        text.contains("AI-Character 안전 규칙").then(|| "⛔ 안전 규칙에 막힘 (작업 폴더 밖이거나 위험한 명령)".to_string())
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+        Some("result") => {
+            let seconds = event.get("duration_ms").and_then(Value::as_i64).unwrap_or(0) / 1000;
+            let turns = event.get("num_turns").and_then(Value::as_i64).unwrap_or(0);
+            vec![format!("✔ Claude 작업 끝 ({seconds}초, {turns}단계)")]
+        }
+        _ => Vec::new(),
+    }
+}
+
+fn describe_content(item: &Value) -> Option<String> {
+    let short = |text: &str, limit: usize| {
+        let line = text.lines().map(str::trim).find(|line| !line.is_empty()).unwrap_or_default();
+        if line.chars().count() > limit {
+            format!("{}…", line.chars().take(limit).collect::<String>())
+        } else {
+            line.to_string()
+        }
+    };
+    match item.get("type").and_then(Value::as_str)? {
+        "text" => {
+            let text = item.get("text").and_then(Value::as_str)?.trim();
+            // A JSON reply is a worker's machine-readable result, not something to show.
+            (!text.is_empty() && !text.starts_with(['{', '['])).then(|| format!("💬 {}", short(text, 120)))
+        }
+        "tool_use" => {
+            let name = item.get("name").and_then(Value::as_str).unwrap_or("도구");
+            let input = item.get("input").cloned().unwrap_or(Value::Null);
+            let field = |key: &str| input.get(key).and_then(Value::as_str).unwrap_or_default().to_string();
+            let file = || {
+                let path = field("file_path");
+                let path = if path.is_empty() { field("notebook_path") } else { path };
+                path.rsplit(['/', '\\']).next().unwrap_or_default().to_string()
+            };
+            Some(match name {
+                "Read" | "NotebookRead" => format!("📄 읽는 중: {}", file()),
+                "Write" => format!("📝 파일 쓰는 중: {}", file()),
+                "Edit" | "MultiEdit" | "NotebookEdit" => format!("✏️ 고치는 중: {}", file()),
+                "Bash" | "PowerShell" => {
+                    let what = field("description");
+                    let what = if what.is_empty() { field("command") } else { what };
+                    format!("⚙️ 명령 실행: {}", short(&what, 100))
+                }
+                "Grep" => format!("🔍 찾는 중: {}", short(&field("pattern"), 60)),
+                "Glob" => format!("🔍 파일 찾는 중: {}", short(&field("pattern"), 60)),
+                "LS" => "📁 폴더 보는 중".to_string(),
+                "WebFetch" => format!("🌐 웹 페이지 확인: {}", short(&field("url"), 80)),
+                "WebSearch" => format!("🌐 웹 검색: {}", short(&field("query"), 80)),
+                "Task" | "Agent" => format!("🤝 보조 AI에게 맡김: {}", short(&field("description"), 80)),
+                "TodoWrite" => "🗒 할 일 정리".to_string(),
+                other => format!("🔧 {other}"),
+            })
+        }
+        _ => None,
+    }
 }
 
 /// Subscription runs are recorded with zero billed cost; the CLI's own cost
@@ -748,6 +849,44 @@ mod tests {
     }
 
     #[test]
+    fn reads_stream_json_result_and_describes_steps() {
+        let raw = [
+            r#"{"type":"system","subtype":"init","model":"claude-opus-5-5"}"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"찾아볼게요"},{"type":"tool_use","name":"Read","input":{"file_path":"C:\\w\\src\\main.py"}}]}}"#,
+            r#"{"type":"user","message":{"content":[{"type":"tool_result","content":"AI-Character 안전 규칙: 작업 폴더 밖"}]}}"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"pytest -q","description":"테스트 실행"}}]}}"#,
+            r#"{"type":"result","is_error":false,"duration_ms":4000,"num_turns":3,"result":"끝","usage":{}}"#,
+        ]
+        .join("\n");
+        assert_eq!(parse_claude_json(&raw).unwrap().text, "끝");
+        let steps: Vec<String> = raw.lines().flat_map(describe_claude_event).collect();
+        assert_eq!(
+            steps,
+            [
+                "▶ Claude 시작 (claude-opus-5-5)",
+                "💬 찾아볼게요",
+                "📄 읽는 중: main.py",
+                "⛔ 안전 규칙에 막힘 (작업 폴더 밖이거나 위험한 명령)",
+                "⚙️ 명령 실행: 테스트 실행",
+                "✔ Claude 작업 끝 (4초, 3단계)",
+            ]
+        );
+    }
+
+    #[test]
+    fn chat_runs_start_without_skills_and_browser_tool() {
+        let root = std::env::temp_dir().join(format!("chat-run-{}", std::process::id()));
+        let snapshot = root.join(".ai-character/conversations/sample/project");
+        fs::create_dir_all(&snapshot).unwrap();
+        let args = prepare_claude_workspace(&snapshot, true).unwrap();
+        assert!(args.contains(&"--disable-slash-commands".to_string()));
+        assert!(!args.contains(&"--mcp-config".to_string()));
+        let plugin = args.windows(2).find(|pair| pair[0] == "--plugin-dir").map(|pair| PathBuf::from(&pair[1])).unwrap();
+        assert!(plugin.join("hooks").join("hooks.json").is_file());
+        assert!(!plugin.join("skills").exists());
+    }
+
+    #[test]
     fn claude_md_lists_detected_tests() {
         let text = claude_md_contents(&[TestCommand { command: "npm test".into(), source: "package.json".into() }]);
         assert!(text.starts_with(MANAGED_MARKER));
@@ -760,7 +899,7 @@ mod tests {
         let root = PathBuf::from(std::env::var("AI_CHARACTER_SAMPLE_DIR").unwrap());
         let snapshot = root.join(".ai-character/conversations/sample/project");
         fs::create_dir_all(&snapshot).unwrap();
-        let args = prepare_claude_workspace(&snapshot).unwrap();
+        let args = prepare_claude_workspace(&snapshot, false).unwrap();
         println!("ARGS={}", serde_json::to_string(&args).unwrap());
     }
 

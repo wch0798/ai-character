@@ -3,7 +3,8 @@
 import "pixi.js/unsafe-eval";
 import { confirmOnSecondClick } from "./settings-controls";
 import { initializeCradleOrchestrationUi } from "./orchestration-ui";
-import { askCradleCompat } from "./orchestration-engine";
+import { askCradleCompat, type RouteDecision } from "./orchestration-engine";
+import { nextRequestMode, readRequestMode, REQUEST_MODES, writeRequestMode, type RequestMode } from "./request-mode";
 import { initializeSettingsUi } from "./settings-ui";
 import { initializeAgentRuntimeUi } from "./agent-runtime-ui";
 import { initializeChatProgressUi } from "./chat-progress";
@@ -2639,6 +2640,13 @@ async function startLive2D() {
   // can restart it.
   let runningRequest: { conversationId: string | null; prompt: string; answering: boolean; project: boolean } | null = null;
 
+  /** "💬 채팅으로 답함 (AI 판단)" — how the message was handled, under the answer. */
+  function describeRoute(route: RouteDecision): string {
+    const how = route.intent === "project" ? "🛠 프로그램 작업으로 처리" : "💬 채팅으로 답함";
+    const by = route.decidedBy === "user" ? "직접 선택" : route.decidedBy === "ai" ? "AI 판단" : "자동";
+    return `${how} (${by})`;
+  }
+
   function postAssistantReply(text: string, source?: string): void {
     const clean = text.trim();
     if (!clean || clean === lastAssistantReply) {
@@ -3263,6 +3271,30 @@ async function startLive2D() {
     closeButton.before(sizeButton);
   }
 
+  // 🤖 AI 모드 / 💬 채팅 / 🛠 프로그램: how messages are handled, next to the attach button.
+  const attachButton = document.querySelector<HTMLButtonElement>("#attachment-button");
+  if (attachButton) {
+    const modeButton = document.createElement("button");
+    modeButton.type = "button";
+    modeButton.id = "request-mode-button";
+    const paintMode = (mode: RequestMode) => {
+      const info = REQUEST_MODES.find((item) => item.id === mode) ?? REQUEST_MODES[0];
+      modeButton.textContent = info.label;
+      modeButton.dataset.mode = mode;
+      modeButton.title = `${info.title} (누를 때마다 바뀝니다)`;
+      modeButton.setAttribute("aria-label", `처리 방식: ${info.label}`);
+    };
+    paintMode(readRequestMode());
+    modeButton.addEventListener("click", () => {
+      const next = nextRequestMode(readRequestMode());
+      writeRequestMode(next);
+      paintMode(next);
+      const info = REQUEST_MODES.find((item) => item.id === next);
+      if (info) flashStatus(`${info.label}: ${info.title}`, "info", 2600);
+    });
+    attachButton.after(modeButton);
+  }
+
 
   const renderAttachments =
     () => {
@@ -3733,7 +3765,12 @@ async function startLive2D() {
 
   /** Sends `text` as the user's message; `prompt` (else the text) is what the AI receives.
    * `fromInput` clears the input box, which only holds this text when it was typed there. */
-  async function sendRequest(text: string, prompt: string | null, fromInput: boolean): Promise<void> {
+  async function sendRequest(
+    text: string,
+    prompt: string | null,
+    fromInput: boolean,
+    mode: RequestMode = readRequestMode()
+  ): Promise<void> {
     if (composer?.isBusy()) {
       return;
     }
@@ -3822,11 +3859,14 @@ async function startLive2D() {
     const requestId = ++activeRequestId;
     const isStopped = () => stoppedRequestId === requestId;
     const startedAt = Date.now();
+    let route: RouteDecision | null = null;
     const thisRequest = {
       conversationId: thisConversationId,
       prompt: promptText,
       answering: false,
-      project: classifyRequestIntent(promptText, previousConversationContext) === "project",
+      // Program work is never restarted by a note added mid-way (that would throw away the
+      // changes made so far); the note follows once it finishes. Corrected once routed below.
+      project: mode === "program" || (mode === "auto" && classifyRequestIntent(promptText, previousConversationContext) === "project"),
     };
     runningRequest = thisRequest;
 
@@ -3854,7 +3894,12 @@ async function startLive2D() {
           chatHistory?.getActiveId() ?? null,
           previousConversationContext,
           `chat-${requestId}-${startedAt}`,
-          modelChoice
+          modelChoice,
+          mode,
+          (decision) => {
+            route = decision;
+            thisRequest.project = decision.intent === "project";
+          }
         );
 
       live?.dispose();
@@ -3866,10 +3911,27 @@ async function startLive2D() {
       if (isStopped()) {
         return;
       }
+      // Set inside the callback above, which TypeScript does not follow.
+      const routed = route as RouteDecision | null;
+      const routeNote = routed ? describeRoute(routed) : "";
       postAssistantReply(
         answer || "작업을 마쳤지만 채팅에 넣을 답이 비어 있습니다.",
-        source ? formatAnswerSource(source) : undefined
+        [routeNote, source ? formatAnswerSource(source) : ""].filter(Boolean).join(" · ") || undefined
       );
+      if (routed && requestConversationShown()) {
+        // Handled the wrong way? One click sends the same message the other way.
+        const redoAs: RequestMode = routed.intent === "project" ? "chat" : "program";
+        const lastAnswer = [...(messages?.querySelectorAll<HTMLElement>(".message.assistant") ?? [])].pop();
+        const redo = messageAction(
+          redoAs === "program" ? "🛠 프로그램 작업으로 다시" : "💬 채팅으로 다시",
+          redoAs === "program" ? "파일을 고치는 작업으로 다시 보냅니다" : "파일은 건드리지 않고 답만 다시 받습니다",
+          (button) => {
+            button.disabled = true;
+            void sendRequest(text, promptText, false, redoAs);
+          }
+        );
+        lastAnswer?.querySelector(".message-actions")?.append(redo);
+      }
       window.dispatchEvent(new Event("ai-character:usage-refresh"));
       notifyIfAway(startedAt, "답변이 도착했습니다", answer || "작업을 마쳤습니다.");
 
