@@ -287,35 +287,18 @@ select {
     max-width: 118px;
   }
 
-  #chat-history-toolbar #automation-button,
-  #chat-history-toolbar #usage-dashboard-button,
-  #chat-history-toolbar #ai-settings-button {
+  /* Toolbar buttons with data-icon show just the icon; badges inside them stay. */
+  #chat-history-toolbar button[data-icon] {
     min-width: 28px;
     padding: 0 6px;
-    font-size: 0;
   }
 
-  #chat-history-toolbar #automation-button > *,
-  #chat-history-toolbar #usage-dashboard-button > *,
-  #chat-history-toolbar #ai-settings-button > * {
+  #chat-history-toolbar button[data-icon] .toolbar-label {
     display: none;
   }
 
-  #chat-history-toolbar #automation-button::before,
-  #chat-history-toolbar #usage-dashboard-button::before,
-  #chat-history-toolbar #ai-settings-button::before {
+  #chat-history-toolbar button[data-icon]::before {
+    content: attr(data-icon);
     font-size: 13px;
-  }
-
-  #chat-history-toolbar #automation-button::before {
-    content: "⏱";
-  }
-
-  #chat-history-toolbar #usage-dashboard-button::before {
-    content: "📊";
-  }
-
-  #chat-history-toolbar #ai-settings-button::before {
-    content: "⚙";
   }
 }

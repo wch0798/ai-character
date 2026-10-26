@@ -1,4 +1,7 @@
 import {
+  AGENT_LABELS,
+  agentLabel,
+  agentShortLabel,
   getAppPreferences,
   getLastAgentLogins,
   listAgentModels,
@@ -6,6 +9,8 @@ import {
   type AgentModel,
   type ModelChoice,
 } from "./agent-client";
+import { readJson, writeJson } from "./local-store";
+import { attachPopupMenu } from "./popup-menu";
 import { CONVERSATION_SHOWN_EVENT, getShownConversationId } from "./chat-history-ui";
 
 /**
@@ -17,12 +22,7 @@ const CHOICES_KEY = "ai-character-conversation-models";
 const LAST_KEY = "ai-character-last-model";
 const MAX_REMEMBERED = 300;
 
-export const AGENTS: Array<{ id: AgentKind; label: string }> = [
-  { id: "claude", label: "Claude" },
-  { id: "codex", label: "ChatGPT (Codex)" },
-  { id: "cursor", label: "Cursor" },
-  { id: "antigravity", label: "Antigravity" },
-];
+export const AGENTS = (Object.keys(AGENT_LABELS) as AgentKind[]).map((id) => ({ id, label: AGENT_LABELS[id] }));
 
 const AGENT_IDS = new Set<string>(AGENTS.map((agent) => agent.id));
 
@@ -31,26 +31,10 @@ function isChoice(value: unknown): value is ModelChoice {
   return !!choice && AGENT_IDS.has(choice.agent) && typeof choice.model === "string";
 }
 
-function readJson(key: string): unknown {
-  try {
-    return JSON.parse(localStorage.getItem(key) ?? "null");
-  } catch {
-    return null;
-  }
-}
-
-function writeJson(key: string, value: unknown): void {
-  try {
-    localStorage.setItem(key, JSON.stringify(value));
-  } catch {
-    // Remembered for this session only.
-  }
-}
-
 type Stored = Record<string, ModelChoice & { at: number }>;
 
 function readChoices(): Stored {
-  const value = readJson(CHOICES_KEY);
+  const value = readJson<unknown>(CHOICES_KEY, null);
   return value && typeof value === "object" ? (value as Stored) : {};
 }
 
@@ -67,7 +51,7 @@ let fallbackAgent: AgentKind = "claude";
 export function choiceFor(conversationId: string | null): ModelChoice {
   const own = conversationId ? readChoices()[conversationId] : undefined;
   if (isChoice(own)) return { agent: own.agent, model: own.model };
-  const last = readJson(LAST_KEY);
+  const last = readJson<unknown>(LAST_KEY, null);
   if (isChoice(last)) return { agent: last.agent, model: last.model };
   return { agent: fallbackAgent, model: "" };
 }
@@ -86,10 +70,6 @@ const modelLabels = new Map<string, string>();
 function shortModelLabel(choice: ModelChoice): string {
   if (!choice.model) return "기본 모델";
   return modelLabels.get(`${choice.agent}:${choice.model}`) ?? choice.model;
-}
-
-function agentLabel(agent: AgentKind): string {
-  return AGENTS.find((item) => item.id === agent)?.label ?? agent;
 }
 
 export function setupChatModelMenu(onNotice: (text: string) => void): void {
@@ -115,13 +95,8 @@ export function setupChatModelMenu(onNotice: (text: string) => void): void {
 
   const paintButton = () => {
     const choice = choiceFor(getShownConversationId());
-    button.textContent = `${agentLabel(choice.agent).replace(" (Codex)", "")} · ${shortModelLabel(choice)} ▾`;
+    button.textContent = `${agentShortLabel(choice.agent)} · ${shortModelLabel(choice)} ▾`;
     button.title = "이 대화에서 답할 AI 프로그램과 모델을 고릅니다 (대화마다 따로 기억합니다)";
-  };
-
-  const close = () => {
-    menu.hidden = true;
-    button.classList.remove("open");
   };
 
   const place = () => {
@@ -235,28 +210,11 @@ export function setupChatModelMenu(onNotice: (text: string) => void): void {
     void renderModels(list, viewAgent);
   };
 
-  button.addEventListener("click", (event) => {
-    event.stopPropagation();
-    if (!menu.hidden) {
-      close();
-      return;
-    }
+  const { close } = attachPopupMenu(button, menu, () => {
     viewAgent = choiceFor(getShownConversationId()).agent;
     place();
-    menu.hidden = false;
-    button.classList.add("open");
     void renderMenu();
   });
-  menu.addEventListener("pointerdown", (event) => event.stopPropagation());
-  document.addEventListener("pointerdown", () => {
-    if (!menu.hidden) close();
-  });
-  document.addEventListener("keydown", (event) => {
-    if (event.key === "Escape" && !menu.hidden) {
-      event.stopPropagation();
-      close();
-    }
-  }, true);
   window.addEventListener(CONVERSATION_SHOWN_EVENT, () => {
     close();
     paintButton();

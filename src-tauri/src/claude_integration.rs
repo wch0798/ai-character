@@ -455,7 +455,7 @@ fn pre_tool_decision(input: &Value) -> Result<(), String> {
     let cwd = hook_cwd(input);
     let workspace = std::env::var_os(WORKSPACE_ENV).map(PathBuf::from).unwrap_or_else(|| cwd.clone());
     let temp = std::env::temp_dir();
-    let home = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")).map(PathBuf::from);
+    let home = crate::agent_core::user_home_dir();
     let tool = input.get("tool_name").and_then(Value::as_str).unwrap_or_default();
     let tool_input = input.get("tool_input").cloned().unwrap_or(Value::Null);
     let refusal = if tool == "Bash" {

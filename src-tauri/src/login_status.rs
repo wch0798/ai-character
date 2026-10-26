@@ -6,7 +6,6 @@ use base64::Engine;
 use serde::Serialize;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -20,10 +19,6 @@ pub struct AgentLogin {
     pub detail: String,
 }
 
-fn home_dir() -> Option<PathBuf> {
-    std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")).map(PathBuf::from)
-}
-
 fn read_json(path: &Path) -> Option<Value> {
     serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()
 }
@@ -35,7 +30,7 @@ fn login(id: &str, logged_in: Option<bool>, account: Option<String>, detail: &st
 fn claude_login() -> AgentLogin {
     let file = match std::env::var_os("CLAUDE_CONFIG_DIR") {
         Some(dir) => PathBuf::from(dir).join(".claude.json"),
-        None => match home_dir() {
+        None => match crate::agent_core::user_home_dir() {
             Some(home) => home.join(".claude.json"),
             None => return login("claude", None, None, "홈 폴더를 찾지 못했습니다."),
         },
@@ -56,7 +51,7 @@ fn claude_login_from(config: Option<Value>) -> AgentLogin {
 }
 
 fn codex_login() -> AgentLogin {
-    let dir = std::env::var_os("CODEX_HOME").map(PathBuf::from).or_else(|| home_dir().map(|home| home.join(".codex")));
+    let dir = crate::codex_model::codex_home();
     codex_login_from(dir.and_then(|dir| read_json(&dir.join("auth.json"))))
 }
 
@@ -136,7 +131,7 @@ fn antigravity_login_from(output: &str) -> AgentLogin {
 /// The CLI prints no account, but each run logs "authenticated successfully as <email>" under
 /// ~/.gemini/antigravity-cli; the newest log that has it names the signed-in account.
 fn antigravity_account() -> Option<String> {
-    let dir = home_dir()?.join(".gemini").join("antigravity-cli");
+    let dir = crate::agent_core::user_home_dir()?.join(".gemini").join("antigravity-cli");
     let mut logs: Vec<(std::time::SystemTime, PathBuf)> = std::fs::read_dir(dir.join("log"))
         .into_iter()
         .flatten()
@@ -156,22 +151,13 @@ fn antigravity_account_from_log(text: &str) -> Option<String> {
     account.contains('@').then(|| account.to_string())
 }
 
+/// Combined output of a CLI, or `None` when it could not start or ran out of time.
 pub(crate) fn run_with_timeout(binary: &Path, args: &[&str], timeout: Duration) -> Option<String> {
-    let mut command = crate::windows_process::command_with_args(binary, args);
-    let mut child = command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().ok()?;
-    let started = Instant::now();
-    loop {
-        match child.try_wait() {
-            Ok(Some(_)) => break,
-            Ok(None) if started.elapsed() < timeout => std::thread::sleep(Duration::from_millis(100)),
-            _ => {
-                let _ = child.kill();
-                return None;
-            }
-        }
+    let run = crate::process_util::run_prepared(crate::windows_process::command_with_args(binary, args), timeout);
+    if run.spawn_error.is_some() || run.timed_out {
+        return None;
     }
-    let output = child.wait_with_output().ok()?;
-    Some(format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr)))
+    Some(run.stdout + &run.stderr)
 }
 
 /// Asking the Cursor and Antigravity CLIs takes seconds (Antigravity up to 30), and the settings
@@ -232,9 +218,7 @@ fn agent_logins_within(max_age: Duration) -> Vec<AgentLogin> {
 #[tauri::command]
 pub async fn get_agent_logins(force: Option<bool>) -> Result<Vec<AgentLogin>, String> {
     let check = if force == Some(true) { fresh_agent_logins } else { agent_logins };
-    tauri::async_runtime::spawn_blocking(check)
-        .await
-        .map_err(|error| format!("로그인 상태 확인 실패: {error}"))
+    crate::process_util::off_ui_thread("로그인 상태 확인 실패", check).await
 }
 
 #[tauri::command]

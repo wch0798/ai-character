@@ -53,12 +53,7 @@ pub fn install(app: &mut App) -> tauri::Result<()> {
             "chat" | "settings" | "usage" | "automation" | "new-chat" | "stop" | "reset-position" => {
                 show_main(app);
                 if let Some(window) = app.get_webview_window("main") {
-                    let id = event.id().as_ref();
-                    let _ = window.emit("tray-action", id);
-                    // The newer items also get their own event (ai-character:tray-stop, …).
-                    if matches!(id, "new-chat" | "stop" | "reset-position") {
-                        let _ = window.emit(&format!("ai-character:tray-{id}"), ());
-                    }
+                    let _ = window.emit("tray-action", event.id().as_ref());
                 }
             }
             _ => {}

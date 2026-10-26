@@ -6,10 +6,11 @@
 use serde_json::Value;
 use std::path::PathBuf;
 
-fn codex_home() -> Option<PathBuf> {
+/// `CODEX_HOME`, else `~/.codex`.
+pub(crate) fn codex_home() -> Option<PathBuf> {
     std::env::var_os("CODEX_HOME")
         .map(PathBuf::from)
-        .or_else(|| std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")).map(|home| PathBuf::from(home).join(".codex")))
+        .or_else(|| crate::agent_core::user_home_dir().map(|home| home.join(".codex")))
 }
 
 /// The top-level `model = "..."` line (before any `[section]`).

@@ -154,18 +154,23 @@ fn normalized(path: &Path) -> String {
     if cfg!(windows) { text.to_lowercase() } else { text.to_string() }
 }
 
-pub fn is_inside(path: &Path, root: &Path) -> bool {
-    let (path, root) = (normalized(&real(path)), normalized(&real(root)));
-    !root.is_empty() && (path == root || path.starts_with(&format!("{root}/")))
-}
+/// The folders a call may touch, resolved once per check rather than once per path.
+struct Roots(Vec<String>);
 
-fn allowed(path: &Path, roots: &[PathBuf]) -> bool {
-    roots.iter().any(|root| is_inside(path, root))
+impl Roots {
+    fn new<'a>(roots: impl IntoIterator<Item = &'a Path>) -> Self {
+        Roots(roots.into_iter().map(|root| normalized(&real(root))).filter(|root| !root.is_empty()).collect())
+    }
+
+    fn allow(&self, path: &Path) -> bool {
+        let path = normalized(&real(path));
+        self.0.iter().any(|root| path == *root || path.starts_with(&format!("{root}/")))
+    }
 }
 
 /// Why a file tool call is refused, or None to let it run.
 pub fn check_file_tool(tool: &str, tool_input: &serde_json::Value, cwd: &Path, workspace: &Path, temp: &Path, home: Option<&Path>) -> Option<String> {
-    let roots = [workspace.to_path_buf(), temp.to_path_buf()];
+    let roots = Roots::new([workspace, temp]);
     for field in FILE_PATH_FIELDS {
         let Some(raw) = tool_input.get(*field).and_then(serde_json::Value::as_str) else { continue };
         if raw.trim().is_empty() {
@@ -175,7 +180,7 @@ pub fn check_file_tool(tool: &str, tool_input: &serde_json::Value, cwd: &Path, w
             return Some(outside_message(raw));
         }
         let path = resolve(cwd, raw, home);
-        if !allowed(&path, &roots) {
+        if !roots.allow(&path) {
             return Some(outside_message(raw));
         }
         if WRITE_TOOLS.contains(&tool) && path.components().any(|part| part.as_os_str().eq_ignore_ascii_case(".git")) {
@@ -198,7 +203,7 @@ pub fn check_file_tool(tool: &str, tool_input: &serde_json::Value, cwd: &Path, w
     };
     if let Some(raw) = glob_field.and_then(|field| tool_input.get(field)).and_then(serde_json::Value::as_str) {
         let folder = pattern_folder(raw);
-        if is_network_path(&folder) || (!folder.is_empty() && !allowed(&resolve(&base, &folder, home), &roots)) {
+        if is_network_path(&folder) || (!folder.is_empty() && !roots.allow(&resolve(&base, &folder, home))) {
             return Some(outside_message(raw));
         }
     }
@@ -217,7 +222,7 @@ pub fn check_mcp_tool(tool: &str, tool_input: &serde_json::Value, cwd: &Path, wo
             "AI-Character 안전 규칙: GitHub에 바로 쓰는 작업({tool})은 하지 않습니다. 바꿀 내용을 결과에 적어 사용자에게 직접 하도록 요청하세요."
         ));
     }
-    let roots = [workspace.to_path_buf(), temp.to_path_buf()];
+    let roots = Roots::new([workspace, temp]);
     let mut strings = Vec::new();
     collect_strings(tool_input, &mut strings);
     for raw in strings {
@@ -227,7 +232,7 @@ pub fn check_mcp_tool(tool: &str, tool_input: &serde_json::Value, cwd: &Path, wo
             None if is_network_path(text) || starts_like_path(text) => text.to_string(),
             None => continue,
         };
-        if is_network_path(&path_text) || !allowed(&resolve(cwd, &path_text, home), &roots) {
+        if is_network_path(&path_text) || !roots.allow(&resolve(cwd, &path_text, home)) {
             return Some(outside_message(text));
         }
     }
@@ -332,11 +337,10 @@ pub fn check_shell(command: &str, cwd: &Path, workspace: &Path, temp: &Path, hom
             "AI-Character 안전 규칙: 사용자 폴더나 시작 프로그램을 건드릴 수 있는 명령이라 막았습니다 ({found}). 작업 폴더 안에서만 작업하세요."
         ));
     }
-    let mut roots = vec![workspace.to_path_buf(), temp.to_path_buf()];
-    roots.extend(extra_roots.iter().cloned());
+    let roots = Roots::new([workspace, temp].into_iter().chain(extra_roots.iter().map(PathBuf::as_path)));
     for word in path_like_words(command) {
         // Network paths (\\server\share) are always outside, and never looked at.
-        if is_network_path(&word) || !allowed(&resolve(cwd, &word, home), &roots) {
+        if is_network_path(&word) || !roots.allow(&resolve(cwd, &word, home)) {
             return Some(outside_message(&word));
         }
     }

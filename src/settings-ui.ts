@@ -37,6 +37,7 @@ import {
   setAppPreferences,
   getUsageSnapshot,
   getAgentLogins,
+  AGENT_LABELS,
   getLastAgentLogins,
   type AgentLogin,
   type AgentKind,
@@ -112,9 +113,14 @@ export function initializeSettingsUi(): void {
     return;
   }
 
-  const launcher = makeButton("설정", "ai-settings-button");
+  const launcher = makeButton("", "ai-settings-button");
   launcher.id = "ai-settings-button";
   launcher.title = "설정";
+  launcher.dataset.icon = "⚙";
+  const launcherLabel = document.createElement("span");
+  launcherLabel.className = "toolbar-label";
+  launcherLabel.textContent = "설정";
+  launcher.append(launcherLabel);
   launcher.setAttribute("aria-label", "설정 열기");
 
   const overlay = document.createElement("section");
@@ -1215,17 +1221,6 @@ export function initializeSettingsUi(): void {
     }
   }
 
-  /** The chat's title from saved history, so a checkpoint reads as "대화 \"로그인 버튼 수정\"". */
-  function chatTitleFor(conversationId: string): string | null {
-    try {
-      const raw = localStorage.getItem("ai-character-chat-history-v1");
-      const snapshot = raw ? (JSON.parse(raw) as { conversations?: Array<{ id?: string; title?: string }> }) : null;
-      return snapshot?.conversations?.find((item) => item.id === conversationId)?.title ?? null;
-    } catch {
-      return null;
-    }
-  }
-
   function checkpointPurpose(record: CheckpointRecord): string {
     return record.purpose === "restore_safety" ? "되돌리기 직전 상태" : "AI 변경 적용 직전 상태";
   }
@@ -1240,6 +1235,14 @@ export function initializeSettingsUi(): void {
       return;
     }
 
+    // Chat titles from saved history, so a checkpoint reads as 대화 "로그인 버튼 수정".
+    let chatTitles = new Map<string, string>();
+    try {
+      chatTitles = createBrowserHistoryStore().conversationTitles();
+    } catch {
+      // Without history the rows just leave the title out.
+    }
+
     for (const record of records) {
       const row = document.createElement("article");
       row.className = "ai-checkpoint-history-row";
@@ -1251,7 +1254,7 @@ export function initializeSettingsUi(): void {
       const meta = document.createElement("div");
       meta.className = "ai-checkpoint-history-meta";
       const created = new Date(record.createdAt).toLocaleString();
-      const conversationTitle = record.conversationId ? chatTitleFor(record.conversationId) : null;
+      const conversationTitle = record.conversationId ? chatTitles.get(record.conversationId) ?? null : null;
       const conversation = conversationTitle ? ` · 대화 "${conversationTitle}"` : "";
       meta.textContent = `${created} · 파일 ${record.changedCount}개${conversation}`;
       // The raw ID only as a tooltip, for support.
@@ -1438,7 +1441,8 @@ export function initializeSettingsUi(): void {
 
   let lastLoginSnapshot: Parameters<typeof renderLoginStatus>[0] = {};
 
-  async function refreshLoginStatus(force = false): Promise<void> {
+  /** Redraws the login rows; returns the sign-in states, or null if they could not be read. */
+  async function refreshLoginStatus(force = false): Promise<AgentLogin[] | null> {
     try {
       // Show the last answer at once; asking Cursor and Antigravity again can take seconds.
       const last = await getLastAgentLogins().catch(() => null);
@@ -1478,12 +1482,14 @@ export function initializeSettingsUi(): void {
       };
       lastLoginSnapshot = snapshot;
       renderLoginStatus(snapshot, logins);
+      return logins;
     } catch (error) {
       loginStatusList.replaceChildren();
       const failure = document.createElement("div");
       failure.className = "ai-settings-help";
       failure.textContent = `로그인 상태를 읽지 못했습니다: ${errorText(error)}`;
       loginStatusList.append(failure);
+      return null;
     }
   }
 
@@ -1508,12 +1514,11 @@ export function initializeSettingsUi(): void {
       hint?: string | null;
     }>;
   }, logins: AgentLogin[]): void {
-    const agentLabels: Record<AgentKind, string> = { claude: "Claude", codex: "Codex", cursor: "Cursor", antigravity: "Antigravity" };
     const rows: HTMLElement[] = [];
 
-    for (const id of Object.keys(agentLabels) as AgentKind[]) {
+    for (const id of Object.keys(AGENT_LABELS) as AgentKind[]) {
       const login = logins.find((item) => item.id === id);
-      const label = agentLabels[id];
+      const label = AGENT_LABELS[id];
       const plan = (snapshot.providers ?? []).find((item) => item.id === id)?.account?.plan;
       const detail = [login?.detail ?? "로그인 상태를 확인하지 못했습니다.", plan && `요금제 ${plan}`]
         .filter(Boolean)
@@ -1597,9 +1602,12 @@ export function initializeSettingsUi(): void {
     message.textContent = `${label} 로그인을 시작합니다…`;
     try {
       message.textContent = `${await launchAgentLogin(agent)} 완료되면 아래 상태가 연결됨으로 바뀝니다.`;
+      // The app re-checks on its own for a few minutes after a login starts, so no force here;
+      // stop as soon as this program reports signed in.
       for (let i = 0; i < 12; i += 1) {
         await new Promise((resolve) => window.setTimeout(resolve, 2500));
-        await refreshLoginStatus(true);
+        const logins = await refreshLoginStatus();
+        if (logins?.find((item) => item.id === agent)?.loggedIn) break;
       }
     } catch (error) {
       message.textContent = errorText(error);

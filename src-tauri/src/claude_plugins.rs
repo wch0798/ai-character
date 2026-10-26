@@ -6,8 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tauri::AppHandle;
 use tauri_plugin_opener::OpenerExt;
 
@@ -43,9 +42,7 @@ pub struct ClaudePluginSnapshot {
 }
 
 fn claude_home() -> Option<PathBuf> {
-    std::env::var_os("USERPROFILE")
-        .or_else(|| std::env::var_os("HOME"))
-        .map(|home| PathBuf::from(home).join(".claude"))
+    crate::agent_core::user_home_dir().map(|home| home.join(".claude"))
 }
 
 fn claude_binary() -> Result<PathBuf, String> {
@@ -60,37 +57,16 @@ fn claude_binary() -> Result<PathBuf, String> {
 
 fn run_claude(args: &[&str], timeout: Duration) -> Result<String, String> {
     let binary = claude_binary()?;
-    let mut command = command_with_args(&binary, args);
-    command.stdout(Stdio::piped()).stderr(Stdio::piped());
-    command.stdin(Stdio::null());
-    let mut child = command
-        .spawn()
-        .map_err(|error| format!("Claude 플러그인 명령 실패: {error}"))?;
-    let stdout_reader = child.stdout.take().map(process_util::spawn_reader);
-    let stderr_reader = child.stderr.take().map(process_util::spawn_reader);
-    let started = Instant::now();
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break status,
-            Ok(None) if started.elapsed() < timeout => std::thread::sleep(Duration::from_millis(100)),
-            Ok(None) => {
-                // Left running, it would keep working (and holding files) after we gave up.
-                process_util::kill_tree(&mut child);
-                let _ = child.wait();
-                return Err("Claude 플러그인 명령이 너무 오래 걸려 중단했습니다.".to_string());
-            }
-            Err(error) => return Err(format!("Claude 플러그인 명령 실패: {error}")),
-        }
-    };
-    let deadline = Instant::now() + process_util::PIPE_GRACE;
-    let collect = |reader: Option<(process_util::SharedOutput, std::thread::JoinHandle<()>)>| {
-        reader
-            .map(|(output, handle)| process_util::collect_until(&output, handle, deadline))
-            .unwrap_or_default()
-    };
-    let stdout = String::from_utf8_lossy(&collect(stdout_reader)).trim().to_string();
-    let stderr = String::from_utf8_lossy(&collect(stderr_reader)).trim().to_string();
-    if status.success() {
+    let run = process_util::run_prepared(command_with_args(&binary, args), timeout);
+    if let Some(error) = run.spawn_error {
+        return Err(format!("Claude 플러그인 명령 실패: {error}"));
+    }
+    if run.timed_out {
+        return Err("Claude 플러그인 명령이 너무 오래 걸려 중단했습니다.".to_string());
+    }
+    let stdout = run.stdout.trim().to_string();
+    let stderr = run.stderr.trim().to_string();
+    if run.success {
         return Ok(if stdout.is_empty() { stderr } else { stdout });
     }
     let detail = if stderr.is_empty() { stdout } else { stderr };
@@ -482,14 +458,7 @@ fn write_json_object(path: &Path, value: &Value) -> Result<(), String> {
     }
     let raw = serde_json::to_string_pretty(value)
         .map_err(|error| format!("설정 저장 실패: {error}"))?;
-    let mut temp = path.as_os_str().to_owned();
-    temp.push(".ai-character.tmp");
-    let temp = PathBuf::from(temp);
-    std::fs::write(&temp, raw).map_err(|error| format!("설정 저장 실패: {error}"))?;
-    std::fs::rename(&temp, path).map_err(|error| {
-        let _ = std::fs::remove_file(&temp);
-        format!("설정 저장 실패: {error}")
-    })
+    crate::text_files::write_atomic(path, raw.as_bytes()).map_err(|error| format!("설정 저장 실패: {error}"))
 }
 
 /// Marketplace names become folders under ~/.claude/plugins/marketplaces, which is emptied
@@ -748,24 +717,15 @@ fn offline_snapshot() -> ClaudePluginSnapshot {
     }
 }
 
-/// Plugin commands run the Claude CLI (and Git) for up to minutes, so they stay off the UI thread.
-async fn off_ui_thread<T: Send + 'static>(
-    work: impl FnOnce() -> Result<T, String> + Send + 'static,
-) -> Result<T, String> {
-    tauri::async_runtime::spawn_blocking(work)
-        .await
-        .map_err(|error| format!("플러그인 작업 실행 실패: {error}"))?
-}
-
 #[tauri::command]
 pub async fn get_claude_plugins(live: Option<bool>) -> Result<ClaudePluginSnapshot, String> {
-    off_ui_thread(move || {
+    process_util::off_ui_thread("플러그인 작업 실행 실패", move || {
         if live.unwrap_or(false) {
             return snapshot_from_cli().or_else(|_| Ok(offline_snapshot()));
         }
         Ok(offline_snapshot())
     })
-    .await
+    .await?
 }
 
 fn connect_marketplace(name: &str, repo: &str) -> Result<String, String> {
@@ -785,7 +745,7 @@ fn connect_marketplace(name: &str, repo: &str) -> Result<String, String> {
 
 #[tauri::command]
 pub async fn add_claude_plugin_marketplace(source: String) -> Result<String, String> {
-    off_ui_thread(move || add_marketplace(&source)).await
+    process_util::off_ui_thread("플러그인 작업 실행 실패", move || add_marketplace(&source)).await?
 }
 
 fn add_marketplace(source: &str) -> Result<String, String> {
@@ -808,7 +768,7 @@ fn add_marketplace(source: &str) -> Result<String, String> {
 
 #[tauri::command]
 pub async fn install_claude_plugin(spec: String) -> Result<String, String> {
-    off_ui_thread(move || install_plugin(&spec)).await
+    process_util::off_ui_thread("플러그인 작업 실행 실패", move || install_plugin(&spec)).await?
 }
 
 fn install_plugin(spec: &str) -> Result<String, String> {

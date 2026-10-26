@@ -5,7 +5,7 @@
 
 use serde::Serialize;
 use serde_json::Value;
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -67,8 +67,7 @@ pub fn wipe_all_data(app: AppHandle) -> Result<WipeResult, String> {
     }
 
     // Logs.
-    if let Ok(dir) = app.path().app_local_data_dir() {
-        let logs = dir.join("logs");
+    if let Some(logs) = crate::system_features::log_dir(&app) {
         if logs.exists() {
             match std::fs::remove_dir_all(&logs) {
                 Ok(()) => result.removed.push("앱 기록(로그)".to_string()),

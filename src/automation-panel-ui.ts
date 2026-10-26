@@ -103,12 +103,14 @@ export function initializeAutomationPanel(options: { setChatOpen(open: boolean):
     return;
   }
 
-  const launcher = button("자동화", "");
+  const launcher = button("", "");
   launcher.id = "automation-button";
   launcher.title = BADGE_TITLES.idle;
+  launcher.dataset.icon = "⏱";
+  launcher.setAttribute("aria-label", "자동화 현황");
   const badge = el("span", "automation-badge");
   badge.dataset.state = "idle";
-  launcher.prepend(badge);
+  launcher.append(badge, el("span", "toolbar-label", "자동화"));
   usageButton.before(launcher);
 
   const panel = el("section");

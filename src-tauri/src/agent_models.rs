@@ -59,10 +59,7 @@ fn codex_models_from(cache: &Value) -> Vec<AgentModel> {
 }
 
 fn codex_models() -> Vec<AgentModel> {
-    let dir = std::env::var_os("CODEX_HOME").map(PathBuf::from).or_else(|| {
-        std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")).map(|home| PathBuf::from(home).join(".codex"))
-    });
-    let cache = dir
+    let cache = crate::codex_model::codex_home()
         .and_then(|dir| std::fs::read_to_string(dir.join("models_cache.json")).ok())
         .and_then(|text| serde_json::from_str::<Value>(&text).ok());
     match cache {
@@ -110,41 +107,50 @@ fn fetch(agent: AgentKind) -> Vec<AgentModel> {
 /// Lists change rarely and asking Cursor/Antigravity takes seconds, so an answer is reused for
 /// ten minutes unless `refresh`.
 const FRESH_FOR: Duration = Duration::from_secs(600);
-static CACHE: Mutex<Option<HashMap<&'static str, (Instant, Vec<AgentModel>)>>> = Mutex::new(None);
+/// A program that could not be asked (signed out, offline, slow) is not asked again on every
+/// menu open; it gets another try after this.
+const RETRY_AFTER: Duration = Duration::from_secs(45);
+static CACHE: Mutex<Option<HashMap<AgentKind, (Instant, Vec<AgentModel>)>>> = Mutex::new(None);
+/// One lookup per program at a time: a caller that waited takes the answer just fetched.
+static FETCHING: [Mutex<()>; 4] = [Mutex::new(()), Mutex::new(()), Mutex::new(()), Mutex::new(())];
 
-fn cache_key(agent: AgentKind) -> &'static str {
-    match agent {
-        AgentKind::Claude => "claude",
-        AgentKind::Codex => "codex",
-        AgentKind::Cursor => "cursor",
-        AgentKind::Antigravity => "antigravity",
-    }
+fn fetch_lock(agent: AgentKind) -> &'static Mutex<()> {
+    &FETCHING[match agent {
+        AgentKind::Claude => 0,
+        AgentKind::Codex => 1,
+        AgentKind::Cursor => 2,
+        AgentKind::Antigravity => 3,
+    }]
+}
+
+fn cached(agent: AgentKind, since: Option<Instant>) -> Option<Vec<AgentModel>> {
+    let cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    let (at, models) = cache.as_ref()?.get(&agent)?;
+    let max_age = if models.len() > 1 { FRESH_FOR } else { RETRY_AFTER };
+    (at.elapsed() < max_age && since.is_none_or(|since| *at >= since)).then(|| models.clone())
 }
 
 pub fn agent_models(agent: AgentKind, refresh: bool) -> Vec<AgentModel> {
-    let key = cache_key(agent);
+    let asked = Instant::now();
     if !refresh {
-        let cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some((at, models)) = cache.as_ref().and_then(|map| map.get(key)) {
-            if at.elapsed() < FRESH_FOR {
-                return models.clone();
-            }
+        if let Some(models) = cached(agent, None) {
+            return models;
         }
     }
-    let models = fetch(agent);
-    // A list with only the default entry means the program could not be asked; don't keep it.
-    if models.len() > 1 {
-        CACHE.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).insert(key, (Instant::now(), models.clone()));
+    let _fetching = fetch_lock(agent).lock().unwrap_or_else(|e| e.into_inner());
+    // Fetched by the caller this one waited for (after this call was made, for a refresh).
+    if let Some(models) = cached(agent, refresh.then_some(asked)) {
+        return models;
     }
+    let models = fetch(agent);
+    CACHE.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).insert(agent, (Instant::now(), models.clone()));
     models
 }
 
 #[tauri::command]
 pub async fn list_agent_models(agent: String, refresh: Option<bool>) -> Result<Vec<AgentModel>, String> {
     let agent = AgentKind::parse(&agent)?;
-    tauri::async_runtime::spawn_blocking(move || agent_models(agent, refresh == Some(true)))
-        .await
-        .map_err(|error| format!("모델 목록을 불러오지 못했습니다: {error}"))
+    crate::process_util::off_ui_thread("모델 목록을 불러오지 못했습니다", move || agent_models(agent, refresh == Some(true))).await
 }
 
 #[cfg(test)]

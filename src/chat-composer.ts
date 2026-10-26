@@ -1,3 +1,5 @@
+import { readJson } from "./local-store";
+
 export type KeyIntent = "submit" | "newline" | "recall-previous" | "recall-next" | "stop" | "none";
 
 export type KeyState = {
@@ -53,15 +55,6 @@ export function isNearBottom(scrollTop: number, clientHeight: number, scrollHeig
 const DRAFT_KEY = "ai-character-chat-draft";
 const SENT_KEY = "ai-character-chat-sent";
 const MAX_INPUT_HEIGHT = 168;
-
-function readJson<T>(key: string, fallback: T): T {
-  try {
-    const raw = localStorage.getItem(key);
-    return raw ? (JSON.parse(raw) as T) : fallback;
-  } catch {
-    return fallback;
-  }
-}
 
 export type Composer = {
   setBusy(busy: boolean): void;

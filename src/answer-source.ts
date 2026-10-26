@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { getAgentRuns, type AgentRunRecord } from "./agent-client";
+import { AGENT_LABELS, agentLabel, getAgentRuns, type AgentKind, type AgentRunRecord } from "./agent-client";
 
 /** Who answered a chat message and what it cost, shown under the answer. */
 export type AnswerSource = { by: string; costUsd: number };
@@ -10,13 +10,6 @@ type UsageRow = {
   costUsd: number;
   status: string;
   createdAt: number;
-};
-
-const AGENT_NAMES: Record<string, string> = {
-  claude: "Claude",
-  codex: "Codex",
-  cursor: "Cursor",
-  antigravity: "Antigravity",
 };
 
 /**
@@ -30,10 +23,10 @@ export function summarizeAnswerSource(rows: UsageRow[], runs: AgentRunRecord[], 
   const add = (name: string) => {
     if (name && !names.includes(name)) names.push(name);
   };
-  for (const run of agentRuns) add([AGENT_NAMES[run.agent] ?? run.agent, run.model].filter(Boolean).join(" "));
+  for (const run of agentRuns) add([agentLabel(run.agent), run.model].filter(Boolean).join(" "));
   for (const row of usage) {
     // An agent run also logs its own usage row; name it once.
-    const agent = AGENT_NAMES[row.provider.toLowerCase()];
+    const agent = AGENT_LABELS[row.provider.toLowerCase() as AgentKind];
     if (agent && names.some((name) => name.startsWith(agent))) continue;
     if (row.status === "ok") add(row.model ? `${row.provider} ${row.model}` : row.provider);
   }

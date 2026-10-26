@@ -106,9 +106,7 @@ fn agent_status(agent: AgentKind) -> RuntimeComponentStatus {
 /// Looking up each program can start PowerShell and other tools, so the UI asks off its thread.
 #[tauri::command]
 pub async fn get_runtime_setup_status() -> Result<RuntimeSetupStatus, String> {
-    tauri::async_runtime::spawn_blocking(runtime_setup_status)
-        .await
-        .map_err(|error| format!("설치 상태 확인 실패: {error}"))
+    crate::process_util::off_ui_thread("설치 상태 확인 실패", runtime_setup_status).await
 }
 
 pub fn runtime_setup_status() -> RuntimeSetupStatus {

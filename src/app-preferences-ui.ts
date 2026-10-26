@@ -17,9 +17,9 @@ import {
   setAutostart,
   setToggleShortcut,
 } from "./system-client";
+import { writeStored } from "./local-store";
 import { PERSONA_KEY, PERSONA_LIMIT, readPersona } from "./persona";
-
-export const PERSONA_EVENT = "ai-character:persona-changed";
+import { errorText, help, sectionShell, type MakeButton } from "./settings-controls";
 
 export const PERSONA_PRESETS: Array<{ label: string; text: string }> = [
   { label: "친절한 비서", text: "친절하고 차분한 비서처럼 존댓말로 답합니다. 어려운 말은 쉽게 풀어서 설명합니다." },
@@ -29,13 +29,7 @@ export const PERSONA_PRESETS: Array<{ label: string; text: string }> = [
 
 function savePersona(text: string): void {
   const clean = text.trim().slice(0, PERSONA_LIMIT);
-  try {
-    if (clean) localStorage.setItem(PERSONA_KEY, clean);
-    else localStorage.removeItem(PERSONA_KEY);
-  } catch {
-    // Kept for this session only.
-  }
-  window.dispatchEvent(new Event(PERSONA_EVENT));
+  writeStored(PERSONA_KEY, clean || null);
 }
 
 /** "ctrl+shift+KeyK" style text from a key press, or null while only modifiers are held. */
@@ -56,21 +50,6 @@ export function displayShortcut(text: string): string {
       return key.length === 1 ? key.toUpperCase() : key.charAt(0).toUpperCase() + key.slice(1);
     })
     .join(" + ");
-}
-
-type MakeButton = (label: string, className?: string) => HTMLButtonElement;
-
-function heading(text: string): HTMLHeadingElement {
-  const h = document.createElement("h3");
-  h.textContent = text;
-  return h;
-}
-
-function help(text: string): HTMLDivElement {
-  const div = document.createElement("div");
-  div.className = "ai-settings-help";
-  div.textContent = text;
-  return div;
 }
 
 function choiceRow<T extends string>(label: string, options: Array<[T, string]>, current: T, onPick: (value: T) => void): HTMLElement {
@@ -111,13 +90,10 @@ export type AppPreferencesSections = {
 
 export function createAppPreferencesSections(makeButton: MakeButton, setMessage: (text: string) => void): AppPreferencesSections {
   installErrorLogging();
-  const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
   // ----- 화면 -----
-  const screen = document.createElement("section");
-  screen.className = "ai-settings-section";
+  const screen = sectionShell("화면").section;
   screen.append(
-    heading("화면"),
     choiceRow<ThemeChoice>("테마", [["system", "Windows 따라가기"], ["light", "밝게"], ["dark", "어둡게"]], readTheme(), setTheme),
     choiceRow<FontScaleChoice>(
       "글자 크기",
@@ -132,8 +108,7 @@ export function createAppPreferencesSections(makeButton: MakeButton, setMessage:
   );
 
   // ----- 캐릭터 말투 -----
-  const persona = document.createElement("section");
-  persona.className = "ai-settings-section";
+  const persona = sectionShell("캐릭터 성격·말투").section;
   const personaInput = document.createElement("textarea");
   personaInput.className = "ai-settings-textarea";
   personaInput.rows = 3;
@@ -173,7 +148,6 @@ export function createAppPreferencesSections(makeButton: MakeButton, setMessage:
   });
   presets.append(clearPersona);
   persona.append(
-    heading("캐릭터 성격·말투"),
     help("캐릭터가 어떤 성격과 말투로 답할지 적어 주세요. 사실과 작업 내용은 그대로이고 말투만 바뀝니다."),
     presets,
     personaInput,
@@ -181,8 +155,7 @@ export function createAppPreferencesSections(makeButton: MakeButton, setMessage:
   );
 
   // ----- Windows 시작·단축키 -----
-  const system = document.createElement("section");
-  system.className = "ai-settings-section";
+  const system = sectionShell("시작·단축키").section;
   const autostartLabel = document.createElement("label");
   autostartLabel.className = "ai-settings-checkbox";
   const autostartBox = document.createElement("input");
@@ -262,15 +235,13 @@ export function createAppPreferencesSections(makeButton: MakeButton, setMessage:
   });
   shortcutRow.append(shortcutName, shortcutField, resetShortcut);
   system.append(
-    heading("시작·단축키"),
     autostartLabel,
     shortcutRow,
     help("단축키는 Ctrl·Alt·Shift 중 하나 이상과 다른 키를 함께 눌러 정합니다. 다른 프로그램이 쓰는 조합이면 알려 드립니다.")
   );
 
   // ----- 진단 -----
-  const diagnostics = document.createElement("section");
-  diagnostics.className = "ai-settings-section";
+  const diagnostics = sectionShell("문제 해결").section;
   const copyDiagnostics = makeButton("진단 정보 복사", "ai-settings-action");
   copyDiagnostics.addEventListener("click", () => {
     copyDiagnostics.disabled = true;
@@ -292,7 +263,6 @@ export function createAppPreferencesSections(makeButton: MakeButton, setMessage:
   diagnosticsActions.className = "ai-settings-ghost-row";
   diagnosticsActions.append(copyDiagnostics, openLogs);
   diagnostics.append(
-    heading("문제 해결"),
     help("문제가 생기면 ‘진단 정보 복사’를 눌러 도움을 요청할 때 붙여 넣으세요. 앱 버전, Windows 버전, 로그인 상태, 최근 오류 기록이 들어가고 키와 비밀번호는 빠집니다."),
     diagnosticsActions
   );
