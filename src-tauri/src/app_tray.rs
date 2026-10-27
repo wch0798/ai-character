@@ -73,17 +73,105 @@ pub fn install(app: &mut App) -> tauri::Result<()> {
     Ok(())
 }
 
-fn show_main(app: &AppHandle) {
+/// Tells the page whether it is on screen: WebView2 does not always send `visibilitychange`
+/// when the window comes back, and the character must start drawing again.
+pub const VISIBILITY_EVENT: &str = "main-window-visibility";
+
+/// Brings the character back: out of the taskbar, onto a screen, in front, drawing again.
+pub(crate) fn show_main(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.unminimize();
         let _ = window.show();
-        let _ = window.set_focus();
+        bring_onto_a_screen(&window);
         let _ = window.set_always_on_top(true);
+        let _ = window.set_focus();
+        let _ = window.emit(VISIBILITY_EVENT, true);
     }
 }
 
-fn hide_main(app: &AppHandle) {
+pub(crate) fn hide_main(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.hide();
+        let _ = window.emit(VISIBILITY_EVENT, false);
+    }
+}
+
+/// The show/hide shortcut. A minimized window counts as hidden: Windows reports it visible,
+/// so hiding it again would leave the user with nothing to bring back.
+///
+/// The global-hotkey callback runs inside its own hidden window's message handler, outside the
+/// event loop's normal flow. Showing or focusing a window there can deliver a nested WM_PAINT,
+/// which trips tao's `flush_paint_messages` assertion and aborts the app, so the work is queued
+/// onto the event loop instead. (`run_on_main_thread` called from the main thread runs at once,
+/// so it is sent from another thread.)
+pub(crate) fn toggle_main(app: &AppHandle) {
+    let app = app.clone();
+    std::thread::spawn(move || {
+        let handle = app.clone();
+        let _ = app.run_on_main_thread(move || toggle_now(&handle));
+    });
+}
+
+fn toggle_now(app: &AppHandle) {
+    let Some(window) = app.get_webview_window("main") else { return };
+    let visible = window.is_visible().unwrap_or(false);
+    let minimized = window.is_minimized().unwrap_or(false);
+    if should_hide(visible, minimized) {
+        hide_main(app);
+    } else {
+        show_main(app);
+    }
+}
+
+fn should_hide(visible: bool, minimized: bool) -> bool {
+    visible && !minimized
+}
+
+/// A window left on a monitor that is gone (unplugged, resolution changed) is moved to the
+/// middle of the primary screen.
+fn bring_onto_a_screen(window: &tauri::WebviewWindow) {
+    let (Ok(position), Ok(size), Ok(monitors)) = (window.outer_position(), window.outer_size(), window.available_monitors()) else {
+        return;
+    };
+    let center = (position.x + size.width as i32 / 2, position.y + size.height as i32 / 2);
+    let screens: Vec<(i32, i32, u32, u32)> = monitors
+        .iter()
+        .map(|monitor| (monitor.position().x, monitor.position().y, monitor.size().width, monitor.size().height))
+        .collect();
+    if point_on_a_screen(center, &screens) {
+        return;
+    }
+    if let Ok(Some(primary)) = window.primary_monitor() {
+        let (screen, area) = (primary.position(), primary.size());
+        let x = screen.x + (area.width.saturating_sub(size.width) / 2) as i32;
+        let y = screen.y + (area.height.saturating_sub(size.height) / 2) as i32;
+        let _ = window.set_position(tauri::PhysicalPosition::new(x, y));
+    }
+}
+
+fn point_on_a_screen(point: (i32, i32), screens: &[(i32, i32, u32, u32)]) -> bool {
+    screens.iter().any(|&(x, y, width, height)| {
+        point.0 >= x && point.0 < x + width as i32 && point.1 >= y && point.1 < y + height as i32
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shortcut_brings_back_a_minimized_window() {
+        assert!(should_hide(true, false));
+        assert!(!should_hide(true, true));
+        assert!(!should_hide(false, false));
+    }
+
+    #[test]
+    fn finds_windows_left_off_screen() {
+        let screens = [(0, 0, 1920, 1080), (1920, 0, 2560, 1440)];
+        assert!(point_on_a_screen((100, 100), &screens));
+        assert!(point_on_a_screen((3000, 1300), &screens));
+        assert!(!point_on_a_screen((5000, 200), &screens));
+        assert!(!point_on_a_screen((100, -400), &screens));
     }
 }

@@ -270,10 +270,6 @@ async fn get_process_stats() -> Result<Vec<f64>, String> {
     result
 }
 
-fn should_show_window(is_visible: bool) -> bool {
-    !is_visible
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -370,7 +366,6 @@ pub fn run() {
             let _ = app;
             #[cfg(desktop)]
             {
-                use tauri::Manager;
                 use tauri_plugin_global_shortcut::ShortcutState;
 
                 // The shortcut itself is registered after the plugin is in place, from settings
@@ -381,26 +376,7 @@ pub fn run() {
                                     return;
                                 }
 
-                                let Some(window) = app.get_webview_window("main") else {
-                                    eprintln!("main window를 찾지 못했습니다.");
-                                    return;
-                                };
-
-                                match window.is_visible() {
-                                    Ok(is_visible) => {
-                                        if should_show_window(is_visible) {
-                                            if let Err(error) = window.show() {
-                                                eprintln!("창 표시 실패: {}", error);
-                                            }
-                                        } else if let Err(error) = window.hide() {
-                                            eprintln!("창 숨김 실패: {}", error);
-                                        }
-                                    }
-
-                                    Err(error) => {
-                                        eprintln!("창 상태 확인 실패: {}", error);
-                                    }
-                                }
+                                crate::app_tray::toggle_main(app);
                             })
                             .build();
                 match app.handle().plugin(shortcut) {

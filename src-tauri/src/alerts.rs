@@ -112,15 +112,19 @@ pub fn notify(title: &str, body: &str) {
     if !alert_settings().desktop {
         return;
     }
-    if let Some(app) = APP.get() {
-        let body: String = body.chars().take(240).collect();
+    let Some(app) = APP.get() else { return };
+    let title = title.to_string();
+    let body: String = body.chars().take(240).collect();
+    // Off the UI thread: the WinRT toast calls can pump window messages, and a nested WM_PAINT
+    // inside a command handler aborts the app (tao's flush_paint_messages assertion).
+    std::thread::spawn(move || {
         // Windows: send as "AI Character" instead of the plugin's borrowed PowerShell identity.
         #[cfg(windows)]
-        if crate::windows_toast::show(title, &body) {
+        if crate::windows_toast::show(&title, &body) {
             return;
         }
         let _ = app.notification().builder().title(title).body(body).show();
-    }
+    });
 }
 
 fn level_rank(level: &str) -> u8 {

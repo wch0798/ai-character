@@ -549,6 +549,9 @@ const ROLE_INSTRUCTIONS: Record<TaskRole, string> = {
 };
 
 /** Workers run under the app's time limit; one slow test (65,000 mkdirs) used it all up once. */
+const PLAN_JSON_RETRY_NOTE =
+  "Your previous plan was not valid JSON. Reply with exactly one JSON object: double-quoted keys and strings, no comments, no trailing commas, no text outside it. The parser said:";
+
 const LONG_COMMAND_RULE =
   "Time limit: the whole task must finish well within the app's time limit. Keep every command under about 5 minutes: scale stress tests and benchmarks down (thousands, not tens of thousands of items) or give them a timeout, and do not start or wait for a command you expect to run longer. If a full-size check would take too long, run a smaller one and say what the full size would need.";
 
@@ -1631,20 +1634,29 @@ export async function runCradleOrchestration(
     }
 
     const automaticApiTargets = usableAutomaticProviders(automaticProviderStatuses, preferences);
-    const rawPlan = await runAutomaticManager(
-      session,
-      "planning",
-      createPlanningPrompt(
-        session.originalPrompt,
-        automaticCliTargets,
-        researchPromptBlock,
-        automaticApiTargets,
-        compactText(conversationContext, 2_400)
-      ),
-      preferences,
-      sensitiveAcknowledged
+    const planningPrompt = createPlanningPrompt(
+      session.originalPrompt,
+      automaticCliTargets,
+      researchPromptBlock,
+      automaticApiTargets,
+      compactText(conversationContext, 2_400)
     );
-    const parsedPlan = parseOrchestrationPlan(rawPlan);
+    const rawPlan = await runAutomaticManager(session, "planning", planningPrompt, preferences, sensitiveAcknowledged);
+    let parsedPlan: ReturnType<typeof parseOrchestrationPlan>;
+    try {
+      parsedPlan = parseOrchestrationPlan(rawPlan);
+    } catch (error) {
+      // A broken plan is the planner's slip, not the user's: ask once more for clean JSON.
+      setSessionStatus(session, "planning", "계획 형식이 잘못되어 한 번 더 요청합니다.");
+      const retryPlan = await runAutomaticManager(
+        session,
+        "planning",
+        `${planningPrompt}\n\n${PLAN_JSON_RETRY_NOTE}\n${error instanceof Error ? error.message : String(error)}`,
+        preferences,
+        sensitiveAcknowledged
+      );
+      parsedPlan = parseOrchestrationPlan(retryPlan);
+    }
     const plan = normalizePlanForAutomaticProviders(
       normalizePlanForWebFirst(parsedPlan, session.webAvailability),
       automaticApiTargets,

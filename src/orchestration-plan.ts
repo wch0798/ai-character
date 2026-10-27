@@ -44,12 +44,59 @@ function cleanJsonText(raw: string): string {
   return trimmed;
 }
 
+/**
+ * Mends what models commonly get wrong in "JSON only" answers: prose around the object,
+ * // or block comments, and trailing commas. String contents are left alone.
+ */
+export function repairJsonText(raw: string): string {
+  const start = raw.indexOf("{");
+  const end = raw.lastIndexOf("}");
+  const text = start >= 0 && end > start ? raw.slice(start, end + 1) : raw;
+  let out = "";
+  let inString = false;
+  for (let i = 0; i < text.length; i += 1) {
+    const char = text[i];
+    if (inString) {
+      out += char;
+      if (char === "\\") {
+        out += text[i + 1] ?? "";
+        i += 1;
+      } else if (char === '"') {
+        inString = false;
+      }
+      continue;
+    }
+    if (char === '"') {
+      inString = true;
+      out += char;
+    } else if (char === "/" && text[i + 1] === "/") {
+      while (i < text.length && text[i] !== "\n") i += 1;
+      out += "\n";
+    } else if (char === "/" && text[i + 1] === "*") {
+      const close = text.indexOf("*/", i + 2);
+      i = close < 0 ? text.length : close + 1;
+    } else if (char === ",") {
+      let next = i + 1;
+      while (next < text.length && /\s/.test(text[next])) next += 1;
+      if (text[next] !== "}" && text[next] !== "]") out += char;
+    } else {
+      out += char;
+    }
+  }
+  return out;
+}
+
 function parseJsonRecord(raw: string, label: string): Record<string, unknown> {
   let value: unknown;
+  const cleaned = cleanJsonText(raw);
   try {
-    value = JSON.parse(cleanJsonText(raw));
+    value = JSON.parse(cleaned);
   } catch (error) {
-    throw new Error(`${label} JSON parse failed: ${error instanceof Error ? error.message : String(error)}`);
+    try {
+      value = JSON.parse(repairJsonText(cleaned));
+    } catch {
+      throw new Error(`${label} JSON parse failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
   if (!isRecord(value)) {
     throw new Error(`${label} must be a JSON object`);

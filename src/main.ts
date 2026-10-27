@@ -1502,15 +1502,22 @@ async function startLive2D() {
     ticker.maxFPS = CHARACTER_MAX_FPS;
   }
   // Nothing on screen to draw while the window is hidden or minimized.
-  document.addEventListener("visibilitychange", () => {
+  const setDrawing = (on: boolean) => {
     for (const ticker of characterTickers) {
-      if (document.hidden) {
-        ticker.stop();
-      } else {
+      if (on) {
         ticker.start();
+      } else {
+        ticker.stop();
       }
     }
-  });
+    // WebView2 may drop the canvas while hidden: draw one frame at once, not on the next tick.
+    if (on) app.render();
+  };
+  document.addEventListener("visibilitychange", () => setDrawing(!document.hidden));
+  // WebView2 does not always send visibilitychange when the window comes back, which left an
+  // empty, see-through window after Ctrl+Shift+Space. The app says so itself (app_tray.rs).
+  void listen<boolean>("main-window-visibility", (event) => setDrawing(event.payload)).catch(() => undefined);
+  window.addEventListener("focus", () => setDrawing(true));
 
   // WKWebView에서 createImageBitmap/워커 디코드가 실패해 텍스처가 검게 나오는 문제 방지
   if (loadTextures?.config) {
