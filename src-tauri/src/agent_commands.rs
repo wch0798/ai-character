@@ -820,11 +820,12 @@ where
         )?;
         let saved_binary = settings.agent_path(agent).map(PathBuf::as_path);
         let binary_path = resolve_agent_binary(agent, saved_binary)?;
-        let timeout = Duration::from_secs(
-            timeout_seconds
-                .unwrap_or(settings.timeout_seconds)
-                .clamp(10, 3600),
-        );
+        // 0 = no time limit: file work is never cut off mid-way; the user sees the estimate and
+        // stops or skips it instead.
+        let timeout = match timeout_seconds.unwrap_or(settings.timeout_seconds) {
+            0 => Duration::MAX,
+            seconds => Duration::from_secs(seconds.clamp(10, 3600)),
+        };
 
         let coder_worktree = crate::coder_worktree::is_conversation_worktree(&working_dir);
         let managed_workspace = is_conversation_workspace(&working_dir) || coder_worktree;

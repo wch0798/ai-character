@@ -71,6 +71,12 @@ function boundedText(value: unknown, label: string, max: number): string {
   return clean;
 }
 
+/** A planner estimate in whole minutes (1–480), or undefined when missing or not a number. */
+function estimateMinutes(value: unknown): number | undefined {
+  const minutes = typeof value === "number" ? value : typeof value === "string" ? Number(value) : NaN;
+  return Number.isFinite(minutes) && minutes > 0 ? Math.min(480, Math.max(1, Math.round(minutes))) : undefined;
+}
+
 function parseTask(raw: unknown, index: number): OrchestrationTaskSpec {
   if (!isRecord(raw)) {
     throw new Error(`task ${index + 1} must be an object`);
@@ -116,6 +122,7 @@ function parseTask(raw: unknown, index: number): OrchestrationTaskSpec {
     dependsOn,
     mode: role === "coder" ? "modify" : role === "tester" || role === "planner" ? "analyze" : mode,
     role: role as TaskRole,
+    estimateMinutes: estimateMinutes(raw.estimateMinutes),
   };
 }
 

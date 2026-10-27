@@ -42,10 +42,12 @@ export function formatChatProgress(view: ChatProgressView): string {
   const seconds = Math.max(0, Math.round(view.elapsedMs / 1000));
   const time = seconds > 0 ? ` · ${seconds}초` : "";
   const activity = view.activity ? ` · ${view.activity}` : "";
+  // File work has no time limit: after a long while it says so and keeps going.
+  const long = view.kind !== "chat" && seconds >= 20 * 60 ? " · 오래 걸리는 중 (계속 진행합니다)" : "";
   if (view.percent == null) {
-    return `${view.label}${time}${activity}`;
+    return `${view.label}${time}${long}${activity}`;
   }
-  return `${view.label} ${view.percent}%${time}${activity}`;
+  return `${view.label} ${view.percent}%${time}${long}${activity}`;
 }
 
 export function initializeChatProgressUi(): void {

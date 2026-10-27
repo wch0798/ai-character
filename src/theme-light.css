@@ -1231,3 +1231,6 @@
   background: rgb(231, 233, 239);
   color: rgb(32, 42, 59)
 }
+:root[data-theme="light"] .ai-cradle-task-timing {
+  color: rgba(33, 47, 69, 0.85)
+}

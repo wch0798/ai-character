@@ -331,3 +331,20 @@ select {
     padding: 0 8px;
   }
 }
+
+/* CRADLE task: estimate, elapsed time, and skip / stop while it runs. */
+.ai-cradle-task-timing {
+  margin-top: 5px;
+  font-size: 11px;
+  color: rgba(200, 214, 236, 0.85);
+}
+
+.ai-cradle-task-timing.is-long > span {
+  color: rgb(255, 201, 116);
+}
+
+.ai-cradle-task-controls {
+  display: flex;
+  gap: 6px;
+  margin-top: 6px;
+}

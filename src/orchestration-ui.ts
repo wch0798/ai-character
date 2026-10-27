@@ -3,6 +3,7 @@ import { safeConfirm } from "./safe-confirm";
 import { setWorkLogStatus, setWorkLogTechnical } from "./work-log-store";
 import {
   cancelCradleOrchestration,
+  skipCradleTask,
   fallbackManagerWebToCli,
   fallbackWebTaskToCli,
   getActiveCradleSession,
@@ -76,6 +77,21 @@ const STATUS_LABELS: Record<CradleTaskState["status"], string> = {
 
 function isWebTarget(target: OrchestrationTarget): target is WebAgentTarget {
   return target === "claude_web" || target === "chatgpt_web" || target === "gemini_web";
+}
+
+/** "예상 약 10분 · 경과 12분", or just the elapsed time when the planner gave no estimate. */
+export function taskTimingText(startedAt: number, estimateMinutes: number | undefined, now = Date.now()): string {
+  const elapsed = Math.max(0, Math.floor((now - startedAt) / 60_000));
+  const spent = elapsed < 1 ? "방금 시작" : `경과 ${elapsed}분`;
+  const timing = estimateMinutes ? `예상 약 ${estimateMinutes}분 · ${spent}` : spent;
+  return taskRunsLong(startedAt, estimateMinutes, now) ? `${timing} · 예상보다 오래 걸리는 중 (계속 진행합니다)` : timing;
+}
+
+/** Past the estimate (with some slack), or 20 minutes without one. Only a notice: the work goes
+ * on, and the user hears about a failure only when one really happens. */
+export function taskRunsLong(startedAt: number, estimateMinutes: number | undefined, now = Date.now()): boolean {
+  const limitMinutes = estimateMinutes ? Math.max(estimateMinutes * 1.5, estimateMinutes + 5) : 20;
+  return now - startedAt > limitMinutes * 60_000;
 }
 
 function button(label: string, className = "ai-cradle-action"): HTMLButtonElement {
@@ -159,6 +175,16 @@ export function initializeCradleOrchestrationUi(): void {
   if (document.querySelector("#ai-cradle-panel")) {
     return;
   }
+  const paintTiming = (timing: HTMLElement) => {
+    const estimate = timing.dataset.estimate ? Number(timing.dataset.estimate) : undefined;
+    const text = timing.firstElementChild as HTMLElement | null;
+    const startedAt = Number(timing.dataset.startedAt);
+    if (text) text.textContent = `⏱ ${taskTimingText(startedAt, estimate)}`;
+    timing.classList.toggle("is-long", taskRunsLong(startedAt, estimate));
+  };
+  window.setInterval(() => {
+    document.querySelectorAll<HTMLElement>(".ai-cradle-task-timing").forEach(paintTiming);
+  }, 15_000);
 
   const chatPanel = document.querySelector<HTMLElement>("#chat-panel");
   const chatForm = document.querySelector<HTMLFormElement>("#chat-form");
@@ -608,6 +634,37 @@ export function initializeCradleOrchestrationUi(): void {
     meta.textContent = `${role}${FRIENDLY_TARGETS[task.target]} · ${STATUS_LABELS[task.status]}`;
     taskHeader.append(label, meta);
     card.append(taskHeader);
+
+    // A running task shows its estimate and elapsed time (updated by the timer below) and,
+    // all the while, a way to skip it or stop everything. Nothing is cut off on its own and
+    // nothing asks; the user only hears about real errors.
+    if (task.status === "running" && task.startedAt) {
+      const timing = document.createElement("div");
+      timing.className = "ai-cradle-task-timing";
+      timing.dataset.startedAt = String(task.startedAt);
+      if (task.estimateMinutes) timing.dataset.estimate = String(task.estimateMinutes);
+      const text = document.createElement("span");
+      const actions = document.createElement("div");
+      actions.className = "ai-cradle-task-controls";
+      const skip = button("이 작업 건너뛰기", "ai-cradle-action ai-cradle-secondary");
+      skip.hidden = !task.workerTaskId;
+      skip.title = "이 작업만 멈추고 다음 작업으로 넘어갑니다. 지금까지 고친 내용은 변경 검토 화면에 남습니다.";
+      skip.addEventListener("click", () => {
+        skip.disabled = true;
+        void skipCradleTask(task.id).catch((error) => {
+          skip.disabled = false;
+          setMessage(`건너뛰지 못했습니다: ${errorText(error)}`);
+        });
+      });
+      const stopAll = button("전체 중지", "ai-cradle-action ai-cradle-secondary");
+      stopAll.addEventListener("click", () => {
+        void cancelCradleOrchestration(session.id).catch((error) => setMessage(`협업 중지 실패: ${errorText(error)}`));
+      });
+      actions.append(skip, stopAll);
+      timing.append(text, actions);
+      card.append(timing);
+      paintTiming(timing);
+    }
 
     if (task.status === "waiting_web" && isWebTarget(task.target)) {
       card.append(renderWebHandoff(session, task));

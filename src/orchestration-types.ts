@@ -22,6 +22,8 @@ export type OrchestrationTaskSpec = {
   dependsOn: string[];
   mode: "analyze" | "modify";
   role?: TaskRole;
+  /** The planner's estimate in minutes, shown next to the elapsed time. */
+  estimateMinutes?: number;
 };
 
 export type OrchestrationPlan = {
@@ -42,6 +44,14 @@ export type CradleTaskState = OrchestrationTaskSpec & {
   output: string | null;
   error: string | null;
   fallbackCount: number;
+  /** Set when the task ran out of time once and was resumed in the same work copy. */
+  resumedAfterTimeout?: boolean;
+  /** When the current run started (ms), for "예상 10분 · 경과 12분". */
+  startedAt?: number;
+  /** The program run doing this task, so the user can skip it. */
+  workerTaskId?: string;
+  /** The user chose to skip it: what it finished is kept and the session goes on. */
+  skipRequested?: boolean;
   fallbackFrom: OrchestrationTarget | null;
   fallbackReason: string | null;
   handoffPrompt: string | null;

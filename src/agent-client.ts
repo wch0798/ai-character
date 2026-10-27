@@ -724,7 +724,8 @@ export async function askAgentCompat(
       agent,
       prompt,
       conversationId: conversationId ?? null,
-      timeoutSeconds: preferences.timeoutSeconds,
+      // File work has no time limit (0): the user stops it if it runs too long.
+      timeoutSeconds: kind === "file" ? 0 : preferences.timeoutSeconds,
       sensitiveAcknowledged,
       kind,
       model,

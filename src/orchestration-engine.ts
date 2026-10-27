@@ -25,6 +25,7 @@ import {
   mergeCoderWorktree,
   runProjectTests,
   summarizeTestRun,
+  type CoderWorktree,
   type TestRunSummary,
 } from "./cradle-workspace-client";
 import {
@@ -380,7 +381,7 @@ export function createPlanningPrompt(
     "This path is for PROJECT work only. Simple chat questions should not be planned here.",
     "Return JSON only. Do not use markdown fences or explanatory text.",
     "Schema:",
-    '{"summary":"overall plan","tasks":[{"id":"task-1","title":"short title","target":"gemini_api|openrouter_api|free_pool_api|openai_api|claude_web|chatgpt_web|gemini_web|claude|codex|cursor|antigravity","mode":"analyze|modify","role":"planner|coder|reviewer|tester|documenter","prompt":"self-contained worker instruction","dependsOn":[]}]}',
+    '{"summary":"overall plan","tasks":[{"id":"task-1","title":"short title","target":"gemini_api|openrouter_api|free_pool_api|openai_api|claude_web|chatgpt_web|gemini_web|claude|codex|cursor|antigravity","mode":"analyze|modify","role":"planner|coder|reviewer|tester|documenter","prompt":"self-contained worker instruction","dependsOn":[],"estimateMinutes":10}]}',
     "Rules:",
     "- Use 1 to 8 tasks. Prefer fewer workers when one worker is enough.",
     "- Give every task a role: planner (design/breakdown), coder (edits files, mode=modify, CLI only), reviewer (checks code/results), tester (runs the project's tests and analyzes failures; depend on coder tasks), documenter (writes docs/reports).",
@@ -396,6 +397,7 @@ export function createPlanningPrompt(
     `- Available automatic CLI targets: ${automaticTargets.join(", ")}. Do not assign an unavailable CLI target.`,
     "- Web agents are always human-assisted last-resort handoffs, not APIs or DOM scraping.",
     "- Make each worker prompt self-contained and short. Do not copy the full conversation into worker prompts.",
+    "- estimateMinutes: a realistic estimate of how many minutes the task needs, including its tests. The user sees it and decides whether to keep waiting, so be honest rather than optimistic.",
     "- Instruct analyze workers to return JSON only using this schema:",
     WORKER_RESULT_SCHEMA,
     "- Do not place secrets, credentials, private keys, cookies, or auth tokens in web-agent prompts.",
@@ -546,6 +548,18 @@ const ROLE_INSTRUCTIONS: Record<TaskRole, string> = {
   documenter: "write concise documentation or a change report from the results.",
 };
 
+/** Workers run under the app's time limit; one slow test (65,000 mkdirs) used it all up once. */
+const LONG_COMMAND_RULE =
+  "Time limit: the whole task must finish well within the app's time limit. Keep every command under about 5 minutes: scale stress tests and benchmarks down (thousands, not tens of thousands of items) or give them a timeout, and do not start or wait for a command you expect to run longer. If a full-size check would take too long, run a smaller one and say what the full size would need.";
+
+const RESUME_AFTER_TIMEOUT =
+  "RESUMING: an earlier attempt at this task ran out of time and was stopped. Its file changes are still in this work copy. Check what is already done (git status / git diff), do not redo it, finish only what is left, and skip or shrink whatever long-running command stopped it.";
+
+export function isTimeoutError(error: unknown): boolean {
+  const text = error instanceof Error ? error.message : String(error);
+  return /시간이 (?:설정된 )?제한을 초과|시간을 초과|timed out|timeout/i.test(text);
+}
+
 function buildWorkerPrompt(session: CradleSession, task: CradleTaskState): string {
   const researchPromptBlock = compactResearchForPrompt(session.webResearch.researchPromptBlock);
   const webModifyNotice = isWebTarget(task.target) && task.mode === "modify"
@@ -565,6 +579,8 @@ function buildWorkerPrompt(session: CradleSession, task: CradleTaskState): strin
       ? "You already have permission to read and write this conversation workspace. Do not ask for /add-dir, extra folders, or keys.env. Read .ai-character-context.md if present, then start implementing immediately."
       : "Analyze only unless a tiny temporary artifact is strictly necessary.",
     webModifyNotice,
+    isCliTarget(task.target) ? LONG_COMMAND_RULE : "",
+    task.resumedAfterTimeout ? RESUME_AFTER_TIMEOUT : "",
     "",
     "ORIGINAL USER REQUEST:",
     compactText(session.originalPrompt, 800),
@@ -1015,7 +1031,9 @@ async function runAutomaticTask(
   session: CradleSession,
   task: CradleTaskState,
   preferences: AppPreferences,
-  sensitiveAcknowledged: boolean
+  sensitiveAcknowledged: boolean,
+  /** The work copy of an attempt that ran out of time: resumed instead of made anew. */
+  resumeIn: CoderWorktree | null = null
 ): Promise<void> {
   if (!isCliTarget(task.target)) {
     throw new Error(`automatic worker cannot execute web target: ${task.target}`);
@@ -1026,15 +1044,18 @@ async function runAutomaticTask(
   dispatchSession(session);
 
   await prepareTaskContext(session, task);
-  const worktree = task.mode === "modify" && session.conversationId
+  const worktree = resumeIn ?? (task.mode === "modify" && session.conversationId
     ? await createCoderWorktree(session.conversationId, task.id)
-    : null;
+    : null);
+  task.startedAt = Date.now();
   const worker = runAgentTask({
     agent: task.target,
     prompt: buildWorkerPrompt(session, task),
     workingDir: worktree?.path ?? null,
     conversationId: session.conversationId,
-    timeoutSeconds: preferences.timeoutSeconds,
+    // No time limit (0): the task card shows the estimate and the user keeps waiting, skips
+    // the task or stops everything.
+    timeoutSeconds: 0,
     sensitiveAcknowledged,
     emitRuntimeEvents: false,
     onStream: () => {
@@ -1042,6 +1063,8 @@ async function runAutomaticTask(
     },
   });
   activeCliTaskIds.add(worker.taskId);
+  task.workerTaskId = worker.taskId;
+  dispatchSession(session);
 
   let mergeAttempted = false;
   try {
@@ -1067,6 +1090,40 @@ async function runAutomaticTask(
       task.status = "failed";
       dispatchSession(session);
       return;
+    }
+    // Out of time: the changes made so far are kept. The task resumes once in the same work
+    // copy; if it runs out again, what it finished goes to review instead of being thrown away.
+    // Skipped by the user: what it finished goes to review and the session moves on.
+    if (task.skipRequested && !isSessionCancelled(session)) {
+      activeCliTaskIds.delete(worker.taskId);
+      const merge = worktree && session.conversationId
+        ? await mergeCoderWorktree(session.conversationId, task.id).catch(() => null)
+        : null;
+      task.output = `사용자가 이 작업을 건너뛰었습니다. 그때까지 한 내용만 반영합니다.${merge ? `\n\nWORKTREE MERGE: ${merge.message}` : ""}`;
+      task.status = "completed";
+      task.fallbackReason = "사용자가 건너뜀 — 그때까지 고친 내용은 변경 검토 화면에 있습니다";
+      dispatchSession(session);
+      return;
+    }
+    // A resumed attempt that fails for any reason keeps what both attempts finished, too.
+    const keepPartial = isTimeoutError(error) || task.resumedAfterTimeout === true;
+    if (keepPartial && !isSessionCancelled(session)) {
+      activeCliTaskIds.delete(worker.taskId);
+      if (!task.resumedAfterTimeout) {
+        task.resumedAfterTimeout = true;
+        reportWork(agentLabel(task.target), `⏱ 시간 제한에 걸려 멈췄습니다. 고친 내용은 그대로 두고 남은 부분만 이어서 합니다: ${task.title}`);
+        await runAutomaticTask(session, task, preferences, sensitiveAcknowledged, worktree);
+        return;
+      }
+      if (worktree && session.conversationId) {
+        const merge = await mergeCoderWorktree(session.conversationId, task.id).catch(() => null);
+        const why = isTimeoutError(error) ? "시간 제한에 두 번 걸려" : "이어서 하던 중 오류가 나서";
+        task.output = `${why} 일부만 끝냈습니다. 지금까지 고친 내용은 변경 검토 화면에서 확인할 수 있습니다.${merge ? `\n\nWORKTREE MERGE: ${merge.message}` : ""}`;
+        task.status = "completed";
+        task.fallbackReason = "시간 제한으로 일부만 완료 — 남은 부분은 다시 요청해 주세요";
+        dispatchSession(session);
+        return;
+      }
     }
     if (worktree && session.conversationId) {
       await discardCoderWorktree(session.conversationId, task.id);
@@ -1705,7 +1762,10 @@ async function answerDirectly(
   } catch {
     automaticProviderStatuses = [];
   }
-  const composed = composeDirectPrompt(prompt, conversationContext, researchBlock, mode, runKind === "answer-only");
+  const composed = composeDirectPrompt(prompt, conversationContext, researchBlock, mode, runKind === "answer-only")
+    + (runKind === "file" ? `
+
+${LONG_COMMAND_RULE}` : "");
   const agentKind = runKind === "file" ? "file" : "chat";
   const apis = usableAutomaticProviders(automaticProviderStatuses, preferences);
   const context: AutomaticCallContext = { sessionId: conversationId ?? null, role: mode === "facts" ? "researcher" : "chat" };
@@ -1771,6 +1831,18 @@ async function answerDirectly(
   try {
     return await askAgentCompat(primary, composed, conversationId, primaryModel, agentKind);
   } catch (error) {
+    // File work that ran out of time: its changes are still in the work copy, so it resumes once.
+    if (agentKind === "file" && isTimeoutError(error)) {
+      reportWork(primaryName, "⏱ 시간 제한에 걸려 멈췄습니다. 고친 내용은 그대로 두고 남은 부분만 이어서 합니다");
+      try {
+        return await askAgentCompat(primary, `${composed}\n\n${RESUME_AFTER_TIMEOUT}`, conversationId, primaryModel, agentKind);
+      } catch (resumeError) {
+        throw new Error(
+          `${isTimeoutError(resumeError) ? "시간 제한에 두 번 걸려" : "이어서 하던 중 오류가 나서"} 작업을 일부만 끝냈습니다. ` +
+          "지금까지 고친 내용은 변경 검토 화면에 있으니 확인한 뒤 적용하고, 남은 부분은 나눠서 다시 요청해 주세요."
+        );
+      }
+    }
     if (blocked(error)) {
       throw error instanceof Error ? error : new Error(error instanceof Error ? error.message : String(error));
     }
@@ -1932,6 +2004,20 @@ export async function askCradleCompat(
   }
 
   return runCradleOrchestration(current, conversationId, history);
+}
+
+/**
+ * 이 작업 건너뛰기: stops the program working on one task. What it changed so far is kept for
+ * review, and the session goes on with the next tasks.
+ */
+export async function skipCradleTask(taskId: string): Promise<void> {
+  const task = activeSession?.tasks.find((candidate) => candidate.id === taskId);
+  if (!task || task.status !== "running" || !task.workerTaskId) {
+    throw new Error("지금 실행 중인 작업만 건너뛸 수 있습니다.");
+  }
+  task.skipRequested = true;
+  reportWork(agentLabel(task.target), `⏭ 사용자가 건너뜀: ${task.title}`);
+  await cancelAgent(task.workerTaskId);
 }
 
 export function getActiveCradleSession(): CradleSession | null {
